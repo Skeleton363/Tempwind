@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Guest memory benchmark</title>
+</head>
+<body>
+<!--
+  Browser runner for the guest-memory micro-benchmark. Open from file:// or
+  any static server. For a headless run:
+    chrome --headless --no-sandbox --dump-dom file:///…/tests/bench/memory/bench.html
+  The benchmark runs synchronously before `load`, so --dump-dom prints the
+  finished results. Query: ?variants=m32,m64&reps=5&growth=0
+-->
+<pre id="out">running…</pre>
+<script src="core.js"></script>
+<script>
+  (function () {
+    var q = new URLSearchParams(location.search);
+    var opts = { reps: Number(q.get('reps') || 5) };
+    if (q.get('variants')) opts.variants = q.get('variants').split(',');
+    var res = { env: { runtime: navigator.userAgent, crossOriginIsolated: self.crossOriginIsolated } };
+    try {
+      res.results = MemBench.runAll(opts);
+      if (q.get('growth') !== '0') {
+        res.growth = [MemBench.growthTest({ shared: true }), MemBench.growthTest({ shared: false })];
+      }
+    } catch (e) {
+      res.error = String(e && e.stack || e);
+    }
+    document.getElementById('out').textContent =
+      'BENCH-JSON-BEGIN\n' + JSON.stringify(res, null, 2) + '\nBENCH-JSON-END';
+  })();
+</script>
+</body>
+</html>

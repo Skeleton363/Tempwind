@@ -148,6 +148,8 @@ pub struct Sandbox {
     code: Mapping,
     prologue: Vec<u8>,
     epilogue: Vec<u8>,
+    /// The snippet currently in the code page.
+    loaded: Option<Vec<u8>>,
 }
 
 static SANDBOX: Mutex<Option<Sandbox>> = Mutex::new(None);
@@ -219,6 +221,7 @@ impl Sandbox {
             code,
             prologue,
             epilogue,
+            loaded: None,
         })
     }
 
@@ -237,15 +240,18 @@ impl Sandbox {
             input.rflags
         );
 
-        self.code.protect(libc::PROT_READ | libc::PROT_WRITE)?;
-        let code = self.code.bytes_mut();
-        code.fill(0xcc);
-        let mut at = 0;
-        for part in [&self.prologue[..], snippet, &self.epilogue[..]] {
-            code[at..at + part.len()].copy_from_slice(part);
-            at += part.len();
+        if self.loaded.as_deref() != Some(snippet) {
+            self.code.protect(libc::PROT_READ | libc::PROT_WRITE)?;
+            let code = self.code.bytes_mut();
+            code.fill(0xcc);
+            let mut at = 0;
+            for part in [&self.prologue[..], snippet, &self.epilogue[..]] {
+                code[at..at + part.len()].copy_from_slice(part);
+                at += part.len();
+            }
+            self.code.protect(libc::PROT_READ | libc::PROT_EXEC)?;
+            self.loaded = Some(snippet.to_vec());
         }
-        self.code.protect(libc::PROT_READ | libc::PROT_EXEC)?;
 
         let page = self.data.bytes_mut();
         page.fill(0);

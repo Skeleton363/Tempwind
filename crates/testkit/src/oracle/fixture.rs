@@ -209,7 +209,11 @@ pub fn to_json(fixture: &Fixture, header: &Header) -> String {
             out.push_str(" \"mem\": []},\n");
         } else {
             let indent = "                ";
-            let _ = writeln!(out, "\n               \"mem\": {}}},", mem_list(&in_mem, indent));
+            let _ = writeln!(
+                out,
+                "\n               \"mem\": {}}},",
+                mem_list(&in_mem, indent)
+            );
         }
         let _ = write!(
             out,
@@ -218,7 +222,11 @@ pub fn to_json(fixture: &Fixture, header: &Header) -> String {
             json_str(&hex(case.output.rflags)),
             gpr_object(&out_gprs)
         );
-        let sep = if n + 1 == fixture.cases.len() { "" } else { "," };
+        let sep = if n + 1 == fixture.cases.len() {
+            ""
+        } else {
+            ","
+        };
         if out_mem.is_empty() {
             let _ = writeln!(out, " \"mem\": []}}}}{sep}");
         } else {
@@ -257,7 +265,10 @@ fn u64_field(v: &Value, key: &str) -> Result<u64> {
 
 fn parse_bytes(text: &str) -> Result<Vec<u8>> {
     let digits: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    ensure!(digits.len() % 2 == 0, "odd number of hex digits in `{text}`");
+    ensure!(
+        digits.len().is_multiple_of(2),
+        "odd number of hex digits in `{text}`"
+    );
     digits
         .chunks(2)
         .map(|pair| {
@@ -297,7 +308,9 @@ fn parse_mem(v: &Value) -> Result<Vec<MemBlock>> {
 /// Parses a fixture file. Fails if its format or layout differs from this build's.
 pub fn parse(text: &str) -> Result<(Header, Fixture)> {
     let root: Value = serde_json::from_str(text).context("fixture is not valid JSON")?;
-    let format = field(&root, "format")?.as_u64().context("`format` is not a number")?;
+    let format = field(&root, "format")?
+        .as_u64()
+        .context("`format` is not a number")?;
     ensure!(
         format == u64::from(FORMAT),
         "fixture format {format}, this build reads {FORMAT}; re-record"
@@ -305,8 +318,12 @@ pub fn parse(text: &str) -> Result<(Header, Fixture)> {
     let header_v = field(&root, "header")?;
     let header = Header {
         cpu: str_field(header_v, "cpu").unwrap_or_default().to_string(),
-        kernel: str_field(header_v, "kernel").unwrap_or_default().to_string(),
-        recorded: str_field(header_v, "recorded").unwrap_or_default().to_string(),
+        kernel: str_field(header_v, "kernel")
+            .unwrap_or_default()
+            .to_string(),
+        recorded: str_field(header_v, "recorded")
+            .unwrap_or_default()
+            .to_string(),
     };
     let layout = field(&root, "layout")?;
     for (key, want) in [
@@ -439,10 +456,18 @@ pub fn diff(committed: &Fixture, recorded: &Fixture) -> Vec<String> {
         field("bytes", bytes_hex(&a.bytes), bytes_hex(&b.bytes));
         field("asm", a.asm.clone(), b.asm.clone());
         field("flags_mask", hex(a.flags_mask), hex(b.flags_mask));
-        field("input.gprs", fmt_gprs(&a.input.gprs), fmt_gprs(&b.input.gprs));
+        field(
+            "input.gprs",
+            fmt_gprs(&a.input.gprs),
+            fmt_gprs(&b.input.gprs),
+        );
         field("input.rflags", hex(a.input.rflags), hex(b.input.rflags));
         field("input.mem", fmt_mem(&a.input.mem), fmt_mem(&b.input.mem));
-        field("output.gprs", fmt_gprs(&a.output.gprs), fmt_gprs(&b.output.gprs));
+        field(
+            "output.gprs",
+            fmt_gprs(&a.output.gprs),
+            fmt_gprs(&b.output.gprs),
+        );
         field("output.rip", hex(a.output.rip), hex(b.output.rip));
         field("output.rflags", hex(a.output.rflags), hex(b.output.rflags));
         field("output.mem", fmt_mem(&a.output.mem), fmt_mem(&b.output.mem));

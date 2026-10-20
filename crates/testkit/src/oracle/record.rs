@@ -44,7 +44,7 @@ pub fn generated_inputs() -> Result<Vec<Fixture>> {
             let cases = family
                 .cases
                 .iter()
-                .map(|c| to_case(c, c.input.gprs, 0, 0, Vec::new()))
+                .map(|c| to_case(c, c.input.gprs, 0, 0, c.input.mem.clone()))
                 .collect();
             Fixture {
                 family: family.name.to_string(),
@@ -93,7 +93,12 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
     for family in families {
         let mut cases = Vec::new();
         for (n, c) in family.cases.iter().enumerate() {
-            let at = || format!("{}[{n}] {} `{}` ({:02x?})", family.name, c.form, c.asm, c.bytes);
+            let at = || {
+                format!(
+                    "{}[{n}] {} `{}` ({:02x?})",
+                    family.name, c.form, c.asm, c.bytes
+                )
+            };
             let mut image = vec![0u8; DATA_SIZE as usize];
             for block in &c.input.mem {
                 let off = (block.addr - DATA_ADDR) as usize;
@@ -291,6 +296,26 @@ fn check_against(dir: &Path, fixtures: &[Fixture]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_reports_changed_and_extra_files() {
+        let dir = std::env::temp_dir().join(format!("testkit-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fixtures = generated_inputs().unwrap();
+        fixtures.truncate(2);
+        write_all(&dir, &fixtures).unwrap();
+        check_against(&dir, &fixtures).unwrap();
+
+        let mut changed = fixtures.clone();
+        changed[1].cases[5].output.rip ^= 1;
+        let err = check_against(&dir, &changed).unwrap_err();
+        assert!(err.to_string().contains("1 differences"), "{err}");
+
+        std::fs::write(dir.join("stale.json"), "{}").unwrap();
+        let err = check_against(&dir, &fixtures).unwrap_err();
+        assert!(err.to_string().contains("1 differences"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn civil_dates() {

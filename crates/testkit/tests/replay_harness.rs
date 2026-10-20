@@ -58,9 +58,15 @@ fn replay_reports_mutated_expectations() {
     let total = report.total();
     assert_eq!(total.cases, 13, "{summary}");
     if total.unsupported == 0 {
-        assert_eq!(total.fail, 4, "exactly the 4 mutated cases must fail:\n{summary}");
+        assert_eq!(
+            total.fail, 4,
+            "exactly the 4 mutated cases must fail:\n{summary}"
+        );
         for needle in ["rax: expected", "differs in CF", "mem 0x", "rip: expected"] {
-            assert!(summary.contains(needle), "missing `{needle}` in:\n{summary}");
+            assert!(
+                summary.contains(needle),
+                "missing `{needle}` in:\n{summary}"
+            );
         }
     }
     assert!(!report.ok());

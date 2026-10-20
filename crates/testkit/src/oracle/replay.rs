@@ -69,8 +69,11 @@ impl ReplayReport {
         for d in &self.details {
             let _ = writeln!(out, "{d}");
         }
-        let failing: Vec<&(String, Stats)> =
-            self.forms.iter().filter(|(_, s)| s.pass != s.cases).collect();
+        let failing: Vec<&(String, Stats)> = self
+            .forms
+            .iter()
+            .filter(|(_, s)| s.pass != s.cases)
+            .collect();
         if !failing.is_empty() {
             let _ = writeln!(out, "forms with failures ({}):", failing.len());
             for (form, s) in failing {
@@ -114,7 +117,8 @@ pub fn replay_dir(dir: &Path) -> Result<ReplayReport> {
     for path in &paths {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let (_, f) = fixture::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let (_, f) =
+            fixture::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
         fixtures.push(f);
     }
     let host = Host::new()?;
@@ -223,14 +227,19 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 fn describe_input(f: &Fixture, case: &Case) -> String {
     let mut out = format!("    input: rflags={:#x}", case.input.rflags);
-    for i in 0..16 {
+    for (i, name) in GPR_NAMES.iter().enumerate() {
         if case.input.gprs[i] != f.default_gprs[i] {
-            let _ = write!(out, " {}={:#x}", GPR_NAMES[i], case.input.gprs[i]);
+            let _ = write!(out, " {name}={:#x}", case.input.gprs[i]);
         }
     }
     out.push_str(" (other gprs: default_gprs)");
     for b in &case.input.mem {
-        let _ = write!(out, "\n    input mem {:#x}: {}", b.addr, hex_bytes(&b.bytes));
+        let _ = write!(
+            out,
+            "\n    input mem {:#x}: {}",
+            b.addr,
+            hex_bytes(&b.bytes)
+        );
     }
     out
 }
@@ -304,7 +313,11 @@ fn mem_diffs(base: u64, expected: &[u8], got: &[u8], out: &mut Vec<String>) {
     }
 }
 
-fn run_case(host: &Host, cache: &mut HashMap<Vec<u8>, Result<Module, Outcome>>, case: &Case) -> Outcome {
+fn run_case(
+    host: &Host,
+    cache: &mut HashMap<Vec<u8>, Result<Module, Outcome>>,
+    case: &Case,
+) -> Outcome {
     let module = cache
         .entry(case.bytes.clone())
         .or_insert_with(|| compile(host, &case.bytes));
@@ -354,11 +367,11 @@ fn execute(host: &Host, module: &Module, case: &Case) -> Result<Outcome> {
             want.rip, out.rip
         ));
     }
-    for i in 0..16 {
+    for (i, name) in GPR_NAMES.iter().enumerate() {
         if out.gpr[i] != want.gprs[i] {
             diffs.push(format!(
-                "    {}: expected {:#x} got {:#x}",
-                GPR_NAMES[i], want.gprs[i], out.gpr[i]
+                "    {name}: expected {:#x} got {:#x}",
+                want.gprs[i], out.gpr[i]
             ));
         }
     }

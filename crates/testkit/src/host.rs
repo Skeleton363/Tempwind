@@ -39,6 +39,7 @@ impl Host {
             engine: self.engine.clone(),
             store,
             memory,
+            instances: Vec::new(),
         })
     }
 }
@@ -48,6 +49,10 @@ pub struct Machine {
     engine: Engine,
     store: Store<()>,
     memory: Memory,
+    /// Instances of modules already run on this machine. Translated modules
+    /// keep no state of their own, so an instance can be reused; this keeps
+    /// long test loops under the store's instance limit.
+    instances: Vec<(Module, Instance)>,
 }
 
 impl Machine {
@@ -76,21 +81,32 @@ impl Machine {
         ))
     }
 
-    /// Instantiates `module` against this machine's memory and calls
-    /// `run(state_addr)`. Returns the exit reason.
+    /// Instantiates `module` against this machine's memory (once per module
+    /// and machine) and calls `run(state_addr)`. Returns the exit reason.
     pub fn run(&mut self, module: &Module, state_addr: u64) -> Result<u32> {
         ensure!(
             Engine::same(module.engine(), &self.engine),
             "module was compiled by another engine"
         );
-        let mut linker = Linker::new(&self.engine);
-        linker.define(
-            &self.store,
-            abi::MEMORY_MODULE,
-            abi::MEMORY_NAME,
-            self.memory,
-        )?;
-        let instance: Instance = linker.instantiate(&mut self.store, module)?;
+        let instance = match self
+            .instances
+            .iter()
+            .find(|(m, _)| Module::same(m, module))
+        {
+            Some((_, instance)) => *instance,
+            None => {
+                let mut linker = Linker::new(&self.engine);
+                linker.define(
+                    &self.store,
+                    abi::MEMORY_MODULE,
+                    abi::MEMORY_NAME,
+                    self.memory,
+                )?;
+                let instance: Instance = linker.instantiate(&mut self.store, module)?;
+                self.instances.push((module.clone(), instance));
+                instance
+            }
+        };
         let run = instance.get_typed_func::<i64, i32>(&mut self.store, abi::RUN_EXPORT)?;
         let exit = run.call(&mut self.store, state_addr as i64)?;
         Ok(exit as u32)

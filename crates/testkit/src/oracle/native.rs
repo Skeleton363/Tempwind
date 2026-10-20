@@ -170,7 +170,11 @@ mod imp {
                     &mut regs as *mut libc::user_regs_struct,
                 )
             };
-            ensure!(r == 0, "PTRACE_GETREGS: {}", std::io::Error::last_os_error());
+            ensure!(
+                r == 0,
+                "PTRACE_GETREGS: {}",
+                std::io::Error::last_os_error()
+            );
             Ok(regs)
         }
 
@@ -231,10 +235,18 @@ mod imp {
                     &regs as *const libc::user_regs_struct,
                 )
             };
-            ensure!(r == 0, "PTRACE_SETREGS: {}", std::io::Error::last_os_error());
+            ensure!(
+                r == 0,
+                "PTRACE_SETREGS: {}",
+                std::io::Error::last_os_error()
+            );
             // SAFETY: valid pid of a stopped tracee.
             let r = unsafe { libc::ptrace(libc::PTRACE_SINGLESTEP, self.pid, 0, 0) };
-            ensure!(r == 0, "PTRACE_SINGLESTEP: {}", std::io::Error::last_os_error());
+            ensure!(
+                r == 0,
+                "PTRACE_SINGLESTEP: {}",
+                std::io::Error::last_os_error()
+            );
             let status = wait(self.pid)?;
             if !libc::WIFSTOPPED(status) {
                 bail!("recorder child {}", describe(status));

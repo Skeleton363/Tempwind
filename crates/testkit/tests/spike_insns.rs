@@ -6,6 +6,8 @@
 
 #![cfg(all(target_arch = "x86_64", unix))]
 
+use std::collections::HashMap;
+
 use iced_x86::code_asm::*;
 use iced_x86::{Code, Decoder, DecoderOptions, Formatter, Instruction, IntelFormatter, Register};
 use testkit::host::{Host, Machine};
@@ -68,6 +70,8 @@ struct Harness {
     machine: Machine,
     rng: Rng,
     runs: usize,
+    /// Modules by (code, entries).
+    modules: HashMap<(Vec<u8>, Vec<u64>), Module>,
 }
 
 impl Harness {
@@ -79,21 +83,54 @@ impl Harness {
             machine,
             rng: Rng(seed | 1),
             runs: 0,
+            modules: HashMap::new(),
         }
     }
 
-    fn compile(&self, code: &[u8]) -> Module {
+    fn module(&mut self, code: &[u8], entries: &[u64]) -> Module {
+        let key = (code.to_vec(), entries.to_vec());
+        if let Some(m) = self.modules.get(&key) {
+            return m.clone();
+        }
         let t = x64wasm::translate(
             CodeRegion {
                 base: SANDBOX_SNIPPET,
                 bytes: code,
             },
-            &[SANDBOX_SNIPPET],
+            entries,
             &Options::default(),
         )
         .unwrap();
         // Compiling validates the module.
-        self.host.compile(&t.wasm).unwrap()
+        let m = self.host.compile(&t.wasm).unwrap();
+        self.modules.insert(key, m.clone());
+        m
+    }
+
+    /// Runs the translated snippet like a host that translates more code
+    /// when execution leaves the translated blocks: on a LEFT_CODE exit to
+    /// an untranslated address inside the snippet, add it as an entry,
+    /// retranslate, and resume from the exit state.
+    fn run_wasm(&mut self, code: &[u8], input: &CpuState) -> CpuState {
+        let end = SANDBOX_SNIPPET + code.len() as u64;
+        let mut entries = vec![SANDBOX_SNIPPET];
+        let mut state = *input;
+        for _ in 0..16 {
+            let module = self.module(code, &entries);
+            state = self
+                .machine
+                .run_state(&module, STATE_ADDR, &state)
+                .unwrap();
+            let rip = state.rip;
+            let inside = (SANDBOX_SNIPPET..end).contains(&rip);
+            if state.exit == abi::EXIT_LEFT_CODE && inside && !entries.contains(&rip) {
+                entries.push(rip);
+                state.exit = 0;
+                continue;
+            }
+            break;
+        }
+        state
     }
 
     /// A random register file with RSP on the sandbox stack, `rbx` = DATA,
@@ -117,15 +154,14 @@ impl Harness {
     }
 
     /// Runs `code` natively and translated from `input`; panics on any difference.
-    fn check(&mut self, code: &[u8], module: &Module, input: &CpuState, data: &[u8]) {
+    fn check(&mut self, code: &[u8], input: &CpuState, data: &[u8]) {
         self.runs += 1;
         let (native, native_data) =
             with_sandbox(|sb| sb.run(code, input, data)).expect("native run");
-        let m = &mut self.machine;
-        m.write(SANDBOX_DATA, data).unwrap();
-        m.write(SANDBOX_SNIPPET, code).unwrap();
-        let wasm = m.run_state(module, STATE_ADDR, input).unwrap();
-        let wasm_data = m.read(SANDBOX_DATA, SANDBOX_DATA_SIZE).unwrap();
+        self.machine.write(SANDBOX_DATA, data).unwrap();
+        self.machine.write(SANDBOX_SNIPPET, code).unwrap();
+        let wasm = self.run_wasm(code, input);
+        let wasm_data = self.machine.read(SANDBOX_DATA, SANDBOX_DATA_SIZE).unwrap();
 
         let mut errors = Vec::new();
         if wasm.exit != abi::EXIT_LEFT_CODE || wasm.rip != native.rip {
@@ -157,7 +193,9 @@ impl Harness {
                 input.rflags, wasm.rflags
             ));
         }
-        if let Some(at) = (0..SANDBOX_DATA_SIZE).find(|&i| wasm_data[i] != native_data[i]) {
+        if wasm_data != native_data
+            && let Some(at) = (0..SANDBOX_DATA_SIZE).find(|&i| wasm_data[i] != native_data[i])
+        {
             let at = at & !7;
             errors.push(format!(
                 "data differs at {:#x}: wasm {:02x?} native {:02x?}",
@@ -180,7 +218,6 @@ impl Harness {
     /// Runs `code` for every pair of edge values in registers `ra`, `rb`
     /// (other registers random), plus random rounds.
     fn pairs(&mut self, code: &[u8], ra: usize, rb: Option<usize>) {
-        let module = self.compile(code);
         let data = self.random_data();
         for &a in &EDGES {
             for &b in &EDGES {
@@ -192,26 +229,25 @@ impl Harness {
                 if let Some(rb) = rb {
                     s.gpr[rb] = b;
                 }
-                self.check(code, &module, &s, &data);
+                self.check(code, &s, &data);
             }
         }
         for _ in 0..64 {
             let s = self.random_state();
             let mut s2 = s;
             s2.gpr[ra] = s.gpr[ra] & 0xff;
-            self.check(code, &module, &s, &data);
-            self.check(code, &module, &s2, &data);
+            self.check(code, &s, &data);
+            self.check(code, &s2, &data);
         }
     }
 
     /// Runs `code` from random registers with `setup` applied, several times.
     fn random(&mut self, code: &[u8], rounds: usize, setup: impl Fn(&mut CpuState, &mut Rng)) {
-        let module = self.compile(code);
         for _ in 0..rounds {
             let mut s = self.random_state();
             setup(&mut s, &mut self.rng);
             let data = self.random_data();
-            self.check(code, &module, &s, &data);
+            self.check(code, &s, &data);
         }
     }
 }
@@ -388,7 +424,6 @@ fn alu_memory_forms() {
         a.sub(ecx, dword_ptr(rbx + rdi * 8))?;
         a.cmp(byte_ptr(rbx + rdi * 8), dl)
     });
-    let module = h.compile(&code);
     let mut data = h.random_data();
     for (i, v) in EDGES.iter().enumerate() {
         let at = 0x100 + 8 * i;
@@ -402,7 +437,7 @@ fn alu_memory_forms() {
             s.gpr[2] = a;
             s.gpr[6] = j as u64;
             s.gpr[7] = i as u64;
-            h.check(&code, &module, &s, &data);
+            h.check(&code, &s, &data);
         }
     }
     eprintln!("{} runs", h.runs);
@@ -575,14 +610,13 @@ fn push_pop_forms() {
         a.pop(rsp)?;
         a.pop(rax)
     });
-    let module = h.compile(&code);
     for i in 0..16u64 {
         let s = h.random_state();
         let mut data = h.random_data();
         let at = (STACK - SANDBOX_DATA) as usize;
         let target = STACK + 0x100 + 8 * i;
         data[at..at + 8].copy_from_slice(&target.to_le_bytes());
-        h.check(&code, &module, &s, &data);
+        h.check(&code, &s, &data);
     }
     eprintln!("{} runs", h.runs);
 }
@@ -609,29 +643,46 @@ fn jcc_all_conditions() {
         |a, l| a.jle(l),
         |a, l| a.jg(l),
     ];
+    // Flag producers. They don't change rcx/rdx, so every condition in a
+    // snippet sees the flags of the same operands.
     type Setup = fn(&mut CodeAssembler) -> Result<(), IcedError>;
-    let setups: [(&str, Setup); 9] = [
-        ("none (flags from RFLAGS)", |_| Ok(())),
-        ("cmp r64", |a| a.cmp(rcx, rdx)),
-        ("cmp r32", |a| a.cmp(ecx, edx)),
-        ("cmp r16", |a| a.cmp(cx, dx)),
-        ("cmp r8", |a| a.cmp(cl, dl)),
-        ("sub r32", |a| a.sub(ecx, edx)),
-        ("add r64", |a| a.add(rcx, rdx)),
-        ("add r8", |a| a.add(cl, dl)),
-        ("add r16 imm", |a| a.add(cx, 0x7ff0)),
+    let setups: [Setup; 9] = [
+        |_| Ok(()), // flags straight from the entry RFLAGS
+        |a| a.cmp(rcx, rdx),
+        |a| a.cmp(ecx, edx),
+        |a| a.cmp(cx, dx),
+        |a| a.cmp(cl, dl),
+        |a| {
+            a.mov(r8, rcx)?;
+            a.sub(r8d, edx)
+        },
+        |a| {
+            a.mov(r8, rcx)?;
+            a.add(r8, rdx)
+        },
+        |a| {
+            a.mov(r8, rcx)?;
+            a.add(r8b, dl)
+        },
+        |a| {
+            a.mov(r8, rcx)?;
+            a.add(r8w, 0x7ff0)
+        },
     ];
-    for (setup_index, (_, setup)) in setups.iter().enumerate() {
-        for jcc in &jccs {
-            for short in [true, false] {
-                // `setup; [jmp next; next:] jcc taken; mov eax, 1; jmp end; taken: mov eax, 2; end:`
-                // The variant with the extra jmp puts the jcc in its own block,
-                // so its flags come from the lazy record at run time.
-                for split in [false, true] {
-                    let code = assemble(|a| {
-                        a.set_prefer_short_branch(short);
+    for (setup_index, setup) in setups.iter().enumerate() {
+        for short in [true, false] {
+            // For each condition i:
+            //   setup; [jmp next; next:] jcc taken; mov byte [rbx+i], 1; jmp done;
+            //   taken: mov byte [rbx+i], 2; done:
+            // With the extra jmp the jcc starts its own block, so its
+            // condition comes from the lazy flag record at run time instead
+            // of the statically known producer.
+            for split in [false, true] {
+                let code = assemble(|a| {
+                    a.set_prefer_short_branch(short);
+                    for (i, jcc) in jccs.iter().enumerate() {
                         let mut taken = a.create_label();
-                        let mut end = a.create_label();
+                        let mut done = a.create_label();
                         let mut next = a.create_label();
                         setup(a)?;
                         if split {
@@ -639,28 +690,37 @@ fn jcc_all_conditions() {
                             a.set_label(&mut next)?;
                         }
                         jcc(a, taken)?;
-                        a.mov(eax, 1)?;
-                        a.jmp(end)?;
+                        a.mov(byte_ptr(rbx + i as i32), 1)?;
+                        a.jmp(done)?;
                         a.set_label(&mut taken)?;
-                        a.mov(eax, 2)?;
-                        a.set_label(&mut end)?;
-                        a.nop()
-                    });
-                    let module = h.compile(&code);
-                    let data = vec![0u8; 16];
-                    let rounds = if setup_index == 0 { 64 } else { 0 };
-                    for _ in 0..rounds {
-                        let s = h.random_state();
-                        h.check(&code, &module, &s, &data);
+                        a.mov(byte_ptr(rbx + i as i32), 2)?;
+                        a.set_label(&mut done)?;
                     }
-                    if setup_index != 0 {
-                        for &a in EDGES.iter().step_by(2) {
-                            for &b in EDGES.iter().step_by(3) {
-                                let mut s = h.random_state();
-                                s.gpr[1] = a;
-                                s.gpr[2] = b;
-                                h.check(&code, &module, &s, &data);
+                    a.nop()
+                });
+                let data = vec![0u8; 0x200];
+                if setup_index == 0 {
+                    // Every combination of the six status flags.
+                    for bits in 0..64u64 {
+                        let mut s = h.random_state();
+                        s.rflags = 0x202;
+                        for (k, f) in [flags::CF, flags::PF, flags::AF, flags::ZF, flags::SF, flags::OF]
+                            .into_iter()
+                            .enumerate()
+                        {
+                            if bits >> k & 1 != 0 {
+                                s.rflags |= f;
                             }
+                        }
+                        h.check(&code, &s, &data);
+                    }
+                } else {
+                    for &a in &EDGES {
+                        for &b in EDGES.iter().step_by(2) {
+                            let mut s = h.random_state();
+                            s.gpr[1] = a;
+                            s.gpr[2] = b;
+                            h.check(&code, &s, &data);
                         }
                     }
                 }

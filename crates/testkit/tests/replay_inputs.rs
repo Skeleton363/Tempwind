@@ -12,13 +12,18 @@ fn fixture_inputs_match_the_generator() {
         let path = fixtures_dir().join(format!("{}.json", g.family));
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-        let (_, committed) = fixture::parse(&text)
-            .unwrap_or_else(|e| panic!("parsing {}: {e:#}", path.display()));
+        let (_, committed) =
+            fixture::parse(&text).unwrap_or_else(|e| panic!("parsing {}: {e:#}", path.display()));
         diffs.extend(fixture::diff_inputs(&committed, g));
     }
     assert!(
         diffs.is_empty(),
         "committed fixtures differ from the generator (re-record with `cargo run -p testkit --release -- record`):\n{}",
-        diffs.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+        diffs
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

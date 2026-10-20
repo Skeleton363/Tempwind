@@ -61,7 +61,6 @@ pub fn default_gprs() -> [u64; 16] {
 mod regs {
     use iced_x86::Register::{self, *};
 
-
     pub const GPR64: [Register; 16] = [
         RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15,
     ];
@@ -133,7 +132,11 @@ fn acc(bits: u32) -> Register {
 // Values
 
 fn mask(bits: u32) -> u64 {
-    if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 }
+    if bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
 }
 
 fn sext(v: u64, bits: u32) -> u64 {
@@ -482,7 +485,13 @@ fn pick_index(rng: &mut Rng, not: Option<usize>) -> usize {
     }
 }
 
-fn mem_op(base: Register, index: Register, scale: u32, disp: i64, displ_size: u32) -> MemoryOperand {
+fn mem_op(
+    base: Register,
+    index: Register,
+    scale: u32,
+    disp: i64,
+    displ_size: u32,
+) -> MemoryOperand {
     MemoryOperand::with_base_index_scale_displ_size(base, index, scale, disp, displ_size)
 }
 
@@ -747,29 +756,101 @@ struct AluCodes {
 
 const ADD: AluCodes = AluCodes {
     name: "add",
-    rm_r: [Code::Add_rm8_r8, Code::Add_rm16_r16, Code::Add_rm32_r32, Code::Add_rm64_r64],
-    r_rm: [Code::Add_r8_rm8, Code::Add_r16_rm16, Code::Add_r32_rm32, Code::Add_r64_rm64],
-    rm_imm8: [Code::Add_rm8_imm8, Code::Add_rm16_imm8, Code::Add_rm32_imm8, Code::Add_rm64_imm8],
-    rm_imm: [Code::Add_rm16_imm16, Code::Add_rm32_imm32, Code::Add_rm64_imm32],
-    acc: [Code::Add_AL_imm8, Code::Add_AX_imm16, Code::Add_EAX_imm32, Code::Add_RAX_imm32],
+    rm_r: [
+        Code::Add_rm8_r8,
+        Code::Add_rm16_r16,
+        Code::Add_rm32_r32,
+        Code::Add_rm64_r64,
+    ],
+    r_rm: [
+        Code::Add_r8_rm8,
+        Code::Add_r16_rm16,
+        Code::Add_r32_rm32,
+        Code::Add_r64_rm64,
+    ],
+    rm_imm8: [
+        Code::Add_rm8_imm8,
+        Code::Add_rm16_imm8,
+        Code::Add_rm32_imm8,
+        Code::Add_rm64_imm8,
+    ],
+    rm_imm: [
+        Code::Add_rm16_imm16,
+        Code::Add_rm32_imm32,
+        Code::Add_rm64_imm32,
+    ],
+    acc: [
+        Code::Add_AL_imm8,
+        Code::Add_AX_imm16,
+        Code::Add_EAX_imm32,
+        Code::Add_RAX_imm32,
+    ],
 };
 
 const SUB: AluCodes = AluCodes {
     name: "sub",
-    rm_r: [Code::Sub_rm8_r8, Code::Sub_rm16_r16, Code::Sub_rm32_r32, Code::Sub_rm64_r64],
-    r_rm: [Code::Sub_r8_rm8, Code::Sub_r16_rm16, Code::Sub_r32_rm32, Code::Sub_r64_rm64],
-    rm_imm8: [Code::Sub_rm8_imm8, Code::Sub_rm16_imm8, Code::Sub_rm32_imm8, Code::Sub_rm64_imm8],
-    rm_imm: [Code::Sub_rm16_imm16, Code::Sub_rm32_imm32, Code::Sub_rm64_imm32],
-    acc: [Code::Sub_AL_imm8, Code::Sub_AX_imm16, Code::Sub_EAX_imm32, Code::Sub_RAX_imm32],
+    rm_r: [
+        Code::Sub_rm8_r8,
+        Code::Sub_rm16_r16,
+        Code::Sub_rm32_r32,
+        Code::Sub_rm64_r64,
+    ],
+    r_rm: [
+        Code::Sub_r8_rm8,
+        Code::Sub_r16_rm16,
+        Code::Sub_r32_rm32,
+        Code::Sub_r64_rm64,
+    ],
+    rm_imm8: [
+        Code::Sub_rm8_imm8,
+        Code::Sub_rm16_imm8,
+        Code::Sub_rm32_imm8,
+        Code::Sub_rm64_imm8,
+    ],
+    rm_imm: [
+        Code::Sub_rm16_imm16,
+        Code::Sub_rm32_imm32,
+        Code::Sub_rm64_imm32,
+    ],
+    acc: [
+        Code::Sub_AL_imm8,
+        Code::Sub_AX_imm16,
+        Code::Sub_EAX_imm32,
+        Code::Sub_RAX_imm32,
+    ],
 };
 
 const CMP: AluCodes = AluCodes {
     name: "cmp",
-    rm_r: [Code::Cmp_rm8_r8, Code::Cmp_rm16_r16, Code::Cmp_rm32_r32, Code::Cmp_rm64_r64],
-    r_rm: [Code::Cmp_r8_rm8, Code::Cmp_r16_rm16, Code::Cmp_r32_rm32, Code::Cmp_r64_rm64],
-    rm_imm8: [Code::Cmp_rm8_imm8, Code::Cmp_rm16_imm8, Code::Cmp_rm32_imm8, Code::Cmp_rm64_imm8],
-    rm_imm: [Code::Cmp_rm16_imm16, Code::Cmp_rm32_imm32, Code::Cmp_rm64_imm32],
-    acc: [Code::Cmp_AL_imm8, Code::Cmp_AX_imm16, Code::Cmp_EAX_imm32, Code::Cmp_RAX_imm32],
+    rm_r: [
+        Code::Cmp_rm8_r8,
+        Code::Cmp_rm16_r16,
+        Code::Cmp_rm32_r32,
+        Code::Cmp_rm64_r64,
+    ],
+    r_rm: [
+        Code::Cmp_r8_rm8,
+        Code::Cmp_r16_rm16,
+        Code::Cmp_r32_rm32,
+        Code::Cmp_r64_rm64,
+    ],
+    rm_imm8: [
+        Code::Cmp_rm8_imm8,
+        Code::Cmp_rm16_imm8,
+        Code::Cmp_rm32_imm8,
+        Code::Cmp_rm64_imm8,
+    ],
+    rm_imm: [
+        Code::Cmp_rm16_imm16,
+        Code::Cmp_rm32_imm32,
+        Code::Cmp_rm64_imm32,
+    ],
+    acc: [
+        Code::Cmp_AL_imm8,
+        Code::Cmp_AX_imm16,
+        Code::Cmp_EAX_imm32,
+        Code::Cmp_RAX_imm32,
+    ],
 };
 
 const WIDTHS: [u32; 4] = [8, 16, 32, 64];
@@ -780,7 +861,14 @@ const LEA_COUNT: usize = 32;
 const STACK_COUNT: usize = 48;
 const JCC_COUNT: usize = 24;
 
-fn alu(id: String, family: &'static str, count: usize, codes: &[Code], dst: Opnd, src: Opnd) -> Form {
+fn alu(
+    id: String,
+    family: &'static str,
+    count: usize,
+    codes: &[Code],
+    dst: Opnd,
+    src: Opnd,
+) -> Form {
     Form {
         id,
         family,
@@ -798,8 +886,18 @@ fn forms() -> Vec<Form> {
     let mut out = Vec::new();
 
     // mov
-    let mov_rm_r = [Code::Mov_rm8_r8, Code::Mov_rm16_r16, Code::Mov_rm32_r32, Code::Mov_rm64_r64];
-    let mov_r_rm = [Code::Mov_r8_rm8, Code::Mov_r16_rm16, Code::Mov_r32_rm32, Code::Mov_r64_rm64];
+    let mov_rm_r = [
+        Code::Mov_rm8_r8,
+        Code::Mov_rm16_r16,
+        Code::Mov_rm32_r32,
+        Code::Mov_rm64_r64,
+    ];
+    let mov_r_rm = [
+        Code::Mov_r8_rm8,
+        Code::Mov_r16_rm16,
+        Code::Mov_r32_rm32,
+        Code::Mov_r64_rm64,
+    ];
     let mov_rm_imm = [
         Code::Mov_rm8_imm8,
         Code::Mov_rm16_imm16,
@@ -808,10 +906,31 @@ fn forms() -> Vec<Form> {
     ];
     let n = MOV_COUNT;
     for (i, w) in WIDTHS.into_iter().enumerate() {
-        out.push(alu(format!("mov_r{w}_r{w}"), "mov", n, &[mov_rm_r[i], mov_r_rm[i]], Reg(w), Reg(w)));
+        out.push(alu(
+            format!("mov_r{w}_r{w}"),
+            "mov",
+            n,
+            &[mov_rm_r[i], mov_r_rm[i]],
+            Reg(w),
+            Reg(w),
+        ));
     }
-    out.push(alu("mov_r64_imm32".into(), "mov", n, &[Code::Mov_rm64_imm32], Reg(64), Imm(32)));
-    out.push(alu("mov_r64_imm64".into(), "mov", n, &[Code::Mov_r64_imm64], Reg(64), Imm(64)));
+    out.push(alu(
+        "mov_r64_imm32".into(),
+        "mov",
+        n,
+        &[Code::Mov_rm64_imm32],
+        Reg(64),
+        Imm(32),
+    ));
+    out.push(alu(
+        "mov_r64_imm64".into(),
+        "mov",
+        n,
+        &[Code::Mov_r64_imm64],
+        Reg(64),
+        Imm(64),
+    ));
     out.push(alu(
         "mov_r32_imm32".into(),
         "mov",
@@ -837,45 +956,125 @@ fn forms() -> Vec<Form> {
         Imm(8),
     ));
     for (i, w) in WIDTHS.into_iter().enumerate() {
-        out.push(alu(format!("mov_r{w}_m{w}"), "mov", n, &[mov_r_rm[i]], Reg(w), Mem(w)));
+        out.push(alu(
+            format!("mov_r{w}_m{w}"),
+            "mov",
+            n,
+            &[mov_r_rm[i]],
+            Reg(w),
+            Mem(w),
+        ));
     }
     for (i, w) in WIDTHS.into_iter().enumerate() {
-        out.push(alu(format!("mov_m{w}_r{w}"), "mov", n, &[mov_rm_r[i]], Mem(w), Reg(w)));
+        out.push(alu(
+            format!("mov_m{w}_r{w}"),
+            "mov",
+            n,
+            &[mov_rm_r[i]],
+            Mem(w),
+            Reg(w),
+        ));
     }
     for (i, w) in WIDTHS.into_iter().enumerate() {
         let iw = w.min(32);
-        out.push(alu(format!("mov_m{w}_imm{iw}"), "mov", n, &[mov_rm_imm[i]], Mem(w), Imm(iw)));
+        out.push(alu(
+            format!("mov_m{w}_imm{iw}"),
+            "mov",
+            n,
+            &[mov_rm_imm[i]],
+            Mem(w),
+            Imm(iw),
+        ));
     }
 
     // add, sub, cmp
     for c in [&ADD, &SUB, &CMP] {
         let (m, n) = (c.name, ALU_COUNT);
         for (i, w) in WIDTHS.into_iter().enumerate() {
-            out.push(alu(format!("{m}_r{w}_r{w}"), m, n, &[c.rm_r[i], c.r_rm[i]], Reg(w), Reg(w)));
+            out.push(alu(
+                format!("{m}_r{w}_r{w}"),
+                m,
+                n,
+                &[c.rm_r[i], c.r_rm[i]],
+                Reg(w),
+                Reg(w),
+            ));
         }
         for (i, w) in WIDTHS.into_iter().enumerate() {
-            out.push(alu(format!("{m}_r{w}_imm8"), m, n, &[c.rm_imm8[i]], Reg(w), Imm(8)));
+            out.push(alu(
+                format!("{m}_r{w}_imm8"),
+                m,
+                n,
+                &[c.rm_imm8[i]],
+                Reg(w),
+                Imm(8),
+            ));
         }
         for (i, w) in [16u32, 32, 64].into_iter().enumerate() {
             let iw = w.min(32);
-            out.push(alu(format!("{m}_r{w}_imm{iw}"), m, n, &[c.rm_imm[i]], Reg(w), Imm(iw)));
+            out.push(alu(
+                format!("{m}_r{w}_imm{iw}"),
+                m,
+                n,
+                &[c.rm_imm[i]],
+                Reg(w),
+                Imm(iw),
+            ));
         }
         for (i, w) in WIDTHS.into_iter().enumerate() {
-            out.push(alu(format!("{m}_r{w}_m{w}"), m, n, &[c.r_rm[i]], Reg(w), Mem(w)));
+            out.push(alu(
+                format!("{m}_r{w}_m{w}"),
+                m,
+                n,
+                &[c.r_rm[i]],
+                Reg(w),
+                Mem(w),
+            ));
         }
         for (i, w) in WIDTHS.into_iter().enumerate() {
-            out.push(alu(format!("{m}_m{w}_r{w}"), m, n, &[c.rm_r[i]], Mem(w), Reg(w)));
+            out.push(alu(
+                format!("{m}_m{w}_r{w}"),
+                m,
+                n,
+                &[c.rm_r[i]],
+                Mem(w),
+                Reg(w),
+            ));
         }
         for (i, w) in WIDTHS.into_iter().enumerate() {
-            out.push(alu(format!("{m}_m{w}_imm8"), m, n, &[c.rm_imm8[i]], Mem(w), Imm(8)));
+            out.push(alu(
+                format!("{m}_m{w}_imm8"),
+                m,
+                n,
+                &[c.rm_imm8[i]],
+                Mem(w),
+                Imm(8),
+            ));
         }
         for (i, w) in [16u32, 32, 64].into_iter().enumerate() {
             let iw = w.min(32);
-            out.push(alu(format!("{m}_m{w}_imm{iw}"), m, n, &[c.rm_imm[i]], Mem(w), Imm(iw)));
+            out.push(alu(
+                format!("{m}_m{w}_imm{iw}"),
+                m,
+                n,
+                &[c.rm_imm[i]],
+                Mem(w),
+                Imm(iw),
+            ));
         }
-        for (i, (w, r)) in [(8u32, "al"), (16, "ax"), (32, "eax"), (64, "rax")].into_iter().enumerate() {
+        for (i, (w, r)) in [(8u32, "al"), (16, "ax"), (32, "eax"), (64, "rax")]
+            .into_iter()
+            .enumerate()
+        {
             let iw = w.min(32);
-            out.push(alu(format!("{m}_{r}_imm{iw}"), m, n, &[c.acc[i]], Acc(w), Imm(iw)));
+            out.push(alu(
+                format!("{m}_{r}_imm{iw}"),
+                m,
+                n,
+                &[c.acc[i]],
+                Acc(w),
+                Imm(iw),
+            ));
         }
     }
 
@@ -909,8 +1108,16 @@ fn forms() -> Vec<Form> {
         kind,
     };
     out.push(stack("push_r64", "push", Kind::PushReg));
-    out.push(stack("push_imm8", "push", Kind::PushImm(Code::Pushq_imm8, 8)));
-    out.push(stack("push_imm32", "push", Kind::PushImm(Code::Pushq_imm32, 32)));
+    out.push(stack(
+        "push_imm8",
+        "push",
+        Kind::PushImm(Code::Pushq_imm8, 8),
+    ));
+    out.push(stack(
+        "push_imm32",
+        "push",
+        Kind::PushImm(Code::Pushq_imm32, 32),
+    ));
     out.push(stack("push_m64", "push", Kind::PushMem));
     out.push(stack("pop_r64", "pop", Kind::PopReg));
     out.push(stack("pop_m64", "pop", Kind::PopMem));
@@ -1068,7 +1275,7 @@ fn gen_alu(
     let code = rng.pick(codes);
     let bits = dst.bits();
     let mut b = Builder::new(rng, defaults);
-    let (a, mut v) = pick_pair(rng, idx, bits);
+    let (mut a, mut v) = pick_pair(rng, idx, bits);
     let mut imm = 0;
     if let Opnd::Imm(ib) = src {
         imm = match as_imm(v, bits, ib) {
@@ -1076,6 +1283,14 @@ fn gen_alu(
             _ => rand_imm(rng, ib),
         };
         v = (imm as u64) & mask(bits);
+    }
+    if form.family == "mov" {
+        // The old destination value only matters as something to overwrite:
+        // keep it different from the source so a skipped write shows.
+        a = rand_full(rng) & mask(bits);
+        if a == v {
+            a = !v & mask(bits);
+        }
     }
     let legacy8 = (dst == Opnd::Reg(8) && src == Opnd::Reg(8)).then(|| rng.chance(1, 2));
     let d = match dst {
@@ -1110,7 +1325,11 @@ fn gen_alu(
             let value = if matches!(dst, Opnd::Mem(_)) { a } else { v };
             b.put(ea, &value.to_le_bytes()[..size as usize])?;
             verify_ea = Some(ea);
-            if matches!(dst, Opnd::Mem(_)) { (Op::Mem(m), s) } else { (d, Op::Mem(m)) }
+            if matches!(dst, Opnd::Mem(_)) {
+                (Op::Mem(m), s)
+            } else {
+                (d, Op::Mem(m))
+            }
         }
         _ => (d, s),
     };
@@ -1141,7 +1360,11 @@ fn gen_lea(
     mode: AddrMode,
 ) -> Result<Option<GenCase>> {
     use AddrMode::*;
-    let code = if bits == 64 { Code::Lea_r64_m } else { Code::Lea_r32_m };
+    let code = if bits == 64 {
+        Code::Lea_r64_m
+    } else {
+        Code::Lea_r32_m
+    };
     let mut b = Builder::new(rng, defaults);
     let dst = pick_reg(rng, bits, None);
     let dst_val = rand_val(rng, bits);
@@ -1179,12 +1402,20 @@ fn gen_lea(
     let instr = if mode == Rip {
         // Two passes: the length (and so the next RIP) does not depend on the
         // target, the displacement does.
-        let probe = Instruction::with2(code, dst, mem_op(Register::RIP, Register::None, 1, CODE_ADDR as i64, 8))?;
+        let probe = Instruction::with2(
+            code,
+            dst,
+            mem_op(Register::RIP, Register::None, 1, CODE_ADDR as i64, 8),
+        )?;
         let Some(len) = encode(&probe).map(|b| b.len() as u64) else {
             return Ok(None);
         };
         let target = (CODE_ADDR + len).wrapping_add(disp as u64);
-        Instruction::with2(code, dst, mem_op(Register::RIP, Register::None, 1, target as i64, 8))?
+        Instruction::with2(
+            code,
+            dst,
+            mem_op(Register::RIP, Register::None, 1, target as i64, 8),
+        )?
     } else {
         let scale = if has_index { scale } else { 1 };
         Instruction::with2(code, dst, mem_op(base, index, scale, disp, displ_size))?
@@ -1198,7 +1429,12 @@ fn gen_lea(
     })
 }
 
-fn gen_case(rng: &mut Rng, form: &Form, idx: usize, defaults: &[u64; 16]) -> Result<Option<GenCase>> {
+fn gen_case(
+    rng: &mut Rng,
+    form: &Form,
+    idx: usize,
+    defaults: &[u64; 16],
+) -> Result<Option<GenCase>> {
     let mut b = Builder::new(rng, defaults);
     let plain = |form, b, instr, target, verify_ea| {
         finish(Finish {
@@ -1249,7 +1485,7 @@ fn gen_case(rng: &mut Rng, form: &Form, idx: usize, defaults: &[u64; 16]) -> Res
             plain(form, b, Instruction::with1(code, m)?, None, ea)
         }
         Kind::Jcc { code, cc, rel8 } => {
-            let taken = idx % 2 == 0;
+            let taken = idx.is_multiple_of(2);
             let mut tries = 0;
             while condition(*cc, b.rflags) != taken {
                 b.rflags = random_flags(rng);
@@ -1288,7 +1524,10 @@ fn gen_case(rng: &mut Rng, form: &Form, idx: usize, defaults: &[u64; 16]) -> Res
             match ea {
                 Some(ea) => b.put(ea, &target.to_le_bytes())?,
                 // RSP-relative: the operand is read before the push.
-                None => b.put(rsp.wrapping_add(m.displacement as u64), &target.to_le_bytes())?,
+                None => b.put(
+                    rsp.wrapping_add(m.displacement as u64),
+                    &target.to_le_bytes(),
+                )?,
             }
             let instr = Instruction::with1(Code::Call_rm64, m)?;
             plain(form, b, instr, Some(target), ea)
@@ -1337,7 +1576,11 @@ pub fn generate() -> Result<Vec<Family>> {
                     break case;
                 }
                 attempts += 1;
-                ensure!(attempts < 100, "{} case {idx}: no encodable operands", form.id);
+                ensure!(
+                    attempts < 100,
+                    "{} case {idx}: no encodable operands",
+                    form.id
+                );
             };
             family.cases.push(case);
         }

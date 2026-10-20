@@ -10,7 +10,11 @@ fn replay_l1_fixtures() {
     let summary = report.render();
     println!("{summary}");
     let total = report.total();
-    assert!(total.cases > 0, "no L1 fixtures found in {}", fixtures_dir().display());
+    assert!(
+        total.cases > 0,
+        "no L1 fixtures found in {}",
+        fixtures_dir().display()
+    );
     assert!(
         report.ok(),
         "{summary}\nL1 replay: {} of {} cases failed, {} unsupported",
