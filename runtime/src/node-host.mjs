@@ -1,5 +1,5 @@
 // Usage: node runtime/src/node-host.mjs target/spike
-// (Node < 24 needs --experimental-wasm-memory64.)
+// Needs Node 24+ (memory64 on by default; version pinned in .nvmrc).
 import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

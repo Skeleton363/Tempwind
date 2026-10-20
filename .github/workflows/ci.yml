@@ -50,7 +50,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: ${{ !cancelled() }}
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
 
       - name: npm ci
@@ -61,12 +61,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run test:node
 
+      # Tests use Playwright's pinned Chromium unless the CHROME_PATH repository
+      # variable names another browser binary on the runner.
       - name: Install Chromium
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && vars.CHROME_PATH == '' }}
         run: npx playwright install --with-deps chromium
 
       - name: Browser tests
         if: ${{ !cancelled() }}
+        env:
+          CHROME_PATH: ${{ vars.CHROME_PATH }}
         run: npm run test:browser
 
       - name: Emscripten probe

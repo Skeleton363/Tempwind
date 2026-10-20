@@ -2,6 +2,11 @@ import { defineConfig } from '@playwright/test';
 
 const PORT = Number(process.env.TEMPWIND_PORT ?? 4173);
 
+// Playwright finds its own Chromium (PLAYWRIGHT_BROWSERS_PATH in cloud
+// sessions, `npx playwright install` elsewhere). CHROME_PATH, when set and
+// non-empty, points the tests at another Chrome or Chromium binary instead.
+const CHROME_PATH = process.env.CHROME_PATH || undefined;
+
 // WebGPU on SwiftShader (software Vulkan). Verified on Chromium 141 in both
 // the headless shell (default) and new headless (channel 'chromium'). Without
 // these flags requestAdapter() returns null. --enable-features=Vulkan,
@@ -26,11 +31,18 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
   },
   projects: [
-    { name: 'chromium', testIgnore: /webgpu\.spec/, use: { browserName: 'chromium' } },
+    {
+      name: 'chromium',
+      testIgnore: /webgpu\.spec/,
+      use: { browserName: 'chromium', launchOptions: { executablePath: CHROME_PATH } },
+    },
     {
       name: 'webgpu',
       testMatch: /webgpu\.spec/,
-      use: { browserName: 'chromium', launchOptions: { args: WEBGPU_ARGS } },
+      use: {
+        browserName: 'chromium',
+        launchOptions: { executablePath: CHROME_PATH, args: WEBGPU_ARGS },
+      },
     },
   ],
 });
