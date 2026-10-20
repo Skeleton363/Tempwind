@@ -9,6 +9,13 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+clap.workspace = true
+iced-x86.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wasmtime.workspace = true
 x64wasm.workspace = true
 
 [lints]

@@ -63,3 +63,61 @@ pub const GPR_NAMES: [&str; 16] = [
     "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
     "r14", "r15",
 ];
+
+/// A guest CPU state block, in host form.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuState {
+    pub gpr: [u64; 16],
+    pub rip: u64,
+    pub rflags: u64,
+    pub exit: u32,
+}
+
+impl CpuState {
+    /// Serializes to the in-memory layout (`STATE_SIZE` bytes, reserved fields zero).
+    pub fn to_bytes(&self) -> [u8; STATE_SIZE as usize] {
+        let mut out = [0u8; STATE_SIZE as usize];
+        for (i, value) in self.gpr.iter().enumerate() {
+            let at = gpr_offset(i as u32) as usize;
+            out[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        out[STATE_RIP as usize..][..8].copy_from_slice(&self.rip.to_le_bytes());
+        out[STATE_RFLAGS as usize..][..8].copy_from_slice(&self.rflags.to_le_bytes());
+        out[STATE_EXIT as usize..][..4].copy_from_slice(&self.exit.to_le_bytes());
+        out
+    }
+
+    /// Parses the in-memory layout. `bytes` must hold at least `STATE_SIZE` bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let u64_at = |at: u64| u64::from_le_bytes(bytes[at as usize..][..8].try_into().unwrap());
+        let mut gpr = [0u64; 16];
+        for (i, value) in gpr.iter_mut().enumerate() {
+            *value = u64_at(gpr_offset(i as u32));
+        }
+        CpuState {
+            gpr,
+            rip: u64_at(STATE_RIP),
+            rflags: u64_at(STATE_RFLAGS),
+            exit: u32::from_le_bytes(bytes[STATE_EXIT as usize..][..4].try_into().unwrap()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_round_trips() {
+        let mut state = CpuState {
+            rip: 0x1_4000_1000,
+            rflags: 0x202 | flags::CF,
+            exit: EXIT_LEFT_CODE,
+            ..CpuState::default()
+        };
+        for (i, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0x1111_1111_1111_1111u64.wrapping_mul(i as u64 + 1);
+        }
+        assert_eq!(CpuState::from_bytes(&state.to_bytes()), state);
+    }
+}
