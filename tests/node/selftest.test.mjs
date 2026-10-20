@@ -32,7 +32,7 @@ test('runCase passes on matching expectations', async () => {
 });
 
 test('runCase passes with shared memory', async () => {
-  const r = await runCase(selfTestModule(), mkSpec(good), { shared: true });
+  const r = await runCase(selfTestModule({ shared: true }), mkSpec(good), { shared: true });
   assert.equal(r.ok, true, r.diffs.join('\n'));
 });
 

@@ -73,7 +73,7 @@ export const op = {
  * Self-test module following the ABI: run(state) sets RAX=0x1234_5678_9abc_def0,
  * stores rip=SENTINEL, stores exit=1 and returns 1.
  */
-export function selfTestModule() {
+export function selfTestModule({ shared = false } = {}) {
   const body = [
     ...op.localGet(0), ...op.i64Const(0x123456789abcdef0n), ...op.i64Store(0x000),
     ...op.localGet(0), ...op.i64Const(0x7fffffff0000n), ...op.i64Store(0x080),
@@ -81,7 +81,7 @@ export function selfTestModule() {
     ...op.i32Const(1),
   ];
   return buildModule({
-    memory: { min: 1 },
+    memory: shared ? { min: 1, max: 262144, shared: true } : { min: 1 },
     funcs: [{ name: 'run', params: [T.i64], results: [T.i32], body }],
   });
 }
