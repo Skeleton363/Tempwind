@@ -66,14 +66,19 @@ done
 # shellcheck disable=SC2206
 extra_args=(${EMCC_DOCKER_ARGS:-})
 
+# The image's entrypoint sources emsdk_env.sh, which unsets EM_CACHE, so we
+# replace it with one that sources emsdk_env.sh and then sets EM_CACHE.
+# shellcheck disable=SC2016
+entry='EMSDK_QUIET=1 . /emsdk/emsdk_env.sh >/dev/null 2>&1; export EM_CACHE=/emcache; exec "$@"'
+
 exec docker run --rm "${tty_args[@]}" \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
-  -e EM_CACHE=/emcache \
   "${env_args[@]}" \
   -v "$repo_root:/src" \
   -v "$cache_dir:/emcache" \
   -w "$workdir" \
   "${extra_args[@]}" \
+  --entrypoint /bin/bash \
   "$image" \
-  "$tool" "$@"
+  -c "$entry" emcc.sh "$tool" "$@"

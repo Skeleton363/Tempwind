@@ -522,5 +522,14 @@ mod tests {
         assert_eq!(h, header);
         assert_eq!(f, fixture);
         assert!(diff(&f, &fixture).is_empty());
+
+        let mut changed = fixture.clone();
+        changed.cases[0].output.rflags ^= 1;
+        let d = diff(&fixture, &changed);
+        assert_eq!(d.len(), 1);
+        assert!(d[0].contains("output.rflags"), "{d:?}");
+        assert!(diff_inputs(&fixture, &changed).is_empty());
+        changed.cases[0].input.mem[0].bytes[3] ^= 0xff;
+        assert_eq!(diff_inputs(&fixture, &changed).len(), 1);
     }
 }
