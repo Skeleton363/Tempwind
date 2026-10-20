@@ -1,0 +1,10 @@
+block 0x140001000:
+  0x140001000: add rax,rbx
+    t0 = add rax, rbx
+    flags.add64 rax, rbx, t0
+    rax = t0
+  0x140001003: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> jump [t0]

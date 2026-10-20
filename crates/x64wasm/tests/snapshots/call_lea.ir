@@ -1,0 +1,35 @@
+block 0x1000:
+  0x1000: push rbx
+    t0 = sub rsp, 0x8
+    store64 [t0], rbx
+    rsp = t0
+  0x1001: mov rbx,rcx
+    rbx = rcx
+  0x1004: call 000000000000100Bh
+    t0 = sub rsp, 0x8
+    store64 [t0], 0x1009
+    rsp = t0
+  -> jump 0x100b
+
+block 0x1009:
+  0x1009: pop rbx
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+    rbx = t0
+  0x100a: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> jump [t0]
+
+block 0x100b:
+  0x100b: lea rax,[rbx+rbx*2]
+    t0 = shl rbx, 0x1
+    t1 = add rbx, t0
+    rax = t1
+  0x100f: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> jump [t0]

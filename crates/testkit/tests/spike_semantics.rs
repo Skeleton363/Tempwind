@@ -108,7 +108,7 @@ fn unsupported_forms() {
         ("pop r16", vec![0x66, 0x58]),
         ("push imm16", vec![0x66, 0x6a, 0x01]),
         ("mov from segment register", vec![0x8c, 0xd8]), // mov eax, ds
-        ("invalid opcode", vec![0x06]),                 // push es: invalid in 64-bit mode
+        ("invalid opcode", vec![0x06, 0x90]),           // push es: invalid in 64-bit mode
         ("retf", vec![0xcb]),
         ("int3", vec![0xcc]),
     ];
@@ -130,6 +130,9 @@ fn truncated_instruction_at_region_end_leaves_code() {
     assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
     assert_eq!(out.rip, BASE + 5);
     assert_eq!(out.gpr[RAX], 1);
+    // The entry itself is cut off.
+    let out = run(&[0x48, 0xb8, 0x11], &state(&[]));
+    assert_eq!((out.exit, out.rip), (abi::EXIT_LEFT_CODE, BASE));
 }
 
 #[test]

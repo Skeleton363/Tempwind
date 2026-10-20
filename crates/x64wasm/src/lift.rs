@@ -194,7 +194,11 @@ pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<
         let mut pc = leader;
         let term = loop {
             let Some(decoded) = lifter.decode(pc) else {
-                break Term::Jump(pc);
+                // Outside the region or cut off by its end.
+                break Term::Exit {
+                    reason: abi::EXIT_LEFT_CODE,
+                    rip: pc,
+                };
             };
             insns.push(decoded.insn.clone());
             let next = pc.wrapping_add(decoded.insn.len as u64);

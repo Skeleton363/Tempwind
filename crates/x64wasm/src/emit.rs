@@ -84,6 +84,10 @@ struct RunEmitter<'p> {
     labels: Vec<Label>,
     /// The lazy flag record kind known statically at this point, if any.
     known_cc: Option<(FlagOp, Width)>,
+    /// The current op's result stays on the stack for the next op.
+    keep: Option<Temp>,
+    /// A temporary that is on top of the wasm stack instead of in its local.
+    on_stack: Option<Temp>,
     temps: u32,
     l_cc_op: u32,
     l_idx: u32,
@@ -104,7 +108,14 @@ impl RunEmitter<'_> {
         L_TEMP0 + t.0
     }
 
-    fn value(&self, f: &mut InstructionSink<'_>, v: Value) {
+    fn value(&mut self, f: &mut InstructionSink<'_>, v: Value) {
+        if let Value::Temp(t) = v
+            && self.on_stack == Some(t)
+        {
+            // Left on the stack by the previous op.
+            self.on_stack = None;
+            return;
+        }
         match v {
             Value::Reg(r) => f.local_get(L_GPR0 + r as u32),
             Value::Temp(t) => f.local_get(self.temp(t)),
@@ -112,11 +123,61 @@ impl RunEmitter<'_> {
         };
     }
 
+    /// Stores an op's result, unless it is marked to stay on the stack.
+    fn set_temp(&mut self, f: &mut InstructionSink<'_>, t: Temp) {
+        if self.keep == Some(t) {
+            self.keep = None;
+            self.on_stack = Some(t);
+        } else {
+            f.local_set(self.temp(t));
+        }
+    }
+
+    /// Emits one instruction's ops (and, for the last instruction of a
+    /// block, the terminator's operand), keeping single-use temporaries on
+    /// the wasm stack when the next op consumes them first.
+    fn insn(&mut self, f: &mut InstructionSink<'_>, ops: &[Op], term: Option<&Term>) {
+        let mut uses: HashMap<u32, u32> = HashMap::new();
+        let mut count = |v: Value| {
+            if let Value::Temp(t) = v {
+                *uses.entry(t.0).or_default() += 1;
+            }
+        };
+        for op in ops {
+            for v in operands(op) {
+                count(v);
+            }
+        }
+        let term_value = match term {
+            Some(Term::Indirect(v)) => Some(*v),
+            _ => None,
+        };
+        if let Some(v) = term_value {
+            count(v);
+        }
+        for (i, op) in ops.iter().enumerate() {
+            // Dead flag records emit nothing, so look past them.
+            let next = ops[i + 1..]
+                .iter()
+                .find(|o| !matches!(o, Op::Flags { live: false, .. }));
+            let next_first = match next {
+                Some(next) => first_operand(next),
+                None => term_value,
+            };
+            self.keep = match (defined(op), next_first) {
+                (Some(t), Some(Value::Temp(u))) if t == u && uses.get(&t.0) == Some(&1) => Some(t),
+                _ => None,
+            };
+            self.op(f, op);
+            debug_assert!(self.keep.is_none());
+        }
+    }
+
     fn op(&mut self, f: &mut InstructionSink<'_>, op: &Op) {
         match *op {
             Op::Mov { dst, src } => {
                 self.value(f, src);
-                f.local_set(self.temp(dst));
+                self.set_temp(f, dst);
             }
             Op::Bin { dst, op, a, b } => {
                 self.value(f, a);
@@ -130,7 +191,7 @@ impl RunEmitter<'_> {
                     BinOp::Shl => f.i64_shl(),
                     BinOp::ShrU => f.i64_shr_u(),
                 };
-                f.local_set(self.temp(dst));
+                self.set_temp(f, dst);
             }
             Op::Load { dst, width, addr } => {
                 self.value(f, addr);
@@ -140,7 +201,7 @@ impl RunEmitter<'_> {
                     Width::W32 => f.i64_load32_u(mem(0)),
                     Width::W64 => f.i64_load(mem(0)),
                 };
-                f.local_set(self.temp(dst));
+                self.set_temp(f, dst);
             }
             Op::Store { width, addr, value } => {
                 self.value(f, addr);
@@ -365,10 +426,9 @@ impl RunEmitter<'_> {
             f.loop_(BlockType::Empty);
             self.labels.push(Label::SelfLoop);
         }
-        for insn in &block.insns {
-            for op in &insn.ops {
-                self.op(f, op);
-            }
+        for (i, insn) in block.insns.iter().enumerate() {
+            let last = i + 1 == block.insns.len();
+            self.insn(f, &insn.ops, last.then_some(&block.term));
         }
         let next = (k + 1 < self.prog.blocks.len()).then_some(k + 1);
         match block.term {
@@ -480,6 +540,44 @@ impl RunEmitter<'_> {
         f.i32_store(mem(abi::STATE_EXIT));
         f.local_get(self.l_reason);
         f.end();
+    }
+}
+
+/// The temporary an op defines.
+fn defined(op: &Op) -> Option<Temp> {
+    match *op {
+        Op::Mov { dst, .. } | Op::Bin { dst, .. } | Op::Load { dst, .. } => Some(dst),
+        _ => None,
+    }
+}
+
+/// The operand an op pushes first (nothing before it stays on the stack).
+fn first_operand(op: &Op) -> Option<Value> {
+    match *op {
+        Op::Mov { src, .. } => Some(src),
+        Op::Bin { a, .. } => Some(a),
+        Op::Load { addr, .. } | Op::Store { addr, .. } => Some(addr),
+        Op::SetReg { value, .. } => Some(value),
+        Op::Flags { a, live: true, .. } => Some(a),
+        Op::Flags { live: false, .. } => None,
+    }
+}
+
+/// Every operand an op reads.
+fn operands(op: &Op) -> Vec<Value> {
+    match *op {
+        Op::Mov { src, .. } => vec![src],
+        Op::Bin { a, b, .. } => vec![a, b],
+        Op::Load { addr, .. } => vec![addr],
+        Op::Store { addr, value, .. } => vec![addr, value],
+        Op::SetReg { value, .. } => vec![value],
+        Op::Flags { a, b, r, live, .. } => {
+            if live {
+                vec![a, b, r]
+            } else {
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -733,6 +831,8 @@ pub fn emit(prog: &Program, opts: &Options) -> Vec<u8> {
         index: prog.index_map(),
         labels: Vec::new(),
         known_cc: None,
+        keep: None,
+        on_stack: None,
         temps,
         l_cc_op,
         l_idx: l_cc_op + 1,
