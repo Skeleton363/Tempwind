@@ -33,7 +33,7 @@ function mergeRuns(all) {
   const med = (xs) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
   return all[0].map((r, i) => {
     const out = { ...r, runs: all.length };
-    for (const k of ['hot', 'seq', 'rand', 'chase', 'store']) {
+    for (const k of ['hot', 'seq', 'rand', 'chase', 'hotst', 'store']) {
       out[k] = med(all.map((run) => run[i][k]));
       out[`${k}All`] = all.map((run) => run[i][k]);
     }
@@ -104,10 +104,10 @@ function runInBrowser(path, noGrowth) {
 
 function report(env, results, growth, mc) {
   console.log(`# ${env.runtime}${env.v8 ? ` (V8 ${env.v8})` : ''} ${env.execArgv ?? ''}`);
-  console.log(`ns per access, median of ${results[0]?.runs ?? 1} run(s) x ${reps} repetitions (hot/seq/store 32 Mi accesses, rand 8 Mi, chase 4 Mi).`);
+  console.log(`ns per access, median of ${results[0]?.runs ?? 1} run(s) x ${reps} repetitions (hot/seq/hotst/store 32 Mi accesses, rand 8 Mi, chase 4 Mi).`);
   const base = results.find((r) => r.variant === 'm64');
-  const K = ['hot', 'seq', 'rand', 'chase', 'store'];
-  const digits = { hot: 2, seq: 2, rand: 1, chase: 0, store: 2 };
+  const K = ['hot', 'seq', 'rand', 'chase', 'hotst', 'store'];
+  const digits = { hot: 2, seq: 2, rand: 1, chase: 0, hotst: 2, store: 2 };
   console.log(`\n| variant | ${K.join(' | ')} | ${K.map((k) => `${k} vs m64`).join(' | ')} |`);
   console.log(`|---|${K.map(() => '---|').join('')}${K.map(() => '---|').join('')}`);
   for (const r of results) {

@@ -21,7 +21,7 @@
 //                1-byte-per-4-KiB page-flag table (self-modifying-code and
 //                write-watch detection)
 //
-// Each module runs five loops over a 256 MiB guest buffer:
+// Each module runs six loops over a 256 MiB guest buffer:
 //
 //   hot    8-byte loads cycling through a 32 KiB window (L1-resident), so the
 //          cost of address computation is not hidden by DRAM bandwidth
@@ -29,6 +29,8 @@
 //   rand   independent loads at LCG-random 8-byte slots, summed
 //   chase  dependent loads following a random cyclic permutation (each load
 //          returns the guest VA of the next slot)
+//   hotst  8-byte stores cycling through a 32 KiB window (runs after chase;
+//          it overwrites the start of the chain)
 //   store  sequential 8-byte stores (runs last; it overwrites the chain)
 //
 // Identity variants place the buffer at guest VA == offset 0x500_0000. Table
@@ -271,6 +273,19 @@
       ...op.get(L.va),
     ];
 
+    // hotst(base, n): store i at base + ((i * 8) & 0x7ff8); return the last va
+    const hotst = [
+      ...initTlb1,
+      ...op.get(L.p1), ...op.set(L.i),
+      ...op.block(), ...op.loop(),
+      ...op.get(L.i), ...op.i64_eqz, ...op.br_if(1),
+      ...op.get(L.i), ...op.i64c(3), ...op.i64_shl, ...op.i64c(0x7ff8), ...op.i64_and,
+      ...op.get(L.p0), ...op.i64_add, ...op.set(L.va),
+      ...trStore(L.va), ...op.get(L.i), ...op.i64_store(0),
+      ...op.get(L.i), ...op.i64c(1), ...op.i64_sub, ...op.set(L.i),
+      ...op.br(0), ...op.end, ...op.end,
+      ...op.get(L.va),
+    ];
     // store(base, n): store va at va for n sequential slots; return final va
     const store = [
       ...initTlb1,
@@ -286,8 +301,8 @@
     ];
 
     const type = [0x60, ...vec([[I64], [I64]]), ...vec([[I64]])];
-    const funcs = [hot, seq, rand, chase, store];
-    const names = ['hot', 'seq', 'rand', 'chase', 'store'];
+    const funcs = [hot, seq, rand, chase, hotst, store];
+    const names = ['hot', 'seq', 'rand', 'chase', 'hotst', 'store'];
     const bodies = funcs.map((code) => {
       const body = [...vec(LOCALS.map(([n, t]) => [...uleb(n), t])), ...code, ...op.end];
       return [...uleb(body.length), ...body];
@@ -363,7 +378,7 @@
   function runVariant(variant, cycle, opts = {}) {
     const now = opts.now || (() => performance.now());
     const reps = opts.reps ?? 5;
-    const counts = { hot: BigInt(SLOTS), seq: BigInt(SLOTS), rand: 8n << 20n, chase: 4n << 20n, store: BigInt(SLOTS) };
+    const counts = { hot: BigInt(SLOTS), seq: BigInt(SLOTS), rand: 8n << 20n, chase: 4n << 20n, hotst: BigInt(SLOTS), store: BigInt(SLOTS) };
     const bytes = buildModule(variant);
     const mod = new WebAssembly.Module(bytes);
     const inst = new WebAssembly.Instance(mod, {});
@@ -371,7 +386,7 @@
     const vaBase = setup(ex.memory, variant, cycle);
     const out = { variant, wasmBytes: bytes.length };
     const checks = {};
-    for (const name of ['hot', 'seq', 'rand', 'chase', 'store']) {
+    for (const name of ['hot', 'seq', 'rand', 'chase', 'hotst', 'store']) {
       const n = counts[name];
       const fn = ex[name];
       fn(vaBase, n); // warm-up (also tiers up)
@@ -385,7 +400,7 @@
       out[name] = (median(times) * 1e6) / Number(n); // ns per access
       // Results must not depend on the addressing scheme (seq/rand sum the
       // slot values, which differ by vaBase * n; normalise that out).
-      checks[name] = name === 'chase' || name === 'store' ? (r - vaBase) : (r - vaBase * n);
+      checks[name] = name === 'chase' || name === 'store' || name === 'hotst' ? (r - vaBase) : (r - vaBase * n);
     }
     out.checks = Object.fromEntries(Object.entries(checks).map(([k, x]) => [k, BigInt.asUintN(64, x).toString(16)]));
     return out;

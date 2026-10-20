@@ -2,12 +2,13 @@
 
 This benchmark measures the cost of the guest-memory options in `docs/design/guest-memory.md`: identity mapping (option A) against a translation table (option B), plus hybrids and the extra checks option A may need.
 
-`core.js` hand-assembles one small WebAssembly module per variant, with no toolchain needed. Each module runs five loops over a 256 MiB guest buffer:
+`core.js` hand-assembles one small WebAssembly module per variant, with no toolchain needed. Each module runs six loops over a 256 MiB guest buffer:
 
 - **hot**: loads cycling through a 32 KiB window. The window stays in L1, so this shows pure address-computation cost.
 - **seq**: sequential 8-byte loads.
 - **rand**: independent loads at LCG-random slots.
 - **chase**: dependent loads along a random cycle.
+- **hotst**: stores cycling through the same 32 KiB window.
 - **store**: sequential 8-byte stores.
 
 It reports the median ns per access.
