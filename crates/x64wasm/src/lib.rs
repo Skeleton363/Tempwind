@@ -4,6 +4,9 @@
 //! The module ABI is in [`abi`] and `docs/design/abi.md`.
 
 pub mod abi;
+pub mod emit;
+pub mod ir;
+pub mod lift;
 
 use std::fmt;
 
@@ -28,8 +31,10 @@ pub struct Translation {
     pub wasm: Vec<u8>,
     /// Guest addresses of every translated basic block, sorted.
     pub blocks: Vec<u64>,
-    /// Human-readable IR dump.
+    /// Human-readable IR dump (empty from [`translate_without_dump`]).
     pub ir: String,
+    /// Number of guest instructions translated.
+    pub guest_instructions: usize,
 }
 
 /// Translation errors.
@@ -39,6 +44,8 @@ pub enum Error {
     EntryOutsideRegion(u64),
     /// Not implemented yet.
     Unimplemented(&'static str),
+    /// No entry points were given.
+    NoEntries,
 }
 
 impl fmt::Display for Error {
@@ -48,6 +55,7 @@ impl fmt::Display for Error {
                 write!(f, "entry {addr:#x} is outside the code region")
             }
             Error::Unimplemented(what) => write!(f, "not implemented: {what}"),
+            Error::NoEntries => write!(f, "no entry points"),
         }
     }
 }
@@ -62,6 +70,42 @@ pub fn translate(
     entries: &[u64],
     opts: &Options,
 ) -> Result<Translation, Error> {
-    let _ = (region, entries, opts);
-    Err(Error::Unimplemented("translate"))
+    translate_impl(region, entries, opts, true)
+}
+
+/// Like [`translate`] but skips the disassembly and IR dump (faster; used by
+/// throughput measurements and hosts that never look at the dump).
+pub fn translate_without_dump(
+    region: CodeRegion<'_>,
+    entries: &[u64],
+    opts: &Options,
+) -> Result<Translation, Error> {
+    translate_impl(region, entries, opts, false)
+}
+
+/// Decodes and lowers into the IR, with flag liveness applied.
+pub fn lift(region: CodeRegion<'_>, entries: &[u64]) -> Result<ir::Program, Error> {
+    let mut prog = lift::lift(region, entries, true)?;
+    prog.analyze_flags();
+    Ok(prog)
+}
+
+fn translate_impl(
+    region: CodeRegion<'_>,
+    entries: &[u64],
+    opts: &Options,
+    dump: bool,
+) -> Result<Translation, Error> {
+    if entries.is_empty() {
+        return Err(Error::NoEntries);
+    }
+    let mut prog = lift::lift(region, entries, dump)?;
+    prog.analyze_flags();
+    let wasm = emit::emit(&prog, opts);
+    Ok(Translation {
+        wasm,
+        blocks: prog.blocks.iter().map(|b| b.addr).collect(),
+        ir: if dump { prog.dump() } else { String::new() },
+        guest_instructions: prog.insn_count(),
+    })
 }
