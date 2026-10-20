@@ -14,6 +14,17 @@ Runs unmodified 64-bit Windows programs in the browser: x86-64 to WebAssembly tr
 
 ## Commands
 Keep this section current; add each command when it first works.
+- Lint and unit/integration tests (includes L1 fixture replay, spike tests in wasmtime, L5 snapshots): `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+- L1 oracle (x86-64 Linux only): `cargo run -p testkit --release -- record` re-records `crates/testkit/fixtures/l1/`; `-- record --check` diffs a fresh recording against them; `-- replay` prints a per-family summary.
+- Spike programs for the JS hosts: `cargo run -p testkit --release -- spike --out target/spike`
+- Translator CLI: `cargo run -p x64wasm-cli -- translate|ir|wat --base 0x140001000 --hex "48 01 d8 c3" [-o out.wasm] [--shared]`
+- Regenerate IR/WAT snapshots: `UPDATE_SNAPSHOTS=1 cargo test -p x64wasm --test snapshots`
+- Translator measurements: `cargo test -p testkit --release --test spike_bench -- --ignored --nocapture --test-threads=1`
+- JS: `npm ci`, then `npm run test:node` (adds `--experimental-wasm-memory64` on Node 22) and `npm run test:browser` (Playwright 1.56.1, headless Chromium 141; both need `target/spike`). Node 24 locally: `npx -y node@24 tests/node/run-node-tests.mjs`
+- Chromium here is Playwright's, at `/opt/pw-browsers` (`PLAYWRIGHT_BROWSERS_PATH` is preset); `/opt/chrome` is empty. Never run `playwright install` in a session.
+- Docker in a session: `service docker start` fails on a ulimit error; use `nohup dockerd >/tmp/dockerd.log 2>&1 &`.
+- MinGW test program: `tests/native/build.sh` builds `target/native/hello.exe`; the expected output is `tests/native/hello.expected`.
+- Release assets: `scripts/fetch-artifact.sh TAG ASSET [DIR]` or `scripts/fetch-artifact.sh --latest PREFIX ASSET [DIR]` (sha256-verified). Releases are published by `.github/workflows/artifacts.yml` as `<artifact>-<sha7>`.
 
 ## How we work
 - One phase at a time, in order. Before starting, read docs/plan.md and the latest docs/status/ note.
