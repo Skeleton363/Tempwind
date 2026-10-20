@@ -1,0 +1,6 @@
+# LF everywhere, including Windows checkouts (runners default to core.autocrlf=true):
+# expected-output files are compared byte for byte and shell scripts must stay LF.
+* text=auto eol=lf
+*.exe binary
+*.wasm binary
+*.png binary
