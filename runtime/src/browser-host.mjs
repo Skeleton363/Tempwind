@@ -19,13 +19,22 @@ export async function runInPage(base, opts = {}) {
 
 /** Runs the manifest inside a module Worker (src/worker.mjs). */
 export function runInWorker(base, opts = {}) {
+  return workerCall({ base: new URL(base, location.href).href, opts }, 'results');
+}
+
+/** Runs one case (wasm bytes + spec) inside a module Worker. */
+export function runCaseInWorker(wasm, spec, opts = {}) {
+  return workerCall({ wasm, spec, opts }, 'result');
+}
+
+function workerCall(message, key) {
   return new Promise((resolve, reject) => {
     const w = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
     w.onmessage = (e) => {
       w.terminate();
-      if (e.data.error) reject(new Error(e.data.error)); else resolve(e.data.results);
+      if (e.data.error) reject(new Error(e.data.error)); else resolve(e.data[key]);
     };
     w.onerror = (e) => { w.terminate(); reject(new Error(`worker error: ${e.message}`)); };
-    w.postMessage({ base: new URL(base, location.href).href, opts });
+    w.postMessage(message);
   });
 }
