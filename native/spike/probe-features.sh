@@ -17,10 +17,10 @@ sep=''
 for p in $probes; do
   log="$outdir/$p.log"
   case "$p" in
-    PROBE_LINK_*) "$@" -Werror -D"$p" "$src" -o "$outdir/$p.out" >"$log" 2>&1 ;;
-    *)            "$@" -Werror -D"$p" -c "$src" -o "$outdir/$p.o" >"$log" 2>&1 ;;
+    PROBE_LINK_*) args=("$src" -o "$outdir/$p.out") ;;
+    *)            args=(-c "$src" -o "$outdir/$p.o") ;;
   esac
-  if [ $? -eq 0 ]; then r=true; else r=false; fi
+  if "$@" -Werror -D"$p" "${args[@]}" >"$log" 2>&1; then r=true; else r=false; fi
   printf '%s\n  "%s": %s' "$sep" "${p#PROBE_}" "$r"
   sep=','
 done

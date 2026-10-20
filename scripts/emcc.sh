@@ -74,11 +74,11 @@ entry='EMSDK_QUIET=1 . /emsdk/emsdk_env.sh >/dev/null 2>&1; export EM_CACHE=/emc
 exec docker run --rm "${tty_args[@]}" \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
-  "${env_args[@]}" \
+  ${env_args[@]+"${env_args[@]}"} \
   -v "$repo_root:/src" \
   -v "$cache_dir:/emcache" \
   -w "$workdir" \
-  "${extra_args[@]}" \
+  ${extra_args[@]+"${extra_args[@]}"} \
   --entrypoint /bin/bash \
   "$image" \
   -c "$entry" emcc.sh "$tool" "$@"

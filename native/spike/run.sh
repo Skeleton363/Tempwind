@@ -38,6 +38,7 @@ native_flags=(-std=gnu11 -O1 -Wall -Wextra -Werror -pthread)
 # ---------------------------------------------------------------- wasm64
 # -sMEMORY64=1 is what the plan names; Emscripten 6 calls it deprecated in
 # favour of -m64 (same code), hence -Wno-deprecated.
+# shellcheck disable=SC2054  # the comma in -sENVIRONMENT=node,worker is intended
 em_flags=(-std=gnu11 -O1 -Wall -Wextra -Werror -Wno-deprecated
           -sMEMORY64=1 -pthread -sPTHREAD_POOL_SIZE=4 -sEXIT_RUNTIME=1
           -sENVIRONMENT=node,worker)

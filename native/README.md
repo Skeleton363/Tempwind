@@ -22,7 +22,7 @@ Notes:
 
 - Emscripten 6 marks `-sMEMORY64=1` as deprecated in favour of `-m64`; both produce identical objects. We pass `-Wno-deprecated` so that `-Werror` builds still pass.
 - Name Node outputs `.cjs`. The repository `package.json` sets `"type": "module"`, and Emscripten's Node output is CommonJS.
-- Host Node 22.22 can't run Emscripten 6 memory64 output. It has V8 12.4, which implements a pre-standard memory64 JS API (`index: 'i64'` with Number sizes, not `address: 'i64'` with BigInt) and an older table64 binary encoding. Converting the API calls in JS is not enough: compilation still fails with `invalid table elements limits flags`. Use the image's Node 24.19, or Node 24+ on the host. Modules that define their own memory and have no table64, like ours and the translator's, still run on Node 22.
+- Host Node 22.22 can't run Emscripten 6 memory64 output. It has V8 12.4, which implements a pre-standard memory64 JS API (`index: 'i64'` with Number sizes, not `address: 'i64'` with BigInt) and an older table64 binary encoding. Converting the API calls in JS is not enough: compilation still fails with `invalid table elements limits flags`. Use the image's Node 24.19, or Node 24+ on the host. Hand-made memory64 modules without table64, like the benchmark's and the translator's, still run on Node 22, provided the JS host creates any imported memory with the old descriptor (`tests/bench/memory/core.js` `newMemory64` shows the fallback).
 
 ## Spike (Phase 0, item 6)
 
