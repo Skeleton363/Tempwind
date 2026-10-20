@@ -47,7 +47,8 @@ test('cross-origin isolated shared memory64 + Atomics wake across a Worker', asy
       }
       lat.push(performance.now() - t);
     }
-    await next('done');
+    const done = await next('done');
+    if (done.error) throw new Error('worker: ' + done.error);
     worker.terminate();
     lat.sort((a, b) => a - b);
     out.rtt = { n: lat.length, medianMs: lat[lat.length >> 1], p95Ms: lat[Math.floor(lat.length * 0.95)], minMs: lat[0] };

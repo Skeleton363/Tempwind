@@ -12,9 +12,11 @@ self.onmessage = (e) => {
   self.postMessage({ type: 'woke', waitResult: r, value: load(0n), tid: 'worker' });
 
   // Phase 2: ping-pong. Main bumps i32[0] to i; worker echoes it to i32[1].
-  let last = load(0n);
+  let last = 42; // the value the single wake delivered (main may already have advanced it)
   for (let i = 0; i < rounds; i++) {
-    while (load(0n) === last) wait(0n, last, 10_000_000_000n);
+    while (load(0n) === last) {
+      if (wait(0n, last, 10_000_000_000n) === 2) { self.postMessage({ type: 'done', error: 'timed out' }); return; }
+    }
     last = load(0n);
     Atomics.store(i32, 1, last);
     Atomics.notify(i32, 1);
