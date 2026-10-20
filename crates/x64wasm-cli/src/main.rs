@@ -75,7 +75,7 @@ fn parse_u64(s: &str) -> Result<u64, String> {
 
 fn parse_hex(s: &str) -> Result<Vec<u8>> {
     let digits: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         bail!("odd number of hex digits");
     }
     (0..digits.len())

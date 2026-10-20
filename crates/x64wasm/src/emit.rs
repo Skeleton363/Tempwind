@@ -96,11 +96,21 @@ struct RunEmitter<'p> {
 
 impl RunEmitter<'_> {
     fn depth(&self, label: Label) -> u32 {
-        let pos = self
-            .labels
-            .iter()
-            .rposition(|&l| l == label)
-            .expect("label in scope");
+        // The outer labels sit at fixed stack positions (pushed in `run`:
+        // Exit, Dispatch, Block(N-1) .. Block(0), Miss); only the few labels
+        // inside a block are searched.
+        let n = self.prog.blocks.len();
+        let pos = match label {
+            Label::Exit => 0,
+            Label::Dispatch => 1,
+            Label::Block(j) => 2 + (n - 1 - j),
+            _ => self
+                .labels
+                .iter()
+                .rposition(|&l| l == label)
+                .expect("label in scope"),
+        };
+        debug_assert_eq!(self.labels.get(pos), Some(&label), "label in scope");
         (self.labels.len() - 1 - pos) as u32
     }
 
@@ -137,14 +147,16 @@ impl RunEmitter<'_> {
     /// block, the terminator's operand), keeping single-use temporaries on
     /// the wasm stack when the next op consumes them first.
     fn insn(&mut self, f: &mut InstructionSink<'_>, ops: &[Op], term: Option<&Term>) {
-        let mut uses: HashMap<u32, u32> = HashMap::new();
+        let mut uses = [0u8; 32];
         let mut count = |v: Value| {
-            if let Value::Temp(t) = v {
-                *uses.entry(t.0).or_default() += 1;
+            if let Value::Temp(t) = v
+                && let Some(u) = uses.get_mut(t.0 as usize)
+            {
+                *u = u.saturating_add(1);
             }
         };
         for op in ops {
-            for v in operands(op) {
+            for v in operands(op).into_iter().flatten() {
                 count(v);
             }
         }
@@ -165,7 +177,9 @@ impl RunEmitter<'_> {
                 None => term_value,
             };
             self.keep = match (defined(op), next_first) {
-                (Some(t), Some(Value::Temp(u))) if t == u && uses.get(&t.0) == Some(&1) => Some(t),
+                (Some(t), Some(Value::Temp(u))) if t == u && uses.get(t.0 as usize) == Some(&1) => {
+                    Some(t)
+                }
                 _ => None,
             };
             self.op(f, op);
@@ -226,6 +240,9 @@ impl RunEmitter<'_> {
                 live,
             } => {
                 if !live {
+                    // Nothing can read these flags; the cc locals keep the
+                    // previous record, so stop treating it as known.
+                    self.known_cc = None;
                     return;
                 }
                 f.i32_const(op.cc_op(width) as i32);
@@ -389,7 +406,15 @@ impl RunEmitter<'_> {
     fn goto(&mut self, f: &mut InstructionSink<'_>, target: u64, k: usize, fall: Option<usize>) {
         match self.index.get(&target).copied() {
             Some(j) if Some(j) == fall => {}
-            Some(j) if j == k && self.labels.contains(&Label::SelfLoop) => {
+            Some(j)
+                if j == k
+                    && self
+                        .labels
+                        .iter()
+                        .rev()
+                        .take(2)
+                        .any(|&l| l == Label::SelfLoop) =>
+            {
                 f.br(self.depth(Label::SelfLoop));
             }
             Some(j) if j > k => {
@@ -564,20 +589,21 @@ fn first_operand(op: &Op) -> Option<Value> {
 }
 
 /// Every operand an op reads.
-fn operands(op: &Op) -> Vec<Value> {
+fn operands(op: &Op) -> [Option<Value>; 3] {
     match *op {
-        Op::Mov { src, .. } => vec![src],
-        Op::Bin { a, b, .. } => vec![a, b],
-        Op::Load { addr, .. } => vec![addr],
-        Op::Store { addr, value, .. } => vec![addr, value],
-        Op::SetReg { value, .. } => vec![value],
-        Op::Flags { a, b, r, live, .. } => {
-            if live {
-                vec![a, b, r]
-            } else {
-                Vec::new()
-            }
-        }
+        Op::Mov { src, .. } => [Some(src), None, None],
+        Op::Bin { a, b, .. } => [Some(a), Some(b), None],
+        Op::Load { addr, .. } => [Some(addr), None, None],
+        Op::Store { addr, value, .. } => [Some(addr), Some(value), None],
+        Op::SetReg { value, .. } => [Some(value), None, None],
+        Op::Flags {
+            a,
+            b,
+            r,
+            live: true,
+            ..
+        } => [Some(a), Some(b), Some(r)],
+        Op::Flags { live: false, .. } => [None; 3],
     }
 }
 

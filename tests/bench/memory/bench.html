@@ -24,6 +24,7 @@
       res.results = MemBench.runAll(opts);
       if (q.get('growth') !== '0') {
         res.growth = [MemBench.growthTest({ shared: true }), MemBench.growthTest({ shared: false })];
+        res.memories = MemBench.countMemories({ limit: 64 });
       }
     } catch (e) {
       res.error = String(e && e.stack || e);

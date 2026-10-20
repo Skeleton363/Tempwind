@@ -13,13 +13,21 @@
 //                a translator can do inside one block or loop (hybrid)
 //   m64-tlb256   option B behind a 256-entry direct-mapped software TLB in
 //                linear memory (hybrid)
+//   m64-nullcheck  option A plus an explicit `va < 0x10000` check and a cold
+//                fault branch on every access (NULL-page access violations)
+//   m64-bias     option A with wasm offset = VA - 0x10000, so the NULL page
+//                wraps far out of bounds and traps without a branch
+//   m64-wcheck   option A; loads unchecked, every store first tests a
+//                1-byte-per-4-KiB page-flag table (self-modifying-code and
+//                write-watch detection)
 //
-// Each module runs three loops over a 256 MiB guest buffer:
+// Each module runs four loops over a 256 MiB guest buffer:
 //
 //   seq    sequential 8-byte loads, summed
 //   rand   independent loads at LCG-random 8-byte slots, summed
 //   chase  dependent loads following a random cyclic permutation (each load
 //          returns the guest VA of the next slot)
+//   store  sequential 8-byte stores (runs last; it overwrites the chain)
 //
 // Identity variants place the buffer at guest VA == offset 0x500_0000. Table
 // variants place it at guest VA 0x1_4000_0000 (the MSVC EXE default base) and
@@ -36,6 +44,8 @@
   const L1_BASE = 64 * MiB; // 2^16 entries * 4 B
   const L2_BASE = 64 * MiB + 256 * 1024; // one L2 table (2^16 entries * 4 B)
   const TLB_BASE = 65 * MiB; // 256 entries * 16 B
+  const FLAGS_BASE = 66 * MiB; // 1 byte per 4 KiB page for VA < 16 GiB = 4 MiB
+  const NULL_LIMIT = 0x10000n;
   const DATA_PHYS = 80 * MiB; // 0x500_0000
   const DATA_VA_HIGH = 0x1_4000_0000n;
   const MEM_PAGES = (DATA_PHYS + DATA_BYTES) / 65536 + 16;
@@ -82,7 +92,9 @@
     get: (i) => [0x20, ...uleb(i)],
     set: (i) => [0x21, ...uleb(i)],
     tee: (i) => [0x22, ...uleb(i)],
+    unreachable: [0x00],
     i32_load: (off = 0) => [0x28, 2, ...uleb(off)],
+    i32_load8_u: (off = 0) => [0x2d, 0, ...uleb(off)],
     i64_load: (off = 0) => [0x29, 3, ...uleb(off)],
     i64_store: (off = 0) => [0x37, 3, ...uleb(off)],
     i32c: (v) => [0x41, ...sleb(v)],
@@ -160,6 +172,31 @@
         ...op.get(va), ...op.get(t.b), ...op.i64_load(TLB_BASE + 8), ...op.i64_add,
       ],
     },
+    'm64-nullcheck': {
+      mem64: true,
+      high: false,
+      translate: (va) => [
+        ...op.get(va), ...op.i64c(NULL_LIMIT), ...op.i64_lt_u,
+        ...op.if(), ...op.unreachable, ...op.end, // stands in for "exit with an access violation"
+        ...op.get(va),
+      ],
+    },
+    'm64-bias': {
+      mem64: true,
+      high: false,
+      bias: NULL_LIMIT,
+      translate: (va) => [...op.get(va), ...op.i64c(-NULL_LIMIT), ...op.i64_add],
+    },
+    'm64-wcheck': {
+      mem64: true,
+      high: false,
+      translate: (va) => [...op.get(va)],
+      translateStore: (va) => [
+        ...op.get(va), ...op.i64c(12), ...op.i64_shr_u, ...op.i32_load8_u(FLAGS_BASE),
+        ...op.if(), ...op.unreachable, ...op.end, // stands in for "invalidate code / record write"
+        ...op.get(va),
+      ],
+    },
   };
 
   // Locals: 0 = param (count or start), then va, acc, i, x, a, b, tag, delta.
@@ -172,6 +209,7 @@
     const v = VARIANTS[variant];
     const tr = (va) => v.translate(va, scratch);
     const loadAt = (va) => [...tr(va), ...op.i64_load(0)];
+    const trStore = (va) => (v.translateStore || v.translate)(va, scratch);
 
     // seq(base, n): sum n 8-byte loads at base, base+8, ...
     const seq = [
@@ -217,9 +255,23 @@
       ...op.get(L.va),
     ];
 
+    // store(base, n): store va at va for n sequential slots; return final va
+    const store = [
+      ...initTlb1,
+      ...op.get(L.p0), ...op.set(L.va),
+      ...op.get(L.p1), ...op.set(L.i),
+      ...op.block(), ...op.loop(),
+      ...op.get(L.i), ...op.i64_eqz, ...op.br_if(1),
+      ...trStore(L.va), ...op.get(L.va), ...op.i64_store(0),
+      ...op.get(L.va), ...op.i64c(8), ...op.i64_add, ...op.set(L.va),
+      ...op.get(L.i), ...op.i64c(1), ...op.i64_sub, ...op.set(L.i),
+      ...op.br(0), ...op.end, ...op.end,
+      ...op.get(L.va),
+    ];
+
     const type = [0x60, ...vec([[I64], [I64]]), ...vec([[I64]])];
-    const funcs = [seq, rand, chase];
-    const names = ['seq', 'rand', 'chase'];
+    const funcs = [seq, rand, chase, store];
+    const names = ['seq', 'rand', 'chase', 'store'];
     const bodies = funcs.map((code) => {
       const body = [...vec(LOCALS.map(([n, t]) => [...uleb(n), t])), ...code, ...op.end];
       return [...uleb(body.length), ...body];
@@ -255,7 +307,7 @@
 
   function setup(memory, variant, cycle) {
     const v = VARIANTS[variant];
-    const vaBase = v.high ? DATA_VA_HIGH : BigInt(DATA_PHYS);
+    const vaBase = v.high ? DATA_VA_HIGH : BigInt(DATA_PHYS) + (v.bias || 0n);
     const buf = memory.buffer;
     const u32 = new Uint32Array(buf);
     if (v.high) {
@@ -295,7 +347,7 @@
   function runVariant(variant, cycle, opts = {}) {
     const now = opts.now || (() => performance.now());
     const reps = opts.reps ?? 5;
-    const counts = { seq: BigInt(SLOTS), rand: 8n << 20n, chase: 4n << 20n };
+    const counts = { seq: BigInt(SLOTS), rand: 8n << 20n, chase: 4n << 20n, store: BigInt(SLOTS) };
     const bytes = buildModule(variant);
     const mod = new WebAssembly.Module(bytes);
     const inst = new WebAssembly.Instance(mod, {});
@@ -303,7 +355,7 @@
     const vaBase = setup(ex.memory, variant, cycle);
     const out = { variant, wasmBytes: bytes.length };
     const checks = {};
-    for (const name of ['seq', 'rand', 'chase']) {
+    for (const name of ['seq', 'rand', 'chase', 'store']) {
       const n = counts[name];
       const fn = ex[name];
       fn(vaBase, n); // warm-up (also tiers up)
@@ -317,7 +369,7 @@
       out[name] = (median(times) * 1e6) / Number(n); // ns per access
       // Results must not depend on the addressing scheme (seq/rand sum the
       // slot values, which differ by vaBase * n; normalise that out).
-      checks[name] = name === 'chase' ? (r - vaBase) : (r - vaBase * n);
+      checks[name] = name === 'chase' || name === 'store' ? (r - vaBase) : (r - vaBase * n);
     }
     out.checks = Object.fromEntries(Object.entries(checks).map(([k, x]) => [k, BigInt.asUintN(64, x).toString(16)]));
     return out;
@@ -390,5 +442,33 @@
     return res;
   }
 
-  globalThis.MemBench = { VARIANTS, buildModule, runAll, runVariant, growthTest, MEM_PAGES, DATA_BYTES };
+  // How many memories with a 16 GiB maximum one agent can hold at once (one
+  // per Windows process under option A). Each grows to 1 GiB and touches one
+  // page so the memory is real.
+  function countMemories(opts = {}) {
+    const limit = opts.limit ?? 64;
+    const shared = opts.shared ?? true;
+    const held = [];
+    let error = null;
+    try {
+      while (held.length < limit) {
+        const { m, big } = newMemory64(1, 262144, shared);
+        m.grow(big ? 16383n : 16383);
+        new Uint8Array(m.buffer)[m.buffer.byteLength - 1] = 1;
+        held.push(m);
+      }
+    } catch (e) {
+      error = e.message;
+    }
+    let tooBig = null;
+    try {
+      newMemory64(1, 262145, shared);
+      tooBig = 'accepted';
+    } catch (e) {
+      tooBig = e.message;
+    }
+    return { shared, limit, created: held.length, error, maximum262145: tooBig };
+  }
+
+  globalThis.MemBench = { VARIANTS, buildModule, runAll, runVariant, growthTest, countMemories, MEM_PAGES, DATA_BYTES };
 })();

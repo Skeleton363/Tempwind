@@ -97,10 +97,23 @@ fn translation_throughput() {
         t.wasm.len() as f64 / n,
         t.wasm.len() as f64 / code.len() as f64
     );
+    // Everything is one wasm function for now, so compile a smaller region.
+    let small = generated_region(base, 1_000);
+    let ts = x64wasm::translate_without_dump(
+        CodeRegion {
+            base,
+            bytes: &small,
+        },
+        &[base],
+        &opts,
+    )
+    .unwrap();
     let host = Host::new().unwrap();
-    let (compile, _) = best_of(1, || host.compile(&t.wasm).unwrap());
+    let (compile, _) = best_of(1, || host.compile(&ts.wasm).unwrap());
     println!(
-        "wasmtime (cranelift) compile: {:.1} ms",
+        "wasmtime (cranelift) compile of {} guest instructions / {} blocks in one function: {:.1} ms",
+        ts.guest_instructions,
+        ts.blocks.len(),
         compile.as_secs_f64() * 1e3
     );
     for case in spike::cases().unwrap() {

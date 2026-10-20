@@ -89,7 +89,7 @@ fn manifest_follows_the_abi_doc() {
             for m in case[section]["mem"].as_array().unwrap() {
                 assert!(is_hex(&m["addr"]));
                 let hex: String = m["hex"].as_str().unwrap().split_whitespace().collect();
-                assert!(hex.len() % 2 == 0 && hex.chars().all(|c| c.is_ascii_hexdigit()));
+                assert!(hex.len().is_multiple_of(2) && hex.chars().all(|c| c.is_ascii_hexdigit()));
             }
         }
     }
