@@ -14,7 +14,9 @@ use iced_x86::{
 };
 
 use crate::abi;
-use crate::ir::{BinOp, Block, Cond, FlagOp, Gpr, Insn, Op, Program, RSP, Temp, Term, Value, Width};
+use crate::ir::{
+    BinOp, Block, Cond, FlagOp, Gpr, Insn, Op, Program, RSP, Temp, Term, Value, Width,
+};
 use crate::{CodeRegion, Error};
 
 /// The instruction can't be lowered (yet).
@@ -425,9 +427,7 @@ impl Lower<'_> {
             OpKind::Register => {
                 Width::from_bytes(self.insn.op_register(operand).size()).ok_or(Unsupported)
             }
-            OpKind::Memory => {
-                Width::from_bytes(self.insn.memory_size().size()).ok_or(Unsupported)
-            }
+            OpKind::Memory => Width::from_bytes(self.insn.memory_size().size()).ok_or(Unsupported),
             _ => Err(Unsupported),
         }
     }
@@ -460,7 +460,9 @@ impl Lower<'_> {
             | OpKind::Immediate8to16
             | OpKind::Immediate8to32
             | OpKind::Immediate8to64
-            | OpKind::Immediate32to64 => Ok(Value::Imm(self.insn.immediate(operand) & width.mask())),
+            | OpKind::Immediate32to64 => {
+                Ok(Value::Imm(self.insn.immediate(operand) & width.mask()))
+            }
             _ => Err(Unsupported),
         }
     }

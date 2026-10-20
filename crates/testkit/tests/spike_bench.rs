@@ -20,7 +20,9 @@ use x64wasm::{CodeRegion, Options};
 /// returns, using every supported instruction family.
 fn generated_region(base: u64, chunks: usize) -> Vec<u8> {
     let mut a = CodeAssembler::new(64).unwrap();
-    let regs = [rax, rcx, rdx, rbx, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15];
+    let regs = [
+        rax, rcx, rdx, rbx, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
+    ];
     let mut f = a.create_label();
     for i in 0..chunks {
         let r = regs[i % regs.len()];
@@ -68,8 +70,9 @@ fn translation_throughput() {
     let region = CodeRegion { base, bytes: &code };
     let opts = Options::default();
     let (with_dump, t) = best_of(5, || x64wasm::translate(region, &[base], &opts).unwrap());
-    let (no_dump, t2) =
-        best_of(5, || x64wasm::translate_without_dump(region, &[base], &opts).unwrap());
+    let (no_dump, t2) = best_of(5, || {
+        x64wasm::translate_without_dump(region, &[base], &opts).unwrap()
+    });
     assert_eq!(t.wasm, t2.wasm);
     let n = t.guest_instructions as f64;
     println!(

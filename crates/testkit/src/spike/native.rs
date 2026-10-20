@@ -229,7 +229,12 @@ impl Sandbox {
     /// registers and flags with the data page holding `data` (zero-padded).
     /// The snippet must fall off its end. Returns the registers and flags
     /// afterwards (RIP set to the snippet's end) and the data page.
-    pub fn run(&mut self, snippet: &[u8], input: &CpuState, data: &[u8]) -> Result<(CpuState, Vec<u8>)> {
+    pub fn run(
+        &mut self,
+        snippet: &[u8],
+        input: &CpuState,
+        data: &[u8],
+    ) -> Result<(CpuState, Vec<u8>)> {
         ensure!(data.len() <= SANDBOX_DATA_SIZE);
         let total = self.prologue.len() + snippet.len() + self.epilogue.len();
         ensure!(total <= SANDBOX_CODE_SIZE, "snippet too large");

@@ -33,7 +33,13 @@ fn translate(bytes: &[u8], base: u64, opts: &Options) -> x64wasm::Translation {
 #[test]
 fn module_shape_follows_the_abi() {
     for shared in [false, true] {
-        let t = translate(&hex(SUM_LOOP), 0x1_4000_1000, &Options { shared_memory: shared });
+        let t = translate(
+            &hex(SUM_LOOP),
+            0x1_4000_1000,
+            &Options {
+                shared_memory: shared,
+            },
+        );
         validate(&t.wasm);
         let mut saw_memory = false;
         let mut saw_run = false;
@@ -42,7 +48,10 @@ fn module_shape_follows_the_abi() {
                 Payload::ImportSection(imports) => {
                     for import in imports.into_imports() {
                         let import = import.unwrap();
-                        assert_eq!((import.module, import.name), (abi::MEMORY_MODULE, abi::MEMORY_NAME));
+                        assert_eq!(
+                            (import.module, import.name),
+                            (abi::MEMORY_MODULE, abi::MEMORY_NAME)
+                        );
                         let TypeRef::Memory(m) = import.ty else {
                             panic!("only the memory is imported");
                         };
@@ -143,18 +152,32 @@ fn arbitrary_bytes_translate_to_valid_modules() {
                 }
             })
             .collect();
-        let base = if round % 2 == 0 { 0x1_4000_1000 } else { 0x40_0000 };
-        let entries: Vec<u64> = (0..1 + next() % 4).map(|_| base + next() % len as u64).collect();
+        let base = if round % 2 == 0 {
+            0x1_4000_1000
+        } else {
+            0x40_0000
+        };
+        let entries: Vec<u64> = (0..1 + next() % 4)
+            .map(|_| base + next() % len as u64)
+            .collect();
         for shared in [false, true] {
             let t = x64wasm::translate(
-                CodeRegion { base, bytes: &bytes },
+                CodeRegion {
+                    base,
+                    bytes: &bytes,
+                },
                 &entries,
-                &Options { shared_memory: shared },
+                &Options {
+                    shared_memory: shared,
+                },
             )
             .unwrap();
             validate(&t.wasm);
             total_insns += t.guest_instructions;
         }
     }
-    assert!(total_insns > 1000, "only {total_insns} instructions translated");
+    assert!(
+        total_insns > 1000,
+        "only {total_insns} instructions translated"
+    );
 }

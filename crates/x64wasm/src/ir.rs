@@ -144,7 +144,11 @@ pub enum Op {
         b: Value,
     },
     /// `dst = zero-extended load of `width` at guest address `addr``
-    Load { dst: Temp, width: Width, addr: Value },
+    Load {
+        dst: Temp,
+        width: Width,
+        addr: Value,
+    },
     /// Stores the low `width` bits of `value` at guest address `addr`.
     Store {
         width: Width,
@@ -432,7 +436,11 @@ impl fmt::Display for Term {
                 cond,
                 taken,
                 fallthrough,
-            } => write!(f, "if {} jump {taken:#x} else {fallthrough:#x}", cond.name()),
+            } => write!(
+                f,
+                "if {} jump {taken:#x} else {fallthrough:#x}",
+                cond.name()
+            ),
             Term::Indirect(v) => write!(f, "jump [{v}]"),
             Term::Exit { reason, rip } => {
                 let name = match *reason {

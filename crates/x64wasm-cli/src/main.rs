@@ -13,7 +13,11 @@ use clap::{Args, Parser, Subcommand};
 use x64wasm::{CodeRegion, Options};
 
 #[derive(Parser)]
-#[command(name = "x64wasm", version, about = "x86-64 to WebAssembly (memory64) translator")]
+#[command(
+    name = "x64wasm",
+    version,
+    about = "x86-64 to WebAssembly (memory64) translator"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

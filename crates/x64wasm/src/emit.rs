@@ -822,10 +822,7 @@ pub fn emit(prog: &Program, opts: &Options) -> Vec<u8> {
         .max()
         .unwrap_or(0);
     let l_cc_op = L_TEMP0 + temps;
-    let mut run = Function::new([
-        (L_TEMP0 - 1 + temps, ValType::I64),
-        (3, ValType::I32),
-    ]);
+    let mut run = Function::new([(L_TEMP0 - 1 + temps, ValType::I64), (3, ValType::I32)]);
     let mut emitter = RunEmitter {
         prog,
         index: prog.index_map(),

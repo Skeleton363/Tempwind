@@ -117,10 +117,7 @@ impl Harness {
         let mut state = *input;
         for _ in 0..16 {
             let module = self.module(code, &entries);
-            state = self
-                .machine
-                .run_state(&module, STATE_ADDR, &state)
-                .unwrap();
+            state = self.machine.run_state(&module, STATE_ADDR, &state).unwrap();
             let rip = state.rip;
             let inside = (SANDBOX_SNIPPET..end).contains(&rip);
             if state.exit == abi::EXIT_LEFT_CODE && inside && !entries.contains(&rip) {
@@ -302,8 +299,16 @@ fn idx(r: Register) -> usize {
 }
 
 /// The same two-operand ALU form for add, sub and cmp.
-fn alu3(build: impl Fn(Code) -> Result<Instruction, IcedError>, add: Code, sub: Code, cmp: Code) -> Vec<Vec<u8>> {
-    [add, sub, cmp].into_iter().map(|c| exact(build(c))).collect()
+fn alu3(
+    build: impl Fn(Code) -> Result<Instruction, IcedError>,
+    add: Code,
+    sub: Code,
+    cmp: Code,
+) -> Vec<Vec<u8>> {
+    [add, sub, cmp]
+        .into_iter()
+        .map(|c| exact(build(c)))
+        .collect()
 }
 
 #[test]
@@ -311,22 +316,82 @@ fn alu_reg_reg_all_widths() {
     let mut h = Harness::new(1);
     use Register::*;
     let forms: &[(Code, Code, Code, Register, Register)] = &[
-        (Code::Add_rm64_r64, Code::Sub_rm64_r64, Code::Cmp_rm64_r64, RAX, RCX),
-        (Code::Add_r64_rm64, Code::Sub_r64_rm64, Code::Cmp_r64_rm64, R9, R14),
-        (Code::Add_rm32_r32, Code::Sub_rm32_r32, Code::Cmp_rm32_r32, EDX, ESI),
-        (Code::Add_r32_rm32, Code::Sub_r32_rm32, Code::Cmp_r32_rm32, R10D, EAX),
-        (Code::Add_rm16_r16, Code::Sub_rm16_r16, Code::Cmp_rm16_r16, CX, DI),
-        (Code::Add_r16_rm16, Code::Sub_r16_rm16, Code::Cmp_r16_rm16, R12W, DX),
+        (
+            Code::Add_rm64_r64,
+            Code::Sub_rm64_r64,
+            Code::Cmp_rm64_r64,
+            RAX,
+            RCX,
+        ),
+        (
+            Code::Add_r64_rm64,
+            Code::Sub_r64_rm64,
+            Code::Cmp_r64_rm64,
+            R9,
+            R14,
+        ),
+        (
+            Code::Add_rm32_r32,
+            Code::Sub_rm32_r32,
+            Code::Cmp_rm32_r32,
+            EDX,
+            ESI,
+        ),
+        (
+            Code::Add_r32_rm32,
+            Code::Sub_r32_rm32,
+            Code::Cmp_r32_rm32,
+            R10D,
+            EAX,
+        ),
+        (
+            Code::Add_rm16_r16,
+            Code::Sub_rm16_r16,
+            Code::Cmp_rm16_r16,
+            CX,
+            DI,
+        ),
+        (
+            Code::Add_r16_rm16,
+            Code::Sub_r16_rm16,
+            Code::Cmp_r16_rm16,
+            R12W,
+            DX,
+        ),
         (Code::Add_rm8_r8, Code::Sub_rm8_r8, Code::Cmp_rm8_r8, CL, DL),
         (Code::Add_r8_rm8, Code::Sub_r8_rm8, Code::Cmp_r8_rm8, AL, BL),
         (Code::Add_rm8_r8, Code::Sub_rm8_r8, Code::Cmp_rm8_r8, AH, CL),
         (Code::Add_rm8_r8, Code::Sub_rm8_r8, Code::Cmp_rm8_r8, DL, BH),
         (Code::Add_r8_rm8, Code::Sub_r8_rm8, Code::Cmp_r8_rm8, CH, DH),
-        (Code::Add_rm8_r8, Code::Sub_rm8_r8, Code::Cmp_rm8_r8, SIL, DIL),
-        (Code::Add_r8_rm8, Code::Sub_r8_rm8, Code::Cmp_r8_rm8, R8L, R15L),
-        (Code::Add_rm8_r8, Code::Sub_rm8_r8, Code::Cmp_rm8_r8, BPL, R11L),
+        (
+            Code::Add_rm8_r8,
+            Code::Sub_rm8_r8,
+            Code::Cmp_rm8_r8,
+            SIL,
+            DIL,
+        ),
+        (
+            Code::Add_r8_rm8,
+            Code::Sub_r8_rm8,
+            Code::Cmp_r8_rm8,
+            R8L,
+            R15L,
+        ),
+        (
+            Code::Add_rm8_r8,
+            Code::Sub_rm8_r8,
+            Code::Cmp_rm8_r8,
+            BPL,
+            R11L,
+        ),
         // Same register on both sides.
-        (Code::Add_rm64_r64, Code::Sub_rm64_r64, Code::Cmp_rm64_r64, RSI, RSI),
+        (
+            Code::Add_rm64_r64,
+            Code::Sub_rm64_r64,
+            Code::Cmp_rm64_r64,
+            RSI,
+            RSI,
+        ),
         (Code::Add_rm8_r8, Code::Sub_rm8_r8, Code::Cmp_rm8_r8, AH, AH),
     ];
     for &(add, sub, cmp, d, s) in forms {
@@ -345,31 +410,169 @@ fn alu_reg_imm_all_widths() {
     type Form = (Code, Code, Code, Register, i64);
     let forms: &[Form] = &[
         // imm8 sign-extended
-        (Code::Add_rm64_imm8, Code::Sub_rm64_imm8, Code::Cmp_rm64_imm8, RCX, -1),
-        (Code::Add_rm64_imm8, Code::Sub_rm64_imm8, Code::Cmp_rm64_imm8, R13, 0x7f),
-        (Code::Add_rm64_imm8, Code::Sub_rm64_imm8, Code::Cmp_rm64_imm8, RDX, -128),
-        (Code::Add_rm32_imm8, Code::Sub_rm32_imm8, Code::Cmp_rm32_imm8, ESI, -1),
-        (Code::Add_rm32_imm8, Code::Sub_rm32_imm8, Code::Cmp_rm32_imm8, R11D, 1),
-        (Code::Add_rm16_imm8, Code::Sub_rm16_imm8, Code::Cmp_rm16_imm8, DI, -128),
-        (Code::Add_rm16_imm8, Code::Sub_rm16_imm8, Code::Cmp_rm16_imm8, R9W, 0x10),
-        (Code::Add_rm8_imm8, Code::Sub_rm8_imm8, Code::Cmp_rm8_imm8, CL, 0x80),
-        (Code::Add_rm8_imm8, Code::Sub_rm8_imm8, Code::Cmp_rm8_imm8, BH, 0x7f),
-        (Code::Add_rm8_imm8, Code::Sub_rm8_imm8, Code::Cmp_rm8_imm8, SPL, 0x01),
-        (Code::Add_rm8_imm8, Code::Sub_rm8_imm8, Code::Cmp_rm8_imm8, R10L, 0xff),
+        (
+            Code::Add_rm64_imm8,
+            Code::Sub_rm64_imm8,
+            Code::Cmp_rm64_imm8,
+            RCX,
+            -1,
+        ),
+        (
+            Code::Add_rm64_imm8,
+            Code::Sub_rm64_imm8,
+            Code::Cmp_rm64_imm8,
+            R13,
+            0x7f,
+        ),
+        (
+            Code::Add_rm64_imm8,
+            Code::Sub_rm64_imm8,
+            Code::Cmp_rm64_imm8,
+            RDX,
+            -128,
+        ),
+        (
+            Code::Add_rm32_imm8,
+            Code::Sub_rm32_imm8,
+            Code::Cmp_rm32_imm8,
+            ESI,
+            -1,
+        ),
+        (
+            Code::Add_rm32_imm8,
+            Code::Sub_rm32_imm8,
+            Code::Cmp_rm32_imm8,
+            R11D,
+            1,
+        ),
+        (
+            Code::Add_rm16_imm8,
+            Code::Sub_rm16_imm8,
+            Code::Cmp_rm16_imm8,
+            DI,
+            -128,
+        ),
+        (
+            Code::Add_rm16_imm8,
+            Code::Sub_rm16_imm8,
+            Code::Cmp_rm16_imm8,
+            R9W,
+            0x10,
+        ),
+        (
+            Code::Add_rm8_imm8,
+            Code::Sub_rm8_imm8,
+            Code::Cmp_rm8_imm8,
+            CL,
+            0x80,
+        ),
+        (
+            Code::Add_rm8_imm8,
+            Code::Sub_rm8_imm8,
+            Code::Cmp_rm8_imm8,
+            BH,
+            0x7f,
+        ),
+        (
+            Code::Add_rm8_imm8,
+            Code::Sub_rm8_imm8,
+            Code::Cmp_rm8_imm8,
+            SPL,
+            0x01,
+        ),
+        (
+            Code::Add_rm8_imm8,
+            Code::Sub_rm8_imm8,
+            Code::Cmp_rm8_imm8,
+            R10L,
+            0xff,
+        ),
         // imm32 (sign-extended at 64), imm16
-        (Code::Add_rm64_imm32, Code::Sub_rm64_imm32, Code::Cmp_rm64_imm32, RCX, 0x1234_5678),
-        (Code::Add_rm64_imm32, Code::Sub_rm64_imm32, Code::Cmp_rm64_imm32, R8, -0x8000_0000),
-        (Code::Add_rm64_imm32, Code::Sub_rm64_imm32, Code::Cmp_rm64_imm32, RDI, 0x7fff_ffff),
-        (Code::Add_rm32_imm32, Code::Sub_rm32_imm32, Code::Cmp_rm32_imm32, EDX, 0x89ab_cdef),
-        (Code::Add_rm32_imm32, Code::Sub_rm32_imm32, Code::Cmp_rm32_imm32, R15D, 0x8000_0000),
-        (Code::Add_rm16_imm16, Code::Sub_rm16_imm16, Code::Cmp_rm16_imm16, BP, 0x8001),
+        (
+            Code::Add_rm64_imm32,
+            Code::Sub_rm64_imm32,
+            Code::Cmp_rm64_imm32,
+            RCX,
+            0x1234_5678,
+        ),
+        (
+            Code::Add_rm64_imm32,
+            Code::Sub_rm64_imm32,
+            Code::Cmp_rm64_imm32,
+            R8,
+            -0x8000_0000,
+        ),
+        (
+            Code::Add_rm64_imm32,
+            Code::Sub_rm64_imm32,
+            Code::Cmp_rm64_imm32,
+            RDI,
+            0x7fff_ffff,
+        ),
+        (
+            Code::Add_rm32_imm32,
+            Code::Sub_rm32_imm32,
+            Code::Cmp_rm32_imm32,
+            EDX,
+            0x89ab_cdef,
+        ),
+        (
+            Code::Add_rm32_imm32,
+            Code::Sub_rm32_imm32,
+            Code::Cmp_rm32_imm32,
+            R15D,
+            0x8000_0000,
+        ),
+        (
+            Code::Add_rm16_imm16,
+            Code::Sub_rm16_imm16,
+            Code::Cmp_rm16_imm16,
+            BP,
+            0x8001,
+        ),
         // Accumulator short forms
-        (Code::Add_AL_imm8, Code::Sub_AL_imm8, Code::Cmp_AL_imm8, AL, 0x80),
-        (Code::Add_AL_imm8, Code::Sub_AL_imm8, Code::Cmp_AL_imm8, AL, 0x01),
-        (Code::Add_AX_imm16, Code::Sub_AX_imm16, Code::Cmp_AX_imm16, AX, 0x7fff),
-        (Code::Add_EAX_imm32, Code::Sub_EAX_imm32, Code::Cmp_EAX_imm32, EAX, 0xffff_ffff),
-        (Code::Add_RAX_imm32, Code::Sub_RAX_imm32, Code::Cmp_RAX_imm32, RAX, -2),
-        (Code::Add_RAX_imm32, Code::Sub_RAX_imm32, Code::Cmp_RAX_imm32, RAX, 0x4000_0000),
+        (
+            Code::Add_AL_imm8,
+            Code::Sub_AL_imm8,
+            Code::Cmp_AL_imm8,
+            AL,
+            0x80,
+        ),
+        (
+            Code::Add_AL_imm8,
+            Code::Sub_AL_imm8,
+            Code::Cmp_AL_imm8,
+            AL,
+            0x01,
+        ),
+        (
+            Code::Add_AX_imm16,
+            Code::Sub_AX_imm16,
+            Code::Cmp_AX_imm16,
+            AX,
+            0x7fff,
+        ),
+        (
+            Code::Add_EAX_imm32,
+            Code::Sub_EAX_imm32,
+            Code::Cmp_EAX_imm32,
+            EAX,
+            0xffff_ffff,
+        ),
+        (
+            Code::Add_RAX_imm32,
+            Code::Sub_RAX_imm32,
+            Code::Cmp_RAX_imm32,
+            RAX,
+            -2,
+        ),
+        (
+            Code::Add_RAX_imm32,
+            Code::Sub_RAX_imm32,
+            Code::Cmp_RAX_imm32,
+            RAX,
+            0x4000_0000,
+        ),
     ];
     for &(add, sub, cmp, d, imm) in forms {
         for code in alu3(|c| Instruction::with2(c, d, imm as i32), add, sub, cmp) {
@@ -462,10 +665,22 @@ fn mov_forms() {
         exact(Instruction::with2(Code::Mov_r8_rm8, DIL, BPL)),
         exact(Instruction::with2(Code::Mov_rm8_r8, R15L, SPL)),
         exact(Instruction::with2(Code::Mov_rm64_imm32, RCX, -5i32)),
-        exact(Instruction::with2(Code::Mov_rm64_imm32, R10, 0x7fff_ffffi32)),
-        exact(Instruction::with2(Code::Mov_r64_imm64, RDX, 0x8123_4567_89ab_cdefu64)),
+        exact(Instruction::with2(
+            Code::Mov_rm64_imm32,
+            R10,
+            0x7fff_ffffi32,
+        )),
+        exact(Instruction::with2(
+            Code::Mov_r64_imm64,
+            RDX,
+            0x8123_4567_89ab_cdefu64,
+        )),
         exact(Instruction::with2(Code::Mov_r32_imm32, ESI, 0xfedc_ba98u32)),
-        exact(Instruction::with2(Code::Mov_rm32_imm32, R9D, 0x8000_0000u32)),
+        exact(Instruction::with2(
+            Code::Mov_rm32_imm32,
+            R9D,
+            0x8000_0000u32,
+        )),
         exact(Instruction::with2(Code::Mov_r16_imm16, DI, 0xbeefu32)),
         exact(Instruction::with2(Code::Mov_rm16_imm16, R14W, 0x1234u32)),
         exact(Instruction::with2(Code::Mov_r8_imm8, AH, 0xa5u32)),
@@ -547,12 +762,18 @@ fn lea_forms() {
         exact(Instruction::with2(
             Code::Lea_r64_m,
             Register::RDI,
-            iced_x86::MemoryOperand::with_base_displ(Register::RIP, (SANDBOX_SNIPPET - 0x1234) as i64),
+            iced_x86::MemoryOperand::with_base_displ(
+                Register::RIP,
+                (SANDBOX_SNIPPET - 0x1234) as i64,
+            ),
         )),
         exact(Instruction::with2(
             Code::Lea_r32_m,
             Register::R8D,
-            iced_x86::MemoryOperand::with_base_displ(Register::RIP, (SANDBOX_SNIPPET + 0x10_0000) as i64),
+            iced_x86::MemoryOperand::with_base_displ(
+                Register::RIP,
+                (SANDBOX_SNIPPET + 0x10_0000) as i64,
+            ),
         )),
     ];
     for code in &snippets {
@@ -704,9 +925,16 @@ fn jcc_all_conditions() {
                     for bits in 0..64u64 {
                         let mut s = h.random_state();
                         s.rflags = 0x202;
-                        for (k, f) in [flags::CF, flags::PF, flags::AF, flags::ZF, flags::SF, flags::OF]
-                            .into_iter()
-                            .enumerate()
+                        for (k, f) in [
+                            flags::CF,
+                            flags::PF,
+                            flags::AF,
+                            flags::ZF,
+                            flags::SF,
+                            flags::OF,
+                        ]
+                        .into_iter()
+                        .enumerate()
                         {
                             if bits >> k & 1 != 0 {
                                 s.rflags |= f;

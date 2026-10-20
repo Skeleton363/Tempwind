@@ -108,7 +108,7 @@ fn unsupported_forms() {
         ("pop r16", vec![0x66, 0x58]),
         ("push imm16", vec![0x66, 0x6a, 0x01]),
         ("mov from segment register", vec![0x8c, 0xd8]), // mov eax, ds
-        ("invalid opcode", vec![0x06, 0x90]),           // push es: invalid in 64-bit mode
+        ("invalid opcode", vec![0x06, 0x90]),            // push es: invalid in 64-bit mode
         ("retf", vec![0xcb]),
         ("int3", vec![0xcc]),
     ];
@@ -162,7 +162,12 @@ fn branches_leaving_the_region() {
 
     // ret to an unknown address
     let c = code(|a| a.ret());
-    let r = run_with(&c, &[BASE], &state(&[]), &[(STACK, &0xdead_0000u64.to_le_bytes())]);
+    let r = run_with(
+        &c,
+        &[BASE],
+        &state(&[]),
+        &[(STACK, &0xdead_0000u64.to_le_bytes())],
+    );
     assert_eq!((r.out.exit, r.out.rip), (abi::EXIT_LEFT_CODE, 0xdead_0000));
     assert_eq!(r.out.gpr[RSP], STACK + 8);
 
@@ -193,7 +198,10 @@ fn ret_to_a_return_site_dispatches() {
         &state(&[]),
         &[(STACK, &abi::SENTINEL_RET.to_le_bytes())],
     );
-    assert_eq!((r.out.exit, r.out.rip), (abi::EXIT_LEFT_CODE, abi::SENTINEL_RET));
+    assert_eq!(
+        (r.out.exit, r.out.rip),
+        (abi::EXIT_LEFT_CODE, abi::SENTINEL_RET)
+    );
     assert_eq!((r.out.gpr[RBX], r.out.gpr[RCX]), (1, 2));
     assert_eq!(r.out.gpr[RSP], STACK + 8);
 }
@@ -209,7 +217,12 @@ fn multiple_entries_and_entry_errors() {
     let second = BASE + 6;
     let mut input = state(&[]);
     input.rip = second;
-    let r = run_with(&c, &[BASE, second], &input, &[(STACK, &abi::SENTINEL_RET.to_le_bytes())]);
+    let r = run_with(
+        &c,
+        &[BASE, second],
+        &input,
+        &[(STACK, &abi::SENTINEL_RET.to_le_bytes())],
+    );
     assert_eq!(r.out.gpr[RAX], 2);
     assert_eq!(r.out.rip, abi::SENTINEL_RET);
 
@@ -217,10 +230,16 @@ fn multiple_entries_and_entry_errors() {
     let mut input = state(&[(RAX, 9)]);
     input.rip = 0x7777;
     let out = run(&c, &input);
-    assert_eq!((out.exit, out.rip, out.gpr[RAX]), (abi::EXIT_LEFT_CODE, 0x7777, 9));
+    assert_eq!(
+        (out.exit, out.rip, out.gpr[RAX]),
+        (abi::EXIT_LEFT_CODE, 0x7777, 9)
+    );
 
     let err = x64wasm::translate(
-        CodeRegion { base: BASE, bytes: &c },
+        CodeRegion {
+            base: BASE,
+            bytes: &c,
+        },
         &[BASE + 100],
         &Options::default(),
     )
@@ -232,7 +251,10 @@ fn multiple_entries_and_entry_errors() {
 fn partial_register_writes() {
     let all = u64::MAX;
     let c = code(|a| a.mov(ah, 0x12));
-    assert_eq!(run(&c, &state(&[(RAX, all)])).gpr[RAX], 0xffff_ffff_ffff_12ff);
+    assert_eq!(
+        run(&c, &state(&[(RAX, all)])).gpr[RAX],
+        0xffff_ffff_ffff_12ff
+    );
     let c = code(|a| a.mov(cl, dh));
     let out = run(&c, &state(&[(RCX, all), (RDX, 0xab00)]));
     assert_eq!(out.gpr[RCX], 0xffff_ffff_ffff_ffab);
@@ -245,7 +267,11 @@ fn partial_register_writes() {
     let out = run(&c, &state(&[(10, all), (11, 0xaaaa_bbbb_cccc_dddd)]));
     assert_eq!(out.gpr[10], 0xcccc_dddd);
     let c = code(|a| a.add(r12d, 0));
-    assert_eq!(run(&c, &state(&[(12, all)])).gpr[12], 0xffff_ffff, "32-bit add zero-extends");
+    assert_eq!(
+        run(&c, &state(&[(12, all)])).gpr[12],
+        0xffff_ffff,
+        "32-bit add zero-extends"
+    );
     let c = code(|a| a.add(bh, 1));
     let out = run(&c, &state(&[(RBX, 0x1122_3344_5566_ff88)]));
     assert_eq!(out.gpr[RBX], 0x1122_3344_5566_0088);
@@ -264,7 +290,10 @@ fn arithmetic_flag_boundaries() {
     let c = code(|a| a.add(eax, ecx));
     assert_eq!(st(&c, &[(RAX, 0x7fff_ffff), (RCX, 1)]), OF | SF | AF | PF);
     assert_eq!(st(&c, &[(RAX, 0xffff_ffff), (RCX, 1)]), CF | ZF | AF | PF);
-    assert_eq!(st(&c, &[(RAX, 0x8000_0000), (RCX, 0x8000_0000)]), CF | OF | ZF | PF);
+    assert_eq!(
+        st(&c, &[(RAX, 0x8000_0000), (RCX, 0x8000_0000)]),
+        CF | OF | ZF | PF
+    );
     // sub: borrow, overflow
     let c = code(|a| a.sub(rax, rcx));
     assert_eq!(st(&c, &[(RAX, 0), (RCX, 1)]), CF | SF | AF | PF);
@@ -308,19 +337,41 @@ fn push_pop_rsp_semantics() {
 
     // pop rsp loads rsp from the stack (the increment is lost)
     let c = code(|a| a.pop(rsp));
-    let out = run_with(&c, &[BASE], &state(&[]), &[(STACK, &0x4_0000u64.to_le_bytes())]).out;
+    let out = run_with(
+        &c,
+        &[BASE],
+        &state(&[]),
+        &[(STACK, &0x4_0000u64.to_le_bytes())],
+    )
+    .out;
     assert_eq!(out.gpr[RSP], 0x4_0000);
 
     // pop [rsp]: the address uses rsp after the increment
     let c = code(|a| a.pop(qword_ptr(rsp)));
-    let r = run_with(&c, &[BASE], &state(&[]), &[(STACK, &0x1111u64.to_le_bytes())]);
+    let r = run_with(
+        &c,
+        &[BASE],
+        &state(&[]),
+        &[(STACK, &0x1111u64.to_le_bytes())],
+    );
     assert_eq!(r.out.gpr[RSP], STACK + 8);
-    assert_eq!(r.machine.read(STACK + 8, 8).unwrap(), 0x1111u64.to_le_bytes());
+    assert_eq!(
+        r.machine.read(STACK + 8, 8).unwrap(),
+        0x1111u64.to_le_bytes()
+    );
 
     // push [rsp]: the address uses rsp before the decrement
     let c = code(|a| a.push(qword_ptr(rsp)));
-    let r = run_with(&c, &[BASE], &state(&[]), &[(STACK, &0x2222u64.to_le_bytes())]);
-    assert_eq!(r.machine.read(STACK - 8, 8).unwrap(), 0x2222u64.to_le_bytes());
+    let r = run_with(
+        &c,
+        &[BASE],
+        &state(&[]),
+        &[(STACK, &0x2222u64.to_le_bytes())],
+    );
+    assert_eq!(
+        r.machine.read(STACK - 8, 8).unwrap(),
+        0x2222u64.to_le_bytes()
+    );
 
     // push imm8 / imm32 are sign-extended to 64 bits
     let c = code(|a| {
@@ -329,20 +380,37 @@ fn push_pop_rsp_semantics() {
     });
     let r = run_with(&c, &[BASE], &state(&[]), &[]);
     assert_eq!(r.machine.read(STACK - 8, 8).unwrap(), (-2i64).to_le_bytes());
-    assert_eq!(r.machine.read(STACK - 16, 8).unwrap(), (-0x7000_0000i64).to_le_bytes());
+    assert_eq!(
+        r.machine.read(STACK - 16, 8).unwrap(),
+        (-0x7000_0000i64).to_le_bytes()
+    );
 
     // call rsp-relative memory: the target is read before the push
     let c = code(|a| {
         a.call(qword_ptr(rsp))?;
         a.nop()
     });
-    let r = run_with(&c, &[BASE], &state(&[]), &[(STACK, &0x9_9990u64.to_le_bytes())]);
+    let r = run_with(
+        &c,
+        &[BASE],
+        &state(&[]),
+        &[(STACK, &0x9_9990u64.to_le_bytes())],
+    );
     assert_eq!((r.out.exit, r.out.rip), (abi::EXIT_LEFT_CODE, 0x9_9990));
-    assert_eq!(r.machine.read(STACK - 8, 8).unwrap(), (BASE + 3).to_le_bytes());
+    assert_eq!(
+        r.machine.read(STACK - 8, 8).unwrap(),
+        (BASE + 3).to_le_bytes()
+    );
 
     // ret imm16 releases the extra bytes
     let c = code(|a| a.ret_1(0x20));
-    let out = run_with(&c, &[BASE], &state(&[]), &[(STACK, &0x7_0000u64.to_le_bytes())]).out;
+    let out = run_with(
+        &c,
+        &[BASE],
+        &state(&[]),
+        &[(STACK, &0x7_0000u64.to_le_bytes())],
+    )
+    .out;
     assert_eq!((out.rip, out.gpr[RSP]), (0x7_0000, STACK + 8 + 0x20));
 }
 
@@ -371,6 +439,9 @@ fn memory_addressing() {
     assert_eq!(r.out.gpr[RAX], 0x55);
     assert_eq!(r.out.gpr[RDX], 0x0102_0304_0506_0708);
     assert_eq!(r.out.gpr[6], data_addr);
-    assert_eq!(r.machine.read(0x2_0000 + 12 + 0x1000, 4).unwrap(), 0xcafe_f00du32.to_le_bytes());
+    assert_eq!(
+        r.machine.read(0x2_0000 + 12 + 0x1000, 4).unwrap(),
+        0xcafe_f00du32.to_le_bytes()
+    );
     assert_eq!(r.machine.read(0x2_0000, 8).unwrap(), u64::MAX.to_le_bytes());
 }

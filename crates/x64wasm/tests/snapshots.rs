@@ -16,8 +16,15 @@ fn hex(s: &str) -> Vec<u8> {
 
 fn check(name: &str, base: u64, code: &str) {
     let bytes = hex(code);
-    let t = x64wasm::translate(CodeRegion { base, bytes: &bytes }, &[base], &Options::default())
-        .unwrap();
+    let t = x64wasm::translate(
+        CodeRegion {
+            base,
+            bytes: &bytes,
+        },
+        &[base],
+        &Options::default(),
+    )
+    .unwrap();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
         .validate_all(&t.wasm)
         .unwrap();

@@ -88,11 +88,7 @@ impl Machine {
             Engine::same(module.engine(), &self.engine),
             "module was compiled by another engine"
         );
-        let instance = match self
-            .instances
-            .iter()
-            .find(|(m, _)| Module::same(m, module))
-        {
+        let instance = match self.instances.iter().find(|(m, _)| Module::same(m, module)) {
             Some((_, instance)) => *instance,
             None => {
                 let mut linker = Linker::new(&self.engine);

@@ -424,7 +424,10 @@ pub fn high_address() -> Result<Case> {
     a.ret()?;
     a.set_label(&mut data_ptr)?;
     a.dq(&[HIGH_DATA])?;
-    let result = a.assemble_options(HIGH_CODE, BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS)?;
+    let result = a.assemble_options(
+        HIGH_CODE,
+        BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS,
+    )?;
     let ret_addr = result.label_ip(&ret_site)?;
     let code = result.inner.code_buffer;
 

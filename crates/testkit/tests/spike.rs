@@ -54,8 +54,7 @@ fn manifest_follows_the_abi_doc() {
     let dir = std::env::temp_dir().join(format!("tempwind-spike-{}", std::process::id()));
     spike::write(&dir).unwrap();
     let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
-            .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
     let abi_obj = &manifest["abi"];
     assert_eq!(abi_obj["stateSize"], abi::STATE_SIZE);
     assert_eq!(abi_obj["gpr"], abi::STATE_GPR);
@@ -64,7 +63,10 @@ fn manifest_follows_the_abi_doc() {
     assert_eq!(abi_obj["exit"], abi::STATE_EXIT);
     let cases = manifest["cases"].as_array().unwrap();
     let names: Vec<&str> = cases.iter().map(|c| c["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["sum_loop", "fib_recursive", "array", "high_address"]);
+    assert_eq!(
+        names,
+        ["sum_loop", "fib_recursive", "array", "high_address"]
+    );
     let is_hex = |v: &serde_json::Value| {
         v.as_str()
             .and_then(|s| s.strip_prefix("0x"))
