@@ -1,0 +1,15 @@
+[package]
+name = "testkit"
+description = "Instruction oracle, fixtures and replay for x64wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+x64wasm.workspace = true
+
+[lints]
+workspace = true
