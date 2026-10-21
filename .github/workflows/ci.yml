@@ -1,0 +1,151 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace
+
+      - name: testkit record --check
+        if: ${{ !cancelled() }}
+        run: cargo run -p testkit --release -- record --check
+
+      - name: testkit spike
+        if: ${{ !cancelled() }}
+        run: cargo run -p testkit --release -- spike --out target/spike
+
+      - uses: actions/setup-node@v7
+        if: ${{ !cancelled() }}
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: npm ci
+        if: ${{ !cancelled() }}
+        run: npm ci
+
+      - name: Node tests
+        if: ${{ !cancelled() }}
+        run: npm run test:node
+
+      # Tests use Playwright's pinned Chromium unless the CHROME_PATH repository
+      # variable names another browser binary on the runner.
+      - name: Install Chromium
+        if: ${{ !cancelled() && vars.CHROME_PATH == '' }}
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        if: ${{ !cancelled() }}
+        env:
+          CHROME_PATH: ${{ vars.CHROME_PATH }}
+        run: npm run test:browser
+
+      - name: Emscripten probe
+        if: ${{ !cancelled() }}
+        run: native/spike/run.sh
+
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "## Emscripten probe"
+            if [ -f native/spike/out/report.md ]; then
+              cat native/spike/out/report.md
+            else
+              echo "_native/spike/out/report.md not produced_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Playwright report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+
+      - name: Upload spike outputs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: spike
+          path: |
+            target/spike
+            native/spike/out/report.md
+          if-no-files-found: ignore
+
+  mingw-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - name: Build hello.exe
+        run: tests/native/build.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hello-exe
+          path: |
+            target/native/hello.exe
+            target/native/hello.exe.sha256
+          if-no-files-found: error
+
+  windows-x64:
+    needs: mingw-build
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: hello-exe
+          path: hello-exe
+      - name: Run hello.exe natively and compare
+        run: |
+          ./hello-exe/hello.exe | tr -d '\r' > hello.actual
+          if ! diff -u tests/native/hello.expected hello.actual; then
+            echo "::error::hello.exe output differs from tests/native/hello.expected"
+            exit 1
+          fi
+          echo "hello.exe output matches hello.expected"

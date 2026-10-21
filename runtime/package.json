@@ -1,0 +1,7 @@
+{
+  "name": "@tempwind/runtime",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": { ".": "./src/run.mjs" }
+}

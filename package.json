@@ -1,0 +1,14 @@
+{
+  "name": "tempwind",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test:node": "node tests/node/run-node-tests.mjs",
+    "test:browser": "playwright test",
+    "test": "npm run test:node && npm run test:browser"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

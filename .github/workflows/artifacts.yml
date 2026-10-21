@@ -1,0 +1,59 @@
+# Artifact pipeline: heavy or cross-compiled build outputs are published as
+# release assets of this repo so sessions can download them instead of rebuilding
+# (scripts/fetch-artifact.sh TAG ASSET).
+#
+# Naming convention: one immutable prerelease per artifact+commit, tagged
+# `<artifact>-<sha7>` (e.g. hello-1a2b3c4). Never overwrite or delete these;
+# a new commit gets a new release. Consumers find the newest one with
+# `scripts/fetch-artifact.sh --latest <artifact> ASSET`.
+name: artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "tests/native/**"
+      - ".github/workflows/artifacts.yml"
+      - "scripts/fetch-artifact.sh"
+    tags: ["artifacts-*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: artifacts-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  hello:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+
+      - name: Build hello.exe
+        run: tests/native/build.sh
+
+      - name: Publish release hello-<sha7>
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          tag="hello-${SHA:0:7}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping."
+            exit 0
+          fi
+          notes="hello.exe built from commit ${SHA} by workflow run ${RUN_URL}."
+          gh release create "$tag" \
+            target/native/hello.exe target/native/hello.exe.sha256 \
+            --target "$SHA" --prerelease \
+            --title "$tag" --notes "$notes"
+          echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"

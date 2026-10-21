@@ -1,0 +1,158 @@
+// Compare the x86_64-linux and wasm64-emscripten probe outputs and write
+// native/spike/out/report.md. Called by run.sh.
+//
+//   node compare.mjs OUTDIR
+//
+// Exit status 1 if an LP64 core type differs or the pthread test failed on
+// either side; every other difference is reported as a known difference.
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+const out = process.argv[2];
+if (!out) {
+  console.error('usage: node compare.mjs OUTDIR');
+  process.exit(2);
+}
+
+const read = (name) => {
+  const p = join(out, name);
+  return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null;
+};
+const readText = (name) => {
+  const p = join(out, name);
+  return existsSync(p) ? readFileSync(p, 'utf8').trim() : '';
+};
+
+const native = read('sizes-x86_64-linux.json');
+const wasm = read('sizes-wasm64-emscripten.json');
+if (!native || !wasm) {
+  console.error('compare.mjs: missing probe output in', out);
+  process.exit(2);
+}
+const hostNode = read('sizes-wasm64-host-node.json');
+const hostNodeStatus = readText('host-node.status');
+const posixNative = read('posix-x86_64-linux.json');
+const posixWasm = read('posix-wasm64-emscripten.json');
+const featNative = read('features-x86_64-linux.json');
+const featWasm = read('features-wasm64-emscripten.json');
+
+// LP64 core: Wine's Unix side is built for LP64 and passes these across its
+// own interfaces; a difference here is a hard failure.
+const CORE = ['int', 'long', 'pointer', 'size_t', 'ssize_t', 'ptrdiff_t', 'intptr_t', 'off_t', 'time_t'];
+
+// Why each known difference exists and whether it matters for Wine.
+const NOTES = {
+  target: 'Expected.',
+  compiler: 'Expected.',
+  clock_t: 'musl in Emscripten uses a 32-bit clock_t even on wasm64. Wine converts clock() results itself; keep it off any shared struct.',
+  'wint_t': 'Signedness only. Wine uses its own WCHAR (16-bit) on the Unix side, not wint_t.',
+  'long double': 'x87 80-bit extended (64-bit mantissa) vs IEEE binary128 (113-bit, soft-float). Guest x87 is emulated by the translator, not by host long double.',
+  max_align_t: 'wasm64 malloc alignment is 8 by max_align_t but __BIGGEST_ALIGNMENT__ is 16; Windows MEMORY_ALLOCATION_ALIGNMENT is 16, so heap code must align explicitly.',
+  va_list: 'SysV x86-64 va_list is an array of one 24-byte struct; wasm va_list is a plain pointer. No va_list crosses Wine\'s PE/Unix boundary, and __builtin_ms_va_list does not exist on wasm.',
+  pthread_attr_t: 'Opaque libc type; never shared with PE code.',
+  sigset_t: 'musl uses 128-bit sigset_t, glibc 1024-bit. Opaque to Wine.',
+  'struct sigaction': 'Follows sigset_t. Opaque to Wine.',
+  jmp_buf: 'Opaque. Emscripten setjmp is implemented with Wasm exceptions/JS, not register save.',
+  sigjmp_buf: 'Opaque, as jmp_buf.',
+  'struct stat': 'musl layout vs glibc layout. Wine converts struct stat into its own structures.',
+  'macro.__x86_64__': 'Wine selects CONTEXT, NtCurrentTeb, syscall thunks and signal_x86_64.c with this macro; wasm64 needs its own branch.',
+  'macro.__wasm__': 'Expected.',
+  'macro.__wasm64__': 'Expected.',
+  'macro.__EMSCRIPTEN__': 'Expected.',
+  'macro.__linux__': 'Emscripten is not Linux: Wine\'s __linux__ paths (futex, epoll, inotify, /proc) are off.',
+  'macro.__ELF__': 'Wasm objects are not ELF; asm.h directives (.type, .size, CFI) do not apply.',
+};
+
+const fmt = (v) => {
+  if (v === undefined) return '—';
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (v && typeof v === 'object') {
+    const parts = [];
+    if ('size' in v) parts.push(`${v.size} / ${v.align}`);
+    for (const [k, x] of Object.entries(v)) {
+      if (k === 'size' || k === 'align') continue;
+      parts.push(`${k} ${typeof x === 'boolean' ? (x ? 'yes' : 'no') : x}`);
+    }
+    return parts.join(', ');
+  }
+  return String(v);
+};
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const cell = (s) => String(s).replace(/\|/g, '\\|');
+
+const failures = [];
+const known = [];
+const rows = [];
+const keys = [...new Set([...Object.keys(native), ...Object.keys(wasm)])].filter((k) => k !== 'pthread');
+for (const k of keys) {
+  const a = native[k];
+  const b = wasm[k];
+  let match;
+  if (same(a, b)) match = 'yes';
+  else if (CORE.includes(k)) {
+    match = '**NO (core)**';
+    failures.push(`LP64 core type ${k} differs: ${fmt(a)} vs ${fmt(b)}`);
+  } else {
+    match = 'no (known)';
+    known.push(k);
+  }
+  rows.push(`| ${cell(k)} | ${cell(fmt(a))} | ${cell(fmt(b))} | ${match} |`);
+}
+
+const pt = (r) => (r ? `${r.ok ? 'ok' : 'FAILED'}: ${r.created}/${r.threads} created, ${r.joined} joined, atomic ${r.atomic_counter}/${r.expected}, mutex ${r.mutex_counter}/${r.expected}` : 'missing');
+if (!native.pthread?.ok) failures.push(`pthread test failed natively: ${pt(native.pthread)}`);
+if (!wasm.pthread?.ok) failures.push(`pthread test failed on wasm64: ${pt(wasm.pthread)}`);
+
+let md = '';
+md += '# Emscripten spike: x86_64-linux vs wasm64-emscripten\n\n';
+md += 'Generated by `native/spike/run.sh`. Sizes are `size / align` in bytes.\n';
+md += `Core LP64 types (hard failure on mismatch): ${CORE.map((c) => `\`${c}\``).join(', ')}.\n\n`;
+md += `- Native: \`${native.compiler}\`\n- Wasm: \`${wasm.compiler}\`, \`-sMEMORY64=1 -pthread\`, run with the emsdk image's Node\n\n`;
+md += `**Result: ${failures.length ? 'FAIL' : 'PASS'}.** ${known.length} known difference(s), ${failures.length} failure(s).\n\n`;
+if (failures.length) md += failures.map((f) => `- ${f}`).join('\n') + '\n\n';
+md += '## Types and properties\n\n';
+md += '| Item | x86_64-linux | wasm64-emscripten | Match |\n|---|---|---|---|\n';
+md += rows.join('\n') + '\n';
+md += `| pthread (4 threads) | ${cell(pt(native.pthread))} | ${cell(pt(wasm.pthread))} | ${native.pthread?.ok && wasm.pthread?.ok ? 'yes' : '**NO**'} |\n\n`;
+
+md += '## Known differences\n\n';
+for (const k of known) md += `- \`${k}\`: ${NOTES[k] ?? 'Not shared with PE code; review if Wine passes it across a boundary.'}\n`;
+md += '\n';
+
+md += '## Host Node\n\n';
+if (hostNode) {
+  md += same(hostNode, wasm)
+    ? `Host \`node\` (${hostNodeStatus}) ran the wasm64 build with identical output.\n\n`
+    : `Host \`node\` (${hostNodeStatus}) ran the wasm64 build but its output differs from the image's Node.\n\n`;
+} else {
+  md += `Host \`node\` could not run the wasm64 build: ${hostNodeStatus || 'not attempted'}.\n\n`;
+}
+
+if (posixNative && posixWasm) {
+  md += '## POSIX behaviour (`posix.c`)\n\n';
+  md += 'Run-time checks of behaviour Wine\'s Unix side relies on. Informational, not a gate.\n\n';
+  md += '| Check | x86_64-linux | wasm64-emscripten |\n|---|---|---|\n';
+  for (const k of new Set([...Object.keys(posixNative), ...Object.keys(posixWasm)])) {
+    const a = posixNative[k];
+    const b = posixWasm[k];
+    const f = (r) => (r ? `${r.ok ? 'yes' : 'no'}: ${r.detail}` : '—');
+    md += `| ${cell(k)} | ${cell(f(a))} | ${cell(f(b))} |\n`;
+  }
+  md += '\n';
+}
+
+if (featNative && featWasm) {
+  md += '## Compile/link feature probes (`features.c`, `-Werror`)\n\n';
+  md += '| Feature | x86_64-linux | wasm64-emscripten |\n|---|---|---|\n';
+  for (const k of new Set([...Object.keys(featNative), ...Object.keys(featWasm)])) {
+    md += `| ${cell(k)} | ${fmt(featNative[k])} | ${fmt(featWasm[k])} |\n`;
+  }
+  md += '\nLink probes only show that the symbol exists; see the POSIX table for whether it works.\n';
+}
+
+writeFileSync(join(out, 'report.md'), md);
+console.log(md);
+if (failures.length) {
+  console.error(`compare.mjs: ${failures.length} failure(s)`);
+  process.exit(1);
+}

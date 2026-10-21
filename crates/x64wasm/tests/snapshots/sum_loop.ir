@@ -1,0 +1,27 @@
+block 0x100000:
+  0x100000: mov eax,0
+    rax = 0x0
+  0x100005: cmp rcx,0
+    t0 = sub rcx, 0x0
+    flags.sub64 rcx, 0x0, t0
+  0x100009: je short 0000000000100014h
+  -> if e jump 0x100014 else 0x10000b
+
+block 0x10000b:
+  0x10000b: add rax,rcx
+    t0 = add rax, rcx
+    flags.add64 rax, rcx, t0  ; dead
+    rax = t0
+  0x10000e: sub rcx,1
+    t0 = sub rcx, 0x1
+    flags.sub64 rcx, 0x1, t0
+    rcx = t0
+  0x100012: jne short 000000000010000Bh
+  -> if ne jump 0x10000b else 0x100014
+
+block 0x100014:
+  0x100014: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> jump [t0]
