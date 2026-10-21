@@ -14,7 +14,7 @@
 - **Two bugs fixed in the version pasted on 2026-10-20** (commit `87f8b70`):
   1. The stop step killed itself. Its `pkill -f 'containerd --config …'` matched its own `bash -c` command line, so it reported FAILED; dockerd had already shut down cleanly. It now uses containerd's pid file.
   2. Login shells still got Node 22, because the image's `/etc/profile.d/nodejs.sh` prepends `/opt/node22/bin`. The script now writes `/etc/profile.d/zz-node24.sh`. Login and non-login shells both resolve Node 24.22.0.
-  - **The user needs to paste the current `tools/cloud-setup.sh` into the environment again.**
+  - The user pasted the fixed version into the environment settings on 2026-10-21.
 - **SessionStart hook.** Verified for real: this session's dockerd was started by the hook (`/tmp/dockerd.log`, PPID 1).
   - From a stopped daemon, `CLAUDE_CODE_REMOTE=true .claude/hooks/session-start.sh` prints `{"async": true, …}` and dockerd answers within 2 s.
   - A second run is a no-op. With `CLAUDE_CODE_REMOTE` unset it does nothing.
