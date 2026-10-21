@@ -89,15 +89,19 @@ node24() {
     $SUDO tar -xJf "$tmp/$name.tar.xz" -C "$NODE_DIR" --strip-components=1
     rm -rf "$tmp"
   fi
-  # Make Node 24 the default `node`: ~/.local/bin comes before the image's
-  # /opt/node22/bin on PATH, and /usr/local/bin covers other PATHs.
+  # Make Node 24 the default `node`. Non-login shells: ~/.local/bin comes
+  # before the image's /opt/node22/bin on PATH, and /usr/local/bin covers
+  # other PATHs. Login shells: the image's /etc/profile.d/nodejs.sh prepends
+  # /opt/node22/bin, so a later profile.d script prepends Node 24.
   mkdir -p "$HOME/.local/bin"
   local tool
   for tool in node npm npx corepack; do
     ln -sfn "$NODE_DIR/bin/$tool" "$HOME/.local/bin/$tool"
     $SUDO ln -sfn "$NODE_DIR/bin/$tool" "/usr/local/bin/$tool"
   done
+  echo "export PATH=$NODE_DIR/bin:\$PATH" | $SUDO tee /etc/profile.d/zz-node24.sh >/dev/null
   PATH="$HOME/.local/bin:$PATH" node --version
+  bash -lc 'node --version'
 }
 
 # Docker: start dockerd directly (the init script fails on a ulimit error in
@@ -127,21 +131,24 @@ docker_pull() {
 }
 
 docker_stop() {
-  local p
+  local p c
   p=$(cat /var/run/docker.pid 2>/dev/null || true)
+  c=$(cat /var/run/docker/containerd/containerd.pid 2>/dev/null || true)
   if [ -n "$p" ]; then $SUDO kill -TERM "$p" 2>/dev/null || true; fi
   for _ in $(seq 1 20); do
     pgrep -x dockerd >/dev/null || break
     sleep 1
   done
   if pgrep -x dockerd >/dev/null; then $SUDO pkill -KILL -x dockerd || true; fi
-  if pgrep -f 'containerd --config /var/run/docker/containerd' >/dev/null; then
-    $SUDO pkill -TERM -f 'containerd --config /var/run/docker/containerd' || true
+  # A clean dockerd shutdown stops its managed containerd; after a KILL it can
+  # linger. Use its pid file: a `pkill -f` pattern would match this shell.
+  if [ -n "$c" ] && kill -0 "$c" 2>/dev/null; then
+    $SUDO kill -TERM "$c" 2>/dev/null || true
     sleep 2
   fi
   $SUDO rm -f /var/run/docker.pid /var/run/docker.sock /var/run/docker/containerd/containerd.pid
-  if pgrep -x dockerd >/dev/null; then
-    echo "dockerd still running"
+  if pgrep -x dockerd >/dev/null || { [ -n "$c" ] && kill -0 "$c" 2>/dev/null; }; then
+    echo "dockerd or its containerd is still running"
     return 1
   fi
   echo "dockerd stopped, pid files removed"
