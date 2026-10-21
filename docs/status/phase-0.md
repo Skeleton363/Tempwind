@@ -1,25 +1,26 @@
 # Phase 0 status: Foundations
 
 - **Draft PR:** https://github.com/Skeleton363/Tempwind/pull/1 ("[Phase 0] Foundations"), branch `claude/epic-hypatia-9y2839`.
-- **State (session 1, 2026-10-20):** all ten Phase 0 items are implemented, and CI is green on Linux and Windows.
-- **Paused** at the user's request before the environment changes below were validated. Start with **Resume here**.
+- **State:** all ten Phase 0 items are implemented, and CI is green on Linux and Windows.
+- **Session 1 (2026-10-20):** built everything.
+- **Session 2 (2026-10-21):** validated the cloud-environment changes.
 
-## Resume here
+## Session 2: environment validation
 
-Session 1 stopped with these open items, in this order:
-
-1. **Validate `tools/cloud-setup.sh`.** It is written, but it has only been linted, not run.
-   - From a near-fresh state, remove `/opt/node24`, the `~/.local/bin` and `/usr/local/bin` node symlinks, the emsdk image, and `rustup toolchain uninstall 1.97.0`.
-   - Run `time tools/cloud-setup.sh`. Check: under 5 minutes, exit 0, every step OK, `node --version` = v24.22.0, no `dockerd` process, and no `/var/run/docker.pid`.
-   - Then ask the user to paste it into the environment settings (cloud environment menu → Edit → Setup script).
-2. **Validate the SessionStart hook.**
-   - Stop dockerd, then run `CLAUDE_PROJECT_DIR=$PWD CLAUDE_CODE_REMOTE=true .claude/hooks/session-start.sh`. Expect `{"async": true, …}` and `docker info` working afterwards.
-   - Run it again: it must be a no-op. With `CLAUDE_CODE_REMOTE` unset it must do nothing.
-3. **Remove the last hard-coded browser path.** `tests/bench/memory/bench.mjs` (`--browser`) and its README still look for `/opt/pw-browsers/chromium-1194/...`. Use Playwright's `chromium.executablePath()`, with `CHROME_PATH` as the override, like `playwright.config.mjs`.
-   - The session-1 subagent was stopped while about to "update bench.mjs and bench.html for the store column and the memory-count probe". The recorded results already contain those columns, so check that the console/HTML output prints them.
-   - Then record a Node 24 run: `node tests/bench/memory/bench.mjs --runs 5 --json tests/bench/memory/results/node24.json`.
-4. **Re-run the local suite on Node 24.** Run everything in "Test summary" below, plus `native/spike/run.sh`, which now uses host Node 24 for the optional host run.
-5. **Finish.** Push, get CI green, give the test summary in the final message, and ask the user before merging (CLAUDE.md).
+- **`tools/cloud-setup.sh`, cold run.** Started from a near-fresh state: MinGW (gcc, g++), wabt, binaryen, Rust 1.97.0, Node 24 and the emsdk image all removed. Ran it from `/`.
+  - 151 s, exit 0, every step OK: apt 21 s, rust 22 s, node 5 s, emsdk pull 100 s.
+  - Warm reruns take 5–6 s.
+  - Afterwards: no dockerd, and no `docker.pid`, `docker.sock` or `containerd.pid`.
+- **Two bugs fixed in the version pasted on 2026-10-20** (commit `87f8b70`):
+  1. The stop step killed itself. Its `pkill -f 'containerd --config …'` matched its own `bash -c` command line, so it reported FAILED; dockerd had already shut down cleanly. It now uses containerd's pid file.
+  2. Login shells still got Node 22, because the image's `/etc/profile.d/nodejs.sh` prepends `/opt/node22/bin`. The script now writes `/etc/profile.d/zz-node24.sh`. Login and non-login shells both resolve Node 24.22.0.
+  - **The user needs to paste the current `tools/cloud-setup.sh` into the environment again.**
+- **SessionStart hook.** Verified for real: this session's dockerd was started by the hook (`/tmp/dockerd.log`, PPID 1).
+  - From a stopped daemon, `CLAUDE_CODE_REMOTE=true .claude/hooks/session-start.sh` prints `{"async": true, …}` and dockerd answers within 2 s.
+  - A second run is a no-op. With `CLAUDE_CODE_REMOTE` unset it does nothing.
+  - `tools/start-dockerd.sh` alone works too.
+- **Disk carries over.** Resuming a paused session kept the session-1 disk: scratchpad, tools and image were still there. So a changed setup script only takes effect in newly built environments, and has to be tested by running it, as above.
+- **Remaining when this was written:** `tests/bench/memory/bench.mjs --browser` still hard-coded a Chromium path, and the Node 24 benchmark run was not recorded yet. A builder agent is fixing both.
 
 ## What works
 
@@ -36,16 +37,17 @@ Session 1 stopped with these open items, in this order:
 | 9 | **CI.** `linux-x64` runs items 2-6; `mingw-build` + `windows-x64` run the MinGW-built `hello.exe` natively and diff its output | All three jobs green |
 | 10 | This note | |
 
-### Test summary (local, session 1, before the pause)
+### Test summary (local, session 2, Node 24.22.0)
 
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `cargo test --workspace`: all suites pass.
   - x64wasm: 3 unit, 3 snapshot, 5 translate.
   - testkit: 5 spike, 9 spike_insns, 12 spike_semantics, 8 oracle unit, plus replay, replay_harness and replay_inputs. spike_bench: 2 ignored, they are measurements.
 - `cargo run -p testkit --release -- record --check`: "10 fixture files match a fresh recording".
-- `npm run test:node`: 10/10 on Node 24.22 (and on Node 22 with the old launcher).
-- `npm run test:browser`: 4/4 (host self-test, threads, translator page+Worker, WebGPU).
-- CI on `3e2039c`: linux-x64, mingw-build and windows-x64 all green.
+- `npm run test:node`: 10/10.
+- `npm run test:browser`: 4/4 (host self-test, threads, translator page+Worker, WebGPU) with Playwright's default browser. Also 4/4 with `CHROME_PATH` pointing at Playwright's full Chromium build.
+- `native/spike/run.sh`: PASS, 0 failures, 19 known differences, 25 s. The optional host-Node run works now that host Node is 24.
+- CI: green on every push since `3e2039c`.
 
 ## Measurements
 
@@ -116,17 +118,16 @@ Session 1 stopped with these open items, in this order:
   - About 1800 syscalls need typed wrappers, because `call_indirect` traps on signature mismatch.
   - wineserver IPC must move to SharedArrayBuffer channels, signals become cooperative, and fork/exec and dlopen need replacements.
   - Full risk list: `native/README.md` "Risk list for Phase 2".
-- **Environment changes not yet validated** (see Resume here):
-  - `tools/cloud-setup.sh` and the SessionStart hook have only been linted.
-  - `tests/bench/memory/bench.mjs` still hard-codes a Chromium path.
+- **Environment.** A changed `tools/cloud-setup.sh` only takes effect after the user pastes it into the environment settings and a new environment is built. Resumed sessions keep their old disk.
 - **`hello.exe` is not bit-reproducible** because of the PE timestamp. Releases are keyed by commit, so this is harmless.
 - **WebGPU in CI depends on the SwiftShader that Chromium bundles.** Flags may change between Chromium versions, so re-check them when Playwright is bumped.
 
 ## Setup-script changes
 
-The cloud environment needs `tools/cloud-setup.sh`, pasted into the environment's Setup script once it is validated (Resume here, item 1). It does the following:
+The environment's Setup script is `tools/cloud-setup.sh`. Session 2 validated it: 151 s cold, 5 s warm, always exit 0. The user must paste the version from commit `87f8b70` or later. It does the following:
 
-- installs MinGW-w64 x86-64, wabt, binaryen, Rust 1.97.0 with wasm32, and Node 24.22.0 from nodejs.org, made the default `node`;
+- installs MinGW-w64 x86-64 (gcc and g++), wabt, binaryen, and Rust 1.97.0 with wasm32;
+- installs Node 24.22.0 from nodejs.org (sha256-checked) and makes it the default `node` in login and non-login shells;
 - pre-pulls `emscripten/emsdk:6.0.12`, then stops dockerd cleanly.
 
 Running dockerd per session is the SessionStart hook's job.
