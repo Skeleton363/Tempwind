@@ -1,10 +1,10 @@
 // Node runner for the guest-memory micro-benchmark.
 //
 //   node tests/bench/memory/bench.mjs [--json FILE] [--runs N] [--reps N] [--variants a,b] [--no-growth]
-//   node tests/bench/memory/bench.mjs --browser [auto|PATH] ...   (headless Chromium via --dump-dom)
+//   node tests/bench/memory/bench.mjs --browser [PATH] ...   (headless Chromium via --dump-dom;
+//       binary: PATH, else $CHROME_PATH, else Playwright's Chromium)
 //
-// Node 22 needs no flag for memory64 defined inside a module (V8 12.4 has it
-// on by default); `--experimental-wasm-memory64` is accepted and harmless.
+// Node 24 needs no flag for memory64 (on by default since V8 12.4).
 // See README.md for the browser runner and recorded results.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -46,10 +46,12 @@ const browser = args.includes('--browser')
   ? (opt('--browser') && !opt('--browser').startsWith('--') ? opt('--browser') : 'auto')
   : undefined;
 if (browser !== undefined) {
+  const chrome = await findChrome(browser);
+  console.error(`browser: ${chrome}`);
   const all = [];
   for (let k = 0; k < runs; k++) {
     console.error(`browser run ${k + 1}/${runs}`);
-    const d = runInBrowser(browser, k > 0);
+    const d = runInBrowser(chrome, k > 0);
     env = d.env;
     if (!growth && d.growth) {
       growth = d.growth;
@@ -77,12 +79,25 @@ if (browser !== undefined) {
 report(env, results, growth, memories);
 if (jsonOut) writeFileSync(jsonOut, JSON.stringify({ env, results, growth, memories }, null, 2) + '\n');
 
+async function findChrome(explicit) {
+  // Order: explicit --browser PATH, then $CHROME_PATH, then Playwright's Chromium.
+  if (explicit && explicit !== 'auto') {
+    if (!existsSync(explicit)) throw new Error(`--browser ${explicit}: no such file`);
+    return explicit;
+  }
+  const env = process.env.CHROME_PATH;
+  if (env) {
+    if (!existsSync(env)) throw new Error(`CHROME_PATH=${env}: no such file`);
+    return env;
+  }
+  const { chromium } = await import('@playwright/test');
+  const p = chromium.executablePath();
+  if (!existsSync(p)) throw new Error(`Playwright's Chromium not found at ${p}; pass --browser PATH or set CHROME_PATH`);
+  return p;
+}
+
 // Run bench.html in headless Chromium with --dump-dom and parse its JSON.
-function runInBrowser(path, noGrowth) {
-  const candidates = [path, process.env.CHROME, '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
-    '/opt/chrome/chrome', '/opt/chrome/chrome-linux64/chrome'].filter((p) => p && p !== 'auto');
-  const chrome = candidates.find((p) => existsSync(p));
-  if (!chrome) throw new Error(`no Chromium found (tried ${candidates.join(', ')}); pass --browser PATH or set CHROME`);
+function runInBrowser(chrome, noGrowth) {
   const q = new URLSearchParams({ reps: String(reps) });
   if (variants) q.set('variants', variants.join(','));
   if (noGrowth || args.includes('--no-growth')) q.set('growth', '0');
