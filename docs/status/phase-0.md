@@ -20,7 +20,11 @@
   - A second run is a no-op. With `CLAUDE_CODE_REMOTE` unset it does nothing.
   - `tools/start-dockerd.sh` alone works too.
 - **Disk carries over.** Resuming a paused session kept the session-1 disk: scratchpad, tools and image were still there. So a changed setup script only takes effect in newly built environments, and has to be tested by running it, as above.
-- **Remaining when this was written:** `tests/bench/memory/bench.mjs --browser` still hard-coded a Chromium path, and the Node 24 benchmark run was not recorded yet. A builder agent is fixing both.
+- **Memory benchmark:**
+  - `bench.mjs --browser` now finds Chromium through Playwright, with `CHROME_PATH` as an override. There are no hard-coded browser paths left in the repo.
+  - `core.js` had retried any memory64 failure with Node 22's pre-standard descriptor. Current engines ignore it and build a memory32, so the real errors were hidden. The session-1 note's claim of a "65536-page cap" in Chromium came from that bug.
+  - Fixed and re-recorded: `results/node24.json` and `results/chromium141.json`. Real limits: 262144 pages in both engines; Chromium holds 62 shared 16 GiB-maximum memories.
+  - Current V8 (13.6+) makes memory64 as fast as memory32, but makes the optional NULL/store checks costlier than V8 12.4 did. The design note's tables and readings are updated, and the decision (option A) stands.
 
 ## What works
 
@@ -60,7 +64,7 @@
 | Oracle | 6480 cases, 2.30 MB of fixtures. Recording ~1 s; replay ~4.6 s (release) |
 | Atomics wake across a Worker | first wake 0.15–1.0 ms; ping-pong round trip median 0.02–0.04 ms, p95 0.03–0.09 ms |
 | WebGPU on SwiftShader | adapter `{vendor: google, architecture: swiftshader}`; 64×64 triangle 1682 px; test ~0.2 s |
-| Guest memory, ns per access (Chromium 141 / Node 22) | identity mapping (`m64`) ≈ memory32 on cache-missing loads. Translation table: 1.8–3.0× on hot/sequential loads, 1.5–1.8× behind a one-entry cache. NULL check +18% on hot loads. Full tables in `docs/design/guest-memory.md` |
+| Guest memory, ns per access (Chromium 141 / Node 24, idle machine) | identity mapping (`m64`) is level with memory32. Translation table: 2.7–3.7× on L1-hot loads, 1.4–2.4× on sequential loads; 1.35–2.1× behind a one-entry cache. Optional NULL check +80% on hot loads, store-side code check 1.5× on sequential stores. Tables in `docs/design/guest-memory.md` |
 | memory64 growth | grow to 15 GiB < 0.1 ms (shared); no RSS until touched |
 | CI wall time | linux-x64 ~2.5 min warm cache (~9 min cold), windows-x64 ~15 s, artifacts ~40 s |
 

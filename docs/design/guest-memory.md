@@ -82,53 +82,60 @@ Table variants put the buffer at guest VA 0x1_4000_0000 and map it with 64 KiB p
 
 | Variant | hot | seq | rand | chase | hotst | store |
 |---|---:|---:|---:|---:|---:|---:|
-| `m32` | 0.62 (0.85x) | 1.35 (0.88x) | 22.18 (1.01x) | 268.32 (1.01x) | 0.56 (0.93x) | 1.41 (1.06x) |
-| `m64` | 0.74 (1.00x) | 1.53 (1.00x) | 21.91 (1.00x) | 266.17 (1.00x) | 0.60 (1.00x) | 1.34 (1.00x) |
-| `m64-flat` | 1.31 (1.78x) | 3.53 (2.31x) | 25.45 (1.16x) | 247.14 (0.93x) | 1.34 (2.23x) | 1.37 (1.03x) |
-| `m64-2level` | 1.79 (2.43x) | 3.99 (2.61x) | 36.44 (1.66x) | 287.56 (1.08x) | 1.80 (3.00x) | 2.04 (1.53x) |
-| `m64-tlb1` | 1.12 (1.52x) | 2.31 (1.51x) | 27.89 (1.27x) | 282.93 (1.06x) | 1.07 (1.79x) | 1.44 (1.08x) |
-| `m64-tlb256` | 1.63 (2.21x) | 3.98 (2.61x) | 40.17 (1.83x) | 267.08 (1.00x) | 1.58 (2.63x) | 1.83 (1.37x) |
-| `m64-nullcheck` | 0.88 (1.19x) | 1.51 (0.99x) | 22.49 (1.03x) | 266.67 (1.00x) | 0.81 (1.35x) | 1.41 (1.05x) |
-| `m64-bias` | 0.70 (0.96x) | 1.42 (0.93x) | 24.22 (1.11x) | 264.91 (1.00x) | 0.67 (1.12x) | 1.32 (0.99x) |
-| `m64-wcheck` | 0.71 (0.96x) | 1.36 (0.89x) | 22.79 (1.04x) | 268.41 (1.01x) | 1.13 (1.88x) | 1.48 (1.10x) |
+| `m32` | 0.84 (1.06x) | 1.35 (1.20x) | 25.06 (0.98x) | 219.30 (1.02x) | 0.81 (1.02x) | 1.06 (1.02x) |
+| `m64` | 0.79 (1.00x) | 1.13 (1.00x) | 25.48 (1.00x) | 214.29 (1.00x) | 0.80 (1.00x) | 1.04 (1.00x) |
+| `m64-flat` | 2.10 (2.65x) | 1.73 (1.54x) | 33.83 (1.33x) | 224.71 (1.05x) | 2.06 (2.59x) | 1.60 (1.54x) |
+| `m64-2level` | 2.82 (3.57x) | 2.65 (2.35x) | 50.50 (1.98x) | 227.90 (1.06x) | 2.78 (3.49x) | 2.56 (2.47x) |
+| `m64-tlb1` | 1.67 (2.12x) | 1.65 (1.46x) | 38.36 (1.51x) | 218.15 (1.02x) | 1.11 (1.39x) | 1.45 (1.39x) |
+| `m64-tlb256` | 3.40 (4.30x) | 2.18 (1.93x) | 58.47 (2.30x) | 237.99 (1.11x) | 3.45 (4.33x) | 3.79 (3.65x) |
+| `m64-nullcheck` | 1.44 (1.82x) | 1.50 (1.32x) | 25.18 (0.99x) | 214.46 (1.00x) | 1.17 (1.47x) | 1.23 (1.19x) |
+| `m64-bias` | 1.24 (1.57x) | 1.14 (1.01x) | 28.15 (1.10x) | 222.09 (1.04x) | 1.21 (1.52x) | 1.19 (1.14x) |
+| `m64-wcheck` | 0.79 (1.00x) | 1.26 (1.11x) | 26.85 (1.05x) | 220.27 (1.03x) | 1.89 (2.37x) | 1.66 (1.60x) |
 
-**Node 22.22 (V8 12.4)** (`results/node22.json`). ns per access, with the ratio to `m64` in parentheses:
+**Node 24.22 (V8 13.6)** (`results/node24.json`). ns per access, with the ratio to `m64` in parentheses:
 
-| Variant | hot | seq | rand | chase | store |
-|---|---:|---:|---:|---:|---:|
-| `m32` | 0.49 (0.97x) | 1.41 (0.92x) | 22.47 (1.03x) | 276.17 (1.05x) | 1.35 (0.95x) |
-| `m64` | 0.50 (1.00x) | 1.53 (1.00x) | 21.90 (1.00x) | 263.92 (1.00x) | 1.42 (1.00x) |
-| `m64-flat` | 1.04 (2.08x) | 3.38 (2.20x) | 27.55 (1.26x) | 292.18 (1.11x) | 1.53 (1.08x) |
-| `m64-2level` | 1.49 (2.99x) | 4.09 (2.67x) | 34.67 (1.58x) | 285.45 (1.08x) | 1.95 (1.37x) |
-| `m64-tlb1` | 0.80 (1.59x) | 2.76 (1.80x) | 33.05 (1.51x) | 279.61 (1.06x) | 1.60 (1.13x) |
-| `m64-tlb256` | 1.48 (2.97x) | 3.95 (2.58x) | 42.20 (1.93x) | 290.76 (1.10x) | 1.93 (1.36x) |
-| `m64-nullcheck` | 0.59 (1.18x) | 1.58 (1.03x) | 23.06 (1.05x) | 278.07 (1.05x) | 1.42 (1.00x) |
-| `m64-bias` | 0.41 (0.81x) | 1.48 (0.97x) | 22.84 (1.04x) | 278.41 (1.05x) | 1.44 (1.02x) |
-| `m64-wcheck` | 0.52 (1.03x) | 1.41 (0.92x) | 24.15 (1.10x) | 278.69 (1.06x) | 1.54 (1.09x) |
+| Variant | hot | seq | rand | chase | hotst | store |
+|---|---:|---:|---:|---:|---:|---:|
+| `m32` | 0.77 (0.99x) | 1.18 (0.98x) | 25.80 (0.98x) | 221.60 (0.98x) | 0.79 (1.11x) | 1.02 (0.90x) |
+| `m64` | 0.78 (1.00x) | 1.21 (1.00x) | 26.33 (1.00x) | 227.11 (1.00x) | 0.71 (1.00x) | 1.13 (1.00x) |
+| `m64-flat` | 2.12 (2.73x) | 1.69 (1.40x) | 34.63 (1.32x) | 247.12 (1.09x) | 2.01 (2.84x) | 1.40 (1.24x) |
+| `m64-2level` | 2.86 (3.68x) | 2.55 (2.11x) | 52.43 (1.99x) | 239.68 (1.06x) | 2.68 (3.77x) | 2.26 (1.99x) |
+| `m64-tlb1` | 1.50 (1.93x) | 1.63 (1.35x) | 40.35 (1.53x) | 231.67 (1.02x) | 1.04 (1.46x) | 1.36 (1.20x) |
+| `m64-tlb256` | 3.42 (4.41x) | 2.25 (1.86x) | 60.01 (2.28x) | 247.49 (1.09x) | 3.06 (4.31x) | 3.23 (2.85x) |
+| `m64-nullcheck` | 1.40 (1.80x) | 1.66 (1.38x) | 27.01 (1.03x) | 235.13 (1.04x) | 1.20 (1.69x) | 1.25 (1.10x) |
+| `m64-bias` | 1.21 (1.55x) | 1.23 (1.02x) | 28.50 (1.08x) | 219.13 (0.96x) | 1.35 (1.90x) | 1.22 (1.07x) |
+| `m64-wcheck` | 1.37 (1.77x) | 1.20 (0.99x) | 27.33 (1.04x) | 230.03 (1.01x) | 1.87 (2.64x) | 1.65 (1.45x) |
 
-The Node 22 run predates the `hotst` loop. A run with `--wasm-memory64-trap-handling` (`results/node22-trap-handling.json`) shows the same ordering.
+Both runs were recorded on 2026-10-21 on an otherwise idle machine. Session 1's runs on Node 22 / V8 12.4 (`results/node22*.json`) show the same ordering for option B. The optional checks were cheaper there, partly because memory64 bounds checks were explicit then; V8 13.6 uses trap handling by default.
 
 How to read it:
 
-- **Option A costs nothing measurable when accesses miss the cache.** On `rand` and `chase`, `m64` is within ±5% of `m32`. On L1-hot loads, memory64's explicit bounds checks cost 0.74 vs 0.62 ns in Chromium (+19%) and nothing in Node.
-- **Option B costs 1.8–2.3× (flat table) and 2.4–3.0× (two-level) on hot and sequential loads.** That is +0.5 to +2.5 ns per access. On pointer chasing the lookup hides behind the cache miss.
-- **Caching the translation recovers only part of it.** A one-entry cache in locals (`m64-tlb1`) still costs 1.5–1.8×. A 256-entry software TLB is no better than the flat table.
-- **The NULL check costs +18% on hot loads and nothing measurable elsewhere.** The biased mapping (`m64-bias`: offset = VA − 0x10000, so the NULL page is out of bounds) is free.
-- **The store-side page-flag check (`m64-wcheck`) costs about +10% on sequential stores**, and up to 1.9× on L1-hot stores in Chromium.
+- **Option A costs nothing over memory32.** In current V8, `m64` is level with `m32` on every loop (0.9–1.2×, within noise).
+- **Option B costs 2.7× (flat table) and 3.6–3.7× (two-level) on L1-hot loads, and 1.4–2.4× on sequential loads.**
+  - Stores are similar: 2.6–3.8× hot, 1.2–2.5× sequential.
+  - On pointer chasing the lookup mostly hides behind the cache miss (1.05–1.1×).
+- **Caching the translation recovers only part of it.**
+  - A one-entry cache in locals (`m64-tlb1`) still costs 1.9–2.1× on hot loads and 1.35–1.5× elsewhere.
+  - A 256-entry software TLB is worse than the flat table (4.3–4.4× hot).
+- **The optional checks are not free in tight loops.**
+  - NULL check (`m64-nullcheck`): +80% on L1-hot loads, +32–38% on sequential loads, nothing measurable on cache-missing loads.
+  - Biased mapping (`m64-bias`: offset = VA − 0x10000): +55% on hot loads, about free on sequential loads.
+  - Store-side page-flag check (`m64-wcheck`): 2.4–2.6× on hot stores and 1.45–1.6× on sequential stores. Loads are unaffected.
+  - Phase 1 has to measure these on real code (CoreMark, 7-Zip), where loads are a smaller share of the work.
 - **Growth and RSS:**
   - Growing a shared memory64 to 15 GiB takes under 0.1 ms.
-  - RSS doesn't rise until pages are touched (Node: flat at 313 MiB). Touching 256 MiB costs about 120 ms.
-  - One non-shared grow across 4 GiB took 46–51 ms.
+  - RSS doesn't rise until pages are touched (Node: flat at 318 MiB). Touching 256 MiB costs 190 ms in Node.
+  - In Chromium, first touch of shared memory took 2.1 s in this run but 0.12 s in session 1, and 0.26 s for non-shared memory. Investigate in Phase 2 before relying on it.
+  - One non-shared grow across 4 GiB takes about 43 ms.
 - **Memory count and cap:**
-  - Node created 64 shared memories with a 16 GiB maximum in one process. Chromium created 62, then refused a maximum above 65536 pages.
-  - Both reject a maximum above 262144 pages, the 16 GiB cap.
-  - The Chromium run was a `file://` page that was not cross-origin isolated.
+  - Both engines reject a maximum above 262144 pages.
+  - Node 24 held 64 shared 16 GiB-maximum memories, the probe's limit. Chromium held 62, then failed with "could not allocate memory".
 
 ## Comparison
 
 | Topic | A: identity, below 16 GiB | B: translation table |
 |---|---|---|
-| **Per-access cost** | None measurable on cache-missing loads. Up to +19% on L1-hot loads (memory64 bounds checks). Optional checks: NULL +18% on hot loads (free with the biased mapping); store-side code/write-watch check about +10% on sequential stores. | 1.8–2.3× (flat) to 2.4–3.0× (two-level) on hot and sequential loads; 1.5–1.8× even with a one-entry cache. Hidden behind cache misses on pointer chasing. |
+| **Per-access cost** | None over memory32 (current V8). Optional checks cost extra in tight loops: NULL check +80% on L1-hot loads and +35% on sequential loads; store-side code/write-watch check 1.5× on sequential stores. Phase 1 measures them on real code. | 2.7× (flat) to 3.7× (two-level) on L1-hot loads, 1.4–2.4× on sequential loads; 1.35–2.1× even with a one-entry cache. Hidden behind cache misses on pointer chasing. |
 | **Wine's Unix side** | Dereferences guest pointers natively. No change to Wine's C code. | Every guest pointer the Unix side touches, nested ones included, would need translating. That means a Binaryen/LLVM pass that rewrites every load and store in the Emscripten output, at B's cost, *and* the Unix side's own data would have to be mapped by the same table. This is the biggest practical argument against B. |
 | **Images with fixed bases (no relocations)** | Load at their base if it lies inside the guest regions below. Fixed bases at or above 16 GiB, or inside the host region, cannot run. The common fixed bases fit: 0x40_0000 (old MinGW) and 0x1_4000_0000 (MSVC `/FIXED`). | Any base works. |
 | **ASLR / DYNAMICBASE / HIGHENTROPYVA** | We don't randomize. Relocatable images get their preferred base if it is free and inside the guest range, otherwise a deterministic slot. The same image always lands at the same address, which keeps AOT-translated code valid (cache key: image hash + load base). HIGHENTROPYVA *permits* addresses above 4 GiB but doesn't require them. | Same policy possible. Preferred bases are always usable. |
@@ -150,7 +157,7 @@ How to read it:
 
 **Option A: identity mapping, guest VA == wasm offset, one shared memory64 (maximum 16 GiB) per Windows process, everything below 16 GiB.**
 
-- B costs 1.8–3.0× on hot and sequential loads (1.5–1.8× even behind a one-entry cache) on every memory access in the measured loops.
+- B costs 1.4–3.7× on hot and sequential loads (1.35–2.1× even behind a one-entry cache) on every memory access in the measured loops.
 - Worse, B would have to be applied to Wine's Unix side too, because Wine passes raw pointers across the PE/Unix boundary and dereferences them in C.
 - A costs nothing on the access path. What it loses: fixed bases above 16 GiB, huge reservations, aliasing views, and hardware-like protection. These are uncommon in 2010s desktop apps, and each has a workaround or a clear failure mode.
 - We keep NULL-page and store-side code checks as explicit cold branches whose cost we measure in Phase 1. They are not a table lookup.
