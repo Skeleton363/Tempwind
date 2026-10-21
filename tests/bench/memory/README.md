@@ -37,15 +37,15 @@ It also measures:
 ## Run
 
 ```sh
-node tests/bench/memory/bench.mjs                      # Node (22+; memory64 needs no flag)
-node --wasm-memory64-trap-handling tests/bench/memory/bench.mjs --no-growth
+node tests/bench/memory/bench.mjs                      # Node 24 (pinned in .nvmrc; memory64 needs no flag)
+node --wasm-memory64-trap-handling tests/bench/memory/bench.mjs --no-growth   # Node 22 only; on by default since V8 13.6 (Node 24)
 node tests/bench/memory/bench.mjs --browser            # headless Chromium via --dump-dom
 node tests/bench/memory/bench.mjs --runs 5 --json out.json --variants m64,m64-flat
 ```
 
 Options:
 
-- `--browser [PATH]` looks for Chromium at `$CHROME`, `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, then `/opt/chrome/...`.
+- `--browser [PATH]` runs `bench.html` in headless Chromium. The binary is, in order: the explicit `PATH`; the `CHROME_PATH` environment variable when non-empty; Playwright's own Chromium (`chromium.executablePath()` from `@playwright/test`, so run `npm ci` first). The chosen binary is printed on stderr and in the report header. A path that does not exist is an error, not a fallback.
 - `--runs N` takes the median of N complete runs. The default is 1; the recorded results use 5.
 - `--reps N` sets the repetitions per run (default 5).
 
@@ -55,4 +55,4 @@ A full run of all variants takes about 1 minute per run in Node and needs about 
 
 ## Results
 
-Recorded results are in `results/*.json`. The summary and its interpretation are in `docs/design/guest-memory.md`.
+Recorded results are in `results/*.json`: `node24.json` (Node 24.22, V8 13.6, median of 5 runs, all six loops, memory-count probe and growth), `chromium141.json` (headless Chromium 141), and the older `node22*.json`. The summary and its interpretation are in `docs/design/guest-memory.md`.

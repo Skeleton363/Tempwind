@@ -422,14 +422,25 @@
   // Cost of growing one memory64 towards the 16 GiB browser cap. `rss` is an
   // optional callback (Node: process.memoryUsage().rss) to show whether grown
   // but untouched pages cost resident memory.
+  // Detect the memory64 descriptor once: the final API (`address`, BigInt
+  // sizes; Node 24, Chromium 133+) or V8 12.4's pre-standard one (`index`,
+  // Number sizes; Node 22). Retrying on any error would hide real failures
+  // (an engine that ignores `index` builds a memory32 and reports its limit).
+  let finalApi;
   function newMemory64(initial, maximum, shared) {
-    try {
+    if (finalApi === undefined) {
+      try {
+        new WebAssembly.Memory({ address: 'i64', initial: 1n });
+        finalApi = true;
+      } catch (e) {
+        finalApi = false;
+      }
+    }
+    if (finalApi) {
       const m = new WebAssembly.Memory({ address: 'i64', initial: BigInt(initial), maximum: BigInt(maximum), shared });
       return { m, big: true };
-    } catch (e) {
-      // Pre-standard API (Node 22 / V8 12.4): `index` and Number sizes.
-      return { m: new WebAssembly.Memory({ index: 'i64', initial, maximum, shared }), big: false };
     }
+    return { m: new WebAssembly.Memory({ index: 'i64', initial, maximum, shared }), big: false };
   }
 
   function growthTest(opts = {}) {

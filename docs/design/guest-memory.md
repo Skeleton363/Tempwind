@@ -6,7 +6,12 @@ Phase 0, item 7. Status: **decided, option A (identity mapping below 16 GiB)**. 
 
 - x64 PE images default to bases above 4 GiB. Windows and Wine assume a 47-bit (128 TiB) user address space.
 - A wasm memory64 is a single contiguous range `[0, size)`. It has no holes, no aliasing, no per-page protection, and it can only grow.
-- V8 rejects a maximum above 262144 pages (16 GiB). Node 22 reports "value 262145 is above the upper bound 262144". In Chromium 141, the cross-origin-isolated threads spike creates a shared memory64 with maximum 262144. The non-isolated `file://` benchmark page capped shared memories at 65536 pages.
+- V8 rejects a maximum above 262144 pages (16 GiB): "value 262145 is above the upper bound 262144", measured in Node 22, Node 24 and Chromium 141.
+- Each shared memory with that maximum reserves its whole 16 GiB of address space up front.
+  - Chromium 141 held 62 of them in one page; the 63rd failed with "could not allocate memory". That fits V8's 1 TiB sandbox.
+  - Node 24 held all 64 the probe asks for.
+  - So one tab can host at most about 60 Windows processes, each with its own memory.
+- An earlier benchmark version reported "upper bound 65536" for these failures. That was an artifact: on any error it retried with the pre-standard `index` descriptor, which current engines ignore, so they built a memory32. Fixed in `core.js`.
 - Shared memories (which we need for threads) must declare that maximum when they are created.
 
 ## Facts this note relies on
