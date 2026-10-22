@@ -1,9 +1,44 @@
 # Phase 0 status: Foundations
 
-- **Draft PR:** https://github.com/Skeleton363/Tempwind/pull/1 ("[Phase 0] Foundations"), branch `claude/epic-hypatia-9y2839`.
-- **State:** all ten Phase 0 items are implemented, and CI is green on Linux and Windows.
+**Phase 0 is finished.** All ten items are done. CI is green on Linux and Windows. It was merged into `main` on 2026-10-21 as `7757429` (PR https://github.com/Skeleton363/Tempwind/pull/1). Next is Phase 1 (Translator); see "Next step" at the end.
+
 - **Session 1 (2026-10-20):** built everything.
-- **Session 2 (2026-10-21):** validated the cloud-environment changes.
+- **Session 2 (2026-10-21):** validated the cloud-environment changes, corrected the guest-memory measurements, and merged.
+
+## Lessons for future sessions
+
+What Phase 0 taught about working in this repository and environment. The project facts themselves (decisions, measurements, risks) are in the sections below and in `docs/design/`.
+
+### Running parallel subagents
+- **Write the contract before splitting the work.** `docs/design/abi.md` fixed the module ABI, the spike manifest format and the command names that CI runs. With that in place, five agents (translator, oracle, JS hosts, Emscripten, CI) built pieces that fitted together on the first try.
+- **One working tree, separate directories.** Give each agent the directories it owns. Tell it not to run git commands that change state, `cargo clean` or `playwright install`. Only the coordinator adds, commits and pushes.
+- **Expect WIP commits and red CI while agents work.** The Stop hook wants a clean tree at every turn end, so half-finished agent files get committed. CI stays red until each piece lands. Post one PR comment saying which steps are red and why; don't chase each run. `ci.yml` cancels in-progress runs on every push, so only the latest commit's result counts.
+- **Share the machine carefully.** The 4 cores and the cargo target-dir lock are shared. Don't benchmark while agents compile. Run destructive environment tests (stopping dockerd, switching Node) only after agents finish.
+- **The same hand-back can arrive more than once.** Integrate it once.
+
+### Checking work before it lands
+- **Grep deliverables for placeholders.** An agent stopped mid-task left the guest-memory note's tables as `@@BENCH@@`. Check for `@@`, TODO and TBD before you integrate.
+- **Check every claim against the raw data.** Session 1 wrote that Chromium caps memory64 at 65536 pages. That was the benchmark's fallback hiding the real error. Fix the tool and re-record; never hand-edit recorded results (or fixtures).
+- **Measure on an idle machine.** Session 1's numbers, recorded while agents compiled, differed by up to 4× on the optional checks from the idle-machine runs.
+
+### Sandbox and shell pitfalls
+- **`pkill -f` and `pgrep -f` match whole command lines, including the shell running them.** A pattern that appears in your own command kills your own shell; this happened twice. Use pid files or `-x` exact process names.
+- **Running `rustup` or `cargo` inside the repo installs the toolchain pinned in `rust-toolchain.toml`** (even `rustup toolchain list`). Run from `/` when you need a fresh state.
+- **A paused and resumed session keeps its disk.** A changed `tools/cloud-setup.sh` only applies to newly built environments. Validate it by removing what it installs and running it from `/`.
+- **Starting Docker:** `service docker start` fails here, so use `tools/start-dockerd.sh` (the SessionStart hook runs it).
+- **`/usr/bin/time` is not installed.** Time things with `$SECONDS` or `date +%s`.
+
+### CI and GitHub
+- **Line endings:** Windows runners check out CRLF unless `.gitattributes` says otherwise (it forces LF now).
+- **Pinning an action version:** check that the tag exists first by fetching its `action.yml` from raw.githubusercontent.com (e.g. `https://raw.githubusercontent.com/actions/checkout/v7/action.yml`).
+- **Downloading releases in a session:** `gh release download` is blocked (its GraphQL calls get 403). Use `scripts/fetch-artifact.sh`, which uses REST plus curl.
+- **Installing the pinned toolchain in CI:** since rustup 1.28, `rustup show` no longer installs it; `ci.yml` runs `rustup toolchain install`.
+- **Watching CI:** the GitHub MCP tools give per-step results (`actions_get` → `get_workflow_job`) and log tails (`get_job_logs`). Read the steps before guessing at a failure.
+
+### Browsers and Node
+- **The Playwright version must match the Chromium build baked into the image.** `@playwright/test` 1.56.1 ↔ `chromium-1194`, found through `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`. If the image changes, bump Playwright to the matching version or set `CHROME_PATH`. Never run `playwright install` in a session.
+- **memory64 from JavaScript:** Node 24 and Chromium want `{address: 'i64', initial: <BigInt>}`. Detect the form once (`runtime/src/memory.mjs`). Never retry a failure with another descriptor: engines ignore unknown keys and silently build a memory32.
+- **WebGPU on SwiftShader** needs only `--enable-unsafe-webgpu --enable-unsafe-swiftshader`; `--use-webgpu-adapter=swiftshader` forces SwiftShader even on a machine with a GPU. It also needs a secure context: `http://127.0.0.1` works, while `about:blank` has no `navigator.gpu`.
 
 ## Session 2: environment validation
 
