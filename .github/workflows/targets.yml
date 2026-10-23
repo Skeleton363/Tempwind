@@ -128,7 +128,7 @@ jobs:
 
       - name: Install MinGW-w64
         timeout-minutes: 30
-        run: tests/targets/apt-install.sh gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+        run: scripts/apt-install.sh gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
 
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install && rustup show
@@ -235,7 +235,7 @@ jobs:
       - name: Install Wine
         timeout-minutes: 30
         run: |
-          tests/targets/apt-install.sh wine64
+          scripts/apt-install.sh wine64
           # Ubuntu's wine64 package installs the launcher as /usr/lib/wine/wine64 only.
           wine=$(command -v wine64 || echo /usr/lib/wine/wine64)
           test -x "$wine"

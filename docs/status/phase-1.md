@@ -13,7 +13,7 @@ Phase 0's lessons still hold. New ones from M1:
 - **Run `rustfmt` on your own files, not `cargo fmt --all`, while another agent works.** The workspace-wide form reformats the other agent's half-written files.
 - **iced-x86 decodes `F3 0F BC`/`BD` as `tzcnt`/`lzcnt` by default.** Under a profile without BMI1 and LZCNT, the CPU runs them as `bsf`/`bsr`, and MinGW's gdtoa uses them. Every decoder in the repo must use `x64wasm::DECODER_OPTIONS`.
 - **CoreMark only prints "Correct operation validated" for runs of 10 s or more.** Shorter runs count the time check as an error, so the smoke test checks the CRCs instead.
-- **Stalled apt mirrors hang runner jobs for 15+ minutes.** `tests/targets/apt-install.sh` limits each attempt and retries.
+- **Stalled apt mirrors hang runner jobs for 15+ minutes.** `scripts/apt-install.sh` limits each attempt and retries without the Azure mirror; every workflow installs packages through it.
 - **Ubuntu's `wine64` package installs its launcher only as `/usr/lib/wine/wine64`.**
 - **V8 measurement pitfalls:**
   - `--js-flags` given to Playwright's headless shell has no effect.
@@ -174,7 +174,7 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 - **22 forms occur only in gap sweeps** (likely data read as code: `std`, `cmc`, `int1`, `loop`, …). The rule as decided counts them; the M5 gate decides whether to drop them.
 - **`testkit census --check` fails** (130 of 491) until the instruction milestones add fixtures. CI doesn't gate on it before M5.
 - **wasmtime loop timings depend on code placement** on this VM. Benchmark baselines in M4/M5 should come from V8 and same-machine native runs.
-- **Wine's apt install in CI was flaky** (2 of 5 attempts hung). `tests/targets/apt-install.sh` now times out and retries each attempt.
+- **apt installs in CI were flaky:** the Azure Ubuntu mirror trickled at about 40 KB/s, and 3 targets runs hung or timed out. `scripts/apt-install.sh` now limits each attempt and retries without that mirror; a mock test covered both the stall and the failure path.
 - **Phase 0's translator gaps remain until M3:** `lock` and atomics, FS/GS, the 67h prefix, precise faults.
 
 ## Next step: M2 (PE loading)
