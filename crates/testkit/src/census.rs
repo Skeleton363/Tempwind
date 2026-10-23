@@ -108,7 +108,7 @@ pub fn exclusion(insn: &Instruction) -> Option<&'static str> {
         Hlt | In | Out | Insb | Insw | Insd | Outsb | Outsw | Outsd | Cli | Sti | Clts | Invd
         | Wbinvd | Invlpg | Lgdt | Lidt | Sgdt | Sidt | Lldt | Sldt | Ltr | Str | Lmsw | Smsw
         | Rdmsr | Wrmsr | Rdpmc | Sysret | Sysexit | Iret | Iretd | Iretq | Swapgs | Lar | Lsl
-        | Verr | Verw | Clac | Stac | Xgetbv | Xsetbv => Some("privileged or system"),
+        | Verr | Verw | Clac | Stac | Xsetbv => Some("privileged or system"),
         Syscall | Sysenter => Some("syscall"),
         Cpuid | Rdtsc | Rdtscp | Rdrand | Rdseed => Some("nondeterministic"),
         Mov => {
@@ -305,6 +305,9 @@ struct Binary {
     padding: Padding,
     /// DLL name (lowercased) to imported names (`#N` for ordinals).
     imports: BTreeMap<String, Vec<String>>,
+    /// Functions containing instructions outside the CPUID profile: the
+    /// symbol name (or the RVA), and how many such instructions.
+    out_of_profile: Vec<(String, u64)>,
 }
 
 impl Binary {
@@ -352,7 +355,15 @@ fn analyze(name: &str, data: &[u8]) -> Result<Binary> {
         in_gaps: Tally::default(),
         padding: Padding::default(),
         imports: BTreeMap::new(),
+        out_of_profile: Vec::new(),
     };
+    let names: BTreeMap<u32, String> = pe
+        .symbols()
+        .unwrap_or_default()
+        .iter()
+        .filter(|s| s.is_function() && s.section > 0)
+        .filter_map(|s| pe.symbol_rva(s).map(|rva| (rva, s.name.clone())))
+        .collect();
 
     // Function ranges, clipped so that overlapping entries aren't decoded twice.
     let mut covered: Vec<(u32, u32)> = Vec::new();
@@ -364,7 +375,22 @@ fn analyze(name: &str, data: &[u8]) -> Result<Binary> {
         }
         match pe.code_bytes(begin, f.end_rva) {
             Ok(code) if pe.section_for_rva(begin).is_some_and(|s| s.is_executable()) => {
-                sweep(code, pe.rva_to_va(begin), &mut b.in_functions, None);
+                let mut one = Tally::default();
+                sweep(code, pe.rva_to_va(begin), &mut one, None);
+                let outside: u64 = one
+                    .codes
+                    .values()
+                    .filter(|e| !e.rep.cpuid_features().iter().all(|&f| in_profile(f)))
+                    .map(Entry::total)
+                    .sum();
+                if outside > 0 {
+                    let name = names
+                        .get(&begin)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{begin:#x}"));
+                    b.out_of_profile.push((name, outside));
+                }
+                b.in_functions.merge(&one);
                 b.function_bytes += code.len() as u64;
                 covered.push((begin, f.end_rva));
                 end_so_far = f.end_rva;
@@ -555,6 +581,11 @@ fn to_json(
             v["invalid_bytes_functions"] = json!(b.in_functions.invalid);
             v["invalid_bytes_gaps"] = json!(b.in_gaps.invalid);
             v["imports"] = json!(b.imports);
+            v["out_of_profile_functions"] = b
+                .out_of_profile
+                .iter()
+                .map(|(n, c)| json!({"name": n, "instructions": c}))
+                .collect();
             v
         })
         .collect();
@@ -736,6 +767,21 @@ fn to_markdown(
                 format!("`{}`", list.join("`, `")),
             ]);
         }
+    }
+
+    for b in bins.iter().filter(|b| !b.out_of_profile.is_empty()) {
+        let _ = writeln!(
+            s,
+            "\n`{}`: {} of {} functions contain such instructions (all behind CPUID dispatch if the program is correct): {}",
+            b.name,
+            b.out_of_profile.len(),
+            b.functions,
+            b.out_of_profile
+                .iter()
+                .map(|(n, c)| format!("`{n}` ({c})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     // Mnemonics.
