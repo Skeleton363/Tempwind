@@ -9,8 +9,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use iced_x86::{
-    Code, ConditionCode, Decoder, DecoderError, DecoderOptions, Formatter, Instruction,
-    IntelFormatter, Mnemonic, OpKind, Register,
+    Code, ConditionCode, Decoder, DecoderError, Formatter, Instruction, IntelFormatter, Mnemonic,
+    OpKind, Register,
 };
 
 use crate::abi;
@@ -153,7 +153,7 @@ fn unsupported(addr: u64, len: u32, text: String) -> Decoded {
 pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<Program, Error> {
     let mut lifter = Lifter {
         region,
-        decoder: Decoder::with_ip(64, region.bytes, region.base, DecoderOptions::NONE),
+        decoder: Decoder::with_ip(64, region.bytes, region.base, crate::DECODER_OPTIONS),
         formatter: IntelFormatter::new(),
         want_text,
         cache: HashMap::new(),

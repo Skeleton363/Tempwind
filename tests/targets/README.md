@@ -9,6 +9,8 @@ Real programs the translator must run in Phase 1: the 64-bit 7-Zip CLI (`7zz.exe
 | `7zip/build.sh` | Builds `7zz.exe` from the 7-Zip source with MinGW (upstream `makefile.gcc` flags; build-system tweaks only, never source patches). |
 | `coremark/build.sh`, `coremark/port/` | Builds `coremark.exe` from the upstream core files plus our MIT Win64 port (QueryPerformanceCounter timer). |
 | `smoke.sh` | Native smoke test (Windows runner, and the Linux runner under Wine). |
+| `build-info.sh` | Writes `build-info.json`: compiler, binutils and MinGW-w64 package versions, flags, source hashes, commit. |
+| `apt-install.sh` | Installs apt packages on a runner with a time limit and retries per attempt (stalled mirrors have hung `apt-get`). |
 
 Releases (see `.github/workflows/targets.yml`):
 - `src-7zip-<version>`, `src-coremark-<sha7>`: mirrored upstream sources, published once.

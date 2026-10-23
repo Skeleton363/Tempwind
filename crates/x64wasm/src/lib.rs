@@ -12,6 +12,14 @@ pub mod pe;
 
 use std::fmt;
 
+/// iced-x86 decoder options matching the guest CPU the translator presents
+/// (the Phase 1 CPUID profile in `docs/design/instruction-scope.md`): no BMI1
+/// and no LZCNT, so `F3 0F BC` and `F3 0F BD` execute as `bsf` and `bsr`
+/// (the `F3` prefix is ignored), not as `tzcnt` and `lzcnt`. MinGW's gdtoa
+/// (`__trailz_D2A`) uses that encoding.
+pub const DECODER_OPTIONS: u32 =
+    iced_x86::DecoderOptions::NO_MPFX_0FBC | iced_x86::DecoderOptions::NO_MPFX_0FBD;
+
 /// Translation options.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -188,4 +196,23 @@ fn translate_impl(
         },
         guest_instructions: prog.insn_count(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use iced_x86::{Decoder, Mnemonic};
+
+    use super::DECODER_OPTIONS;
+
+    #[test]
+    fn rep_bsf_and_rep_bsr_decode_as_bsf_and_bsr() {
+        let decode = |bytes: &[u8]| Decoder::new(64, bytes, DECODER_OPTIONS).decode();
+        // tzcnt/lzcnt on a CPU with BMI1/LZCNT; bsf/bsr under our profile.
+        assert_eq!(
+            decode(&[0xf3, 0x48, 0x0f, 0xbc, 0xc1]).mnemonic(),
+            Mnemonic::Bsf
+        );
+        assert_eq!(decode(&[0xf3, 0x0f, 0xbd, 0xc1]).mnemonic(), Mnemonic::Bsr);
+        assert_eq!(decode(&[0x0f, 0xbc, 0xc1]).mnemonic(), Mnemonic::Bsf);
+    }
 }

@@ -13,6 +13,8 @@ on:
     branches: [main, "claude/**"]
     paths:
       - "tests/targets/**"
+      - "!tests/targets/targets.lock"
+      - "!tests/targets/README.md"
       - ".github/workflows/targets.yml"
       - "crates/x64wasm/src/pe.rs"
       - "crates/testkit/src/census.rs"
@@ -125,10 +127,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install MinGW-w64
-        timeout-minutes: 10
-        run: |
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+        timeout-minutes: 30
+        run: tests/targets/apt-install.sh gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
 
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install && rustup show
@@ -225,7 +225,7 @@ jobs:
   linux-wine:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -233,10 +233,9 @@ jobs:
           name: targets
           path: targets
       - name: Install Wine
-        timeout-minutes: 10
+        timeout-minutes: 30
         run: |
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends wine64
+          tests/targets/apt-install.sh wine64
           # Ubuntu's wine64 package installs the launcher as /usr/lib/wine/wine64 only.
           wine=$(command -v wine64 || echo /usr/lib/wine/wine64)
           test -x "$wine"

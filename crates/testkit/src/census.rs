@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use iced_x86::{Code, CpuidFeature, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind};
+use iced_x86::{Code, CpuidFeature, Decoder, Instruction, Mnemonic, OpKind};
 use serde_json::{Value, json};
 use x64wasm::pe::Pe;
 
@@ -249,7 +249,7 @@ fn is_padding(insn: &Instruction, bytes: &[u8]) -> bool {
 /// `int3`/`nop`/zero bytes go to its counters instead. A byte that doesn't
 /// decode is counted and skipped.
 fn sweep(code: &[u8], ip: u64, tally: &mut Tally, mut padding: Option<&mut Padding>) {
-    let mut decoder = Decoder::with_ip(64, code, ip, DecoderOptions::NONE);
+    let mut decoder = Decoder::with_ip(64, code, ip, x64wasm::DECODER_OPTIONS);
     let mut insn = Instruction::default();
     while decoder.can_decode() {
         let start = decoder.position();
@@ -468,7 +468,8 @@ fn fixture_forms(dir: &Path) -> Result<BTreeSet<String>> {
         let (_, fx) =
             fixture::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
         for case in &fx.cases {
-            let mut decoder = Decoder::with_ip(64, &case.bytes, CODE_ADDR, DecoderOptions::NONE);
+            let mut decoder =
+                Decoder::with_ip(64, &case.bytes, CODE_ADDR, x64wasm::DECODER_OPTIONS);
             let insn = decoder.decode();
             if insn.is_invalid() {
                 bail!("{}: case `{}` does not decode", path.display(), case.asm);
@@ -1110,7 +1111,7 @@ mod tests {
 
     #[test]
     fn exclusions() {
-        let decode = |bytes: &[u8]| Decoder::new(64, bytes, DecoderOptions::NONE).decode();
+        let decode = |bytes: &[u8]| Decoder::new(64, bytes, x64wasm::DECODER_OPTIONS).decode();
         assert_eq!(exclusion(&decode(&[0xf4])), Some("privileged or system")); // hlt
         assert_eq!(exclusion(&decode(&[0x0f, 0x05])), Some("syscall"));
         assert_eq!(exclusion(&decode(&[0x0f, 0xa2])), Some("nondeterministic")); // cpuid

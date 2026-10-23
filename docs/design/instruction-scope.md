@@ -18,8 +18,10 @@ What translated code reports through `cpuid` in Phase 1:
 |---|---|
 | x86-64 baseline: x87 (FPU), MMX, SSE, SSE2, CMOV, CX8, FXSR, SYSCALL bit as on any x86-64 CPU, plus CMPXCHG16B and LAHF/SAHF in 64-bit mode | SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, AVX, AVX2, AVX-512, FMA, F16C, BMI1/2, LZCNT, MOVBE, AES-NI, PCLMULQDQ, SHA, RDRAND/RDSEED, XSAVE/OSXSAVE |
 
+- `pause` and the multi-byte `nop` (`0F 1F`) have no CPUID bit and run on every x86-64 CPU; they count as baseline.
 - Programs that dispatch on CPUID (7-Zip's AES, SHA, CRC and match-finder paths, for example) take their generic paths.
 - Their results don't depend on the path taken, so the output still matches a native run on a CPU with every feature.
+- Without BMI1 and LZCNT, `F3 0F BC` and `F3 0F BD` execute as `bsf` and `bsr`, not as `tzcnt` and `lzcnt`. The translator and the census decode them that way (`x64wasm::DECODER_OPTIONS`, iced's `NO_MPFX_0FBC | NO_MPFX_0FBD`). MinGW's gdtoa (`__trailz_D2A`, `__d2b_D2A`) relies on this encoding. The oracle records on a CPU that has both features, so fixtures for these forms use the plain `0F BC`/`0F BD` encodings.
 - Raising the profile later only adds forms to the scope.
 
 ## The rule: "all instruction fixtures pass"
@@ -40,7 +42,7 @@ What translated code reports through `cpuid` in Phase 1:
 
 ## Census
 
-Measured on the `targets-4b411bf` build of 2026-10-23 (`tests/targets/targets.lock` names the current one; the `census.md` and `census.json` assets of that release have the full tables). `testkit census` produces them from the `.pdata` function ranges of each executable, plus a linear sweep of the gaps in executable sections (import thunks, `___chkstk_ms`; `int3`, `nop` and zero padding is counted apart). The builds are bit-for-bit reproducible: `targets-0c3a264` has the same `7zz.exe` and `coremark.exe` hashes.
+Measured on the binaries of the `targets-4b411bf` build of 2026-10-23, with the profile's decoding of `F3 0F BC`/`F3 0F BD` (above). `tests/targets/targets.lock` names the current release; its `census.md` and `census.json` assets have the full tables. `testkit census` produces them from the `.pdata` function ranges of each executable, plus a linear sweep of the gaps in executable sections (import thunks, `___chkstk_ms`; `int3`, `nop` and zero padding is counted apart). The builds are bit-for-bit reproducible: `targets-0c3a264` has the same `7zz.exe` and `coremark.exe` hashes.
 
 | | 7zz.exe | coremark.exe | hello.exe (L2) | combined |
 |---|---|---|---|---|
@@ -58,11 +60,11 @@ Sources: 7-Zip 25.01 (`7z2501-src.tar.xz`, sha256 `ed087f83...c36e`), CoreMark c
 
 | class | 7zz.exe | coremark.exe | hello.exe | combined | share | distinct `Code`s |
 |---|---|---|---|---|---|---|
-| integer | 507,906 | 9,530 | 7,365 | 524,801 | 97.4% | 309 |
+| integer | 507,910 | 9,533 | 7,368 | 524,811 | 97.4% | 310 |
 | SSE2 | 8,320 | 162 | 145 | 8,627 | 1.6% | 61 |
 | SSE | 4,388 | 16 | 12 | 4,416 | 0.8% | 7 |
 | x87 | 32 | 21 | 21 | 74 | 0.0% | 9 |
-| AVX and later (VEX, BMI, ...) | 642 | 3 | 3 | 648 | 0.1% | 32 |
+| AVX and later (VEX, BMI, ...) | 638 | 0 | 0 | 638 | 0.1% | 31 |
 | SSE3 to SSE4.2, POPCNT | 56 | 0 | 0 | 56 | 0.0% | 4 |
 | AES, PCLMULQDQ, SHA | 212 | 0 | 0 | 212 | 0.0% | 19 |
 | other (`cpuid`, `xgetbv`) | 15 | 0 | 0 | 15 | 0.0% | 2 |
@@ -81,20 +83,22 @@ MMX has no instructions in these builds. `mov` alone is 34.5 % of all instructio
 | VAES | 32 | `vaesdec`, `vaesdeclast`, `vaesenc`, `vaesenclast` |
 | CPUID | 14 | `cpuid` (excluded from fixtures: dedicated tests) |
 | SSE4.1 | 12 | `pinsrd`, `pmaxud` |
-| BMI1 | 10 | `tzcnt` |
 | XSAVE | 1 | `xgetbv` |
 
-- **57 of the 443 `Code`s are outside the profile** (32 AVX and later, 19 crypto, 4 SSE3 and later, 2 other); all of them come from 7-Zip's hardware paths and the CPU feature probes.
-- **They are present in the image but not executed.** 30 of 7zz.exe's 6,289 functions contain such instructions: the `*_HW` AES and SHA routines (`AesCbc_Decode_HW_256`, `Sha256_UpdateBlocks_HW`, ...), the `Blake2sp_*_AVX2_Fast` and `*_V128_*` routines, `ShufBytes_*`, and the `CPU_IsSupported_*` probes with `z7_x86_cpuid`. With the profile, `cpuid` reports none of those features, so 7-Zip never calls them. Ahead-of-time translation of whole images (M2) has to translate such functions to a trap stub or leave them out; the census lists them by name (`out_of_profile_functions` in `census.json`).
-- **`tzcnt` is `rep bsf`.** The 10 `tzcnt` are in MinGW's `__trailz_D2A` (gdtoa), which is also in `coremark.exe` and `hello.exe`. Its encoding `F3 0F BC` runs as `bsf` on a CPU without BMI1, which the profile describes. iced-x86 decodes it as `tzcnt`; the translator must treat `F3 0F BC` as `bsf` under this profile (they differ when the source is zero).
+- **56 of the 443 `Code`s are outside the profile** (31 AVX and later, 19 crypto, 4 SSE3 and later, 2 other); all of them come from 7-Zip's hardware paths and the CPU feature probes. `coremark.exe` and `hello.exe` have none.
+- **They are present in the image but not executed.** 27 of 7zz.exe's 6,289 functions contain such instructions: the `*_HW` AES and SHA routines (`AesCbc_Decode_HW_256`, `Sha256_UpdateBlocks_HW`, ...), the `Blake2sp_*_AVX2_Fast` and `*_V128_*` routines, `ShufBytes_*`, and the `CPU_IsSupported_*` probes with `z7_x86_cpuid`. With the profile, `cpuid` reports none of those features, so 7-Zip never calls them. Ahead-of-time translation of whole images (M2) has to translate such functions to a trap stub or leave them out; the census lists them by name (`out_of_profile_functions` in `census.json`).
+- **`rep bsf` is not `tzcnt` here.** With iced-x86's default decoding, the first census counted 10 `tzcnt` (BMI1; 7 register and 3 memory forms of one `Code`):
+  - where: MinGW's gdtoa (`__trailz_D2A`, `__d2b_D2A`, also in `coremark.exe` and `hello.exe`) and 7-Zip's LZX `x86_Filter4`;
+  - what they are: the `F3 0F BC` encoding, which runs as `bsf` on a CPU without BMI1. The two differ when the source is zero;
+  - now: the census decodes them as the profile executes them, and so does the translator. `F3 0F BD` (`lzcnt` or `bsr`) does not occur, but is decoded the same way.
 - `xgetbv` appears once, in 7-Zip's probe; it is out of profile (XSAVE) and unreachable.
 
 ### Scope S from this census
 
-- **489 in-scope forms** (a `Code` as register or memory variant) over 382 `Code`s.
+- **491 in-scope forms** (a `Code` as register or memory variant) over 383 `Code`s.
 - 5 `Code`s are excluded by the rule: `In_AL_imm8`, `Out_imm8_AL`, `Out_DX_AL`, `Hlt` (the first four only in gaps of 7zz.exe, so data bytes) and `Cpuid` (14 occurrences, dedicated test).
 - 22 forms occur only in gaps, where the sweep reads some data bytes as code (`Std`, `Cmc`, `Int1`, `Loop_rel8_64_RCX`, ...). They are listed in `census.md` and count toward S as the rule is written. Dropping them is a decision for the M5 gate (they are probably not code); the rule as decided keeps them.
-- **L1 fixtures cover 130 of the 489 forms (26.6 %).** `testkit census --check` lists the 359 missing ones; it fails until the instruction PRs add them (M5).
+- **L1 fixtures cover 130 of the 491 forms (26.5 %).** `testkit census --check` lists the 361 missing ones; it fails until the instruction PRs add them (M5).
 
 ### Imports (the Win32 shim's surface)
 
