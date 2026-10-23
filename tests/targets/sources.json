@@ -4,7 +4,7 @@
     "version": "25.01",
     "url": "https://www.7-zip.org/a/7z2501-src.tar.xz",
     "mirror_url": "https://github.com/ip7z/7zip/releases/download/25.01/7z2501-src.tar.xz",
-    "sha256": "",
+    "sha256": "ed087f83ee789c1ea5f39c464c55a5c9d4008deb0efe900814f2df262b82c36e",
     "license": "LGPL-2.1-or-later with BSD-3-Clause parts and the unRAR restriction (DOC/License.txt)"
   },
   "coremark": {

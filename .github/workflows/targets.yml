@@ -75,6 +75,7 @@ jobs:
           echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"
 
       - name: CoreMark source
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           repo=$(jq -r '.coremark.repo' tests/targets/sources.json)
