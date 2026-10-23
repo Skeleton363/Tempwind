@@ -40,11 +40,70 @@ What translated code reports through `cpuid` in Phase 1:
 
 ## Census
 
-The census of the CI-built targets:
-- counts per `Code`, per mnemonic and per CPUID feature;
-- groups them into classes: integer, x87, MMX, SSE, SSE2, SSE3 to SSE4.2, AVX and later, AES/PCLMUL/SHA, other;
-- lists the imports, which define the Win32 shim's surface.
+Measured on the `targets-4b411bf` build of 2026-10-23 (`tests/targets/targets.lock` names the current one; the `census.md` and `census.json` assets of that release have the full tables). `testkit census` produces them from the `.pdata` function ranges of each executable, plus a linear sweep of the gaps in executable sections (import thunks, `___chkstk_ms`; `int3`, `nop` and zero padding is counted apart). The builds are bit-for-bit reproducible: `targets-0c3a264` has the same `7zz.exe` and `coremark.exe` hashes.
 
-`testkit census` produces it, and its `census.json` and `census.md` ship in each `targets-<sha7>` release.
+| | 7zz.exe | coremark.exe | hello.exe (L2) | combined |
+|---|---|---|---|---|
+| file size (bytes) | 4,032,180 | 265,161 | 251,488 | |
+| functions (`.pdata`) | 6,289 | 134 | 95 | 6,518 |
+| instructions in functions | 520,823 | 9,668 | 7,482 | 537,973 |
+| instructions in gaps | 748 | 64 | 64 | 876 |
+| padding instructions (not counted) | 23,317 | 536 | 435 | 24,288 |
+| undecodable bytes in functions / gaps | 0 / 85 | 0 / 14 | 0 / 15 | 0 / 114 |
+| distinct `Code`s | 436 | 220 | 197 | 443 |
 
-Pending: the tables for the first `targets-<sha7>` release are added in M1.
+Sources: 7-Zip 25.01 (`7z2501-src.tar.xz`, sha256 `ed087f83...c36e`), CoreMark commit `1f483d5` (tarball sha256 `4067e7f2...f987`), MinGW-w64 GCC 13.2.0 (win32 threads, `msvcrt.dll` CRT), `-O2`, no assembler, symbols kept. All function ranges decode: no invalid byte inside a `.pdata` range.
+
+### Instructions per class
+
+| class | 7zz.exe | coremark.exe | hello.exe | combined | share | distinct `Code`s |
+|---|---|---|---|---|---|---|
+| integer | 507,906 | 9,530 | 7,365 | 524,801 | 97.4% | 309 |
+| SSE2 | 8,320 | 162 | 145 | 8,627 | 1.6% | 61 |
+| SSE | 4,388 | 16 | 12 | 4,416 | 0.8% | 7 |
+| x87 | 32 | 21 | 21 | 74 | 0.0% | 9 |
+| AVX and later (VEX, BMI, ...) | 642 | 3 | 3 | 648 | 0.1% | 32 |
+| SSE3 to SSE4.2, POPCNT | 56 | 0 | 0 | 56 | 0.0% | 4 |
+| AES, PCLMULQDQ, SHA | 212 | 0 | 0 | 212 | 0.0% | 19 |
+| other (`cpuid`, `xgetbv`) | 15 | 0 | 0 | 15 | 0.0% | 2 |
+
+MMX has no instructions in these builds. `mov` alone is 34.5 % of all instructions; the top 15 mnemonics (`mov`, `call`, `je`, `test`, `lea`, `cmp`, `add`, `jmp`, `pop`, `jne`, `nop`, `push`, `xor`, `sub`, `ret`) are 76 %. In all there are 214 distinct mnemonics.
+
+### Outside the CPUID profile
+
+| feature | instructions | mnemonics |
+|---|---|---|
+| AVX | 335 | `vaesdec`, `vaesenc`, `vmovd`, `vmovdqu`, `vmovq`, `vmovups`, `vpaddq`, `vpxor`, `vzeroupper`, ... |
+| AVX2 | 311 | `vbroadcasti128`, `vextracti128`, `vinserti128`, `vpaddd`, `vpshufb`, `vpshufd`, `vperm2i128`, ... |
+| SHA | 128 | `sha1msg1`, `sha1msg2`, `sha1nexte`, `sha1rnds4`, `sha256msg1`, `sha256msg2`, `sha256rnds2` |
+| AES | 52 | `aesdec`, `aesdeclast`, `aesenc`, `aesenclast` and the `v` forms |
+| SSSE3 | 44 | `palignr`, `pshufb` |
+| VAES | 32 | `vaesdec`, `vaesdeclast`, `vaesenc`, `vaesenclast` |
+| CPUID | 14 | `cpuid` (excluded from fixtures: dedicated tests) |
+| SSE4.1 | 12 | `pinsrd`, `pmaxud` |
+| BMI1 | 10 | `tzcnt` |
+| XSAVE | 1 | `xgetbv` |
+
+- **57 of the 443 `Code`s are outside the profile** (32 AVX and later, 19 crypto, 4 SSE3 and later, 2 other); all of them come from 7-Zip's hardware paths and the CPU feature probes.
+- **They are present in the image but not executed.** 30 of 7zz.exe's 6,289 functions contain such instructions: the `*_HW` AES and SHA routines (`AesCbc_Decode_HW_256`, `Sha256_UpdateBlocks_HW`, ...), the `Blake2sp_*_AVX2_Fast` and `*_V128_*` routines, `ShufBytes_*`, and the `CPU_IsSupported_*` probes with `z7_x86_cpuid`. With the profile, `cpuid` reports none of those features, so 7-Zip never calls them. Ahead-of-time translation of whole images (M2) has to translate such functions to a trap stub or leave them out; the census lists them by name (`out_of_profile_functions` in `census.json`).
+- **`tzcnt` is `rep bsf`.** The 10 `tzcnt` are in MinGW's `__trailz_D2A` (gdtoa), which is also in `coremark.exe` and `hello.exe`. Its encoding `F3 0F BC` runs as `bsf` on a CPU without BMI1, which the profile describes. iced-x86 decodes it as `tzcnt`; the translator must treat `F3 0F BC` as `bsf` under this profile (they differ when the source is zero).
+- `xgetbv` appears once, in 7-Zip's probe; it is out of profile (XSAVE) and unreachable.
+
+### Scope S from this census
+
+- **489 in-scope forms** (a `Code` as register or memory variant) over 382 `Code`s.
+- 5 `Code`s are excluded by the rule: `In_AL_imm8`, `Out_imm8_AL`, `Out_DX_AL`, `Hlt` (the first four only in gaps of 7zz.exe, so data bytes) and `Cpuid` (14 occurrences, dedicated test).
+- 22 forms occur only in gaps, where the sweep reads some data bytes as code (`Std`, `Cmc`, `Int1`, `Loop_rel8_64_RCX`, ...). They are listed in `census.md` and count toward S as the rule is written. Dropping them is a decision for the M5 gate (they are probably not code); the rule as decided keeps them.
+- **L1 fixtures cover 130 of the 489 forms (26.6 %).** `testkit census --check` lists the 359 missing ones; it fails until the instruction PRs add them (M5).
+
+### Imports (the Win32 shim's surface)
+
+| DLL | distinct functions | 7zz.exe | coremark.exe | hello.exe |
+|---|---|---|---|---|
+| `kernel32.dll` | 113 | 113 | 15 | 13 |
+| `msvcrt.dll` | 54 | 51 | 34 | 35 |
+| `advapi32.dll` | 14 | 14 | 0 | 0 |
+| `oleaut32.dll` | 6 | 6 | 0 | 0 |
+| `user32.dll` | 2 | 2 | 0 | 0 |
+
+189 distinct functions in 5 DLLs (7zz.exe imports 186, coremark.exe 49, hello.exe 48). `ntdll`, `ws2_32`, `gdi32`, `shell32` and `ole32` are not imported. 7-Zip's `advapi32` use is registry and token privileges (`Reg*`, `AdjustTokenPrivileges`, `LookupPrivilegeValueW`, `OpenProcessToken`, `Get/SetFileSecurityW`, `SystemFunction036` = `RtlGenRandom`); `oleaut32` is the `BSTR`/`VARIANT` helpers; `user32` is `CharPrevExA` and `CharUpperW`. Names per DLL are in `census.md`.
