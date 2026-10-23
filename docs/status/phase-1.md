@@ -180,6 +180,17 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 
 ## Next step: M2 (PE loading)
 
+**In progress (paused 2026-10-23).**
+- **Committed:**
+  - the M2 contracts: `docs/design/abi.md` v3 (linked modules, the lookup hash table, host functions, the run-time translator interface) and `docs/design/runtime.md` (process, load plan, host calls, run loop, test program), with the constants in `abi.rs`/`abi.mjs`;
+  - L1 fixtures for `jmp` (rel8, rel32, r64, m64: 192 cases), which the M2 test program needs.
+- **Not started:**
+  - Track A (Rust): load plan and `translate-pe`, the v3 emitter, `x64wasm-rt`;
+  - Track B (JS): the linker, process and shim v0, `run-pe`;
+  - the builder's `tests/pe/` program and CI wiring.
+
+  The plan for these three is the "M2" part of this session's plan; the work items are below.
+
 1. Whole-image AOT translation from `x64wasm::pe`. Function entries from `Pe::function_entries()`: entry point, exports, `.pdata`, TLS callbacks, relocation targets in code. Also jump-table recovery, and trap stubs for out-of-profile functions.
 2. A shared table and a hash-table `lookup` in the host region, so several modules (AOT image, run-time translations) link together.
 3. A JS runtime process:

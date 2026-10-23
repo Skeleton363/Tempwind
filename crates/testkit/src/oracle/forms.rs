@@ -28,8 +28,8 @@ const STACK_HI: u64 = 0xfe00;
 const NO_TARGET_LEN: u64 = 16;
 
 /// The families, in the order their files are written and reported.
-pub const FAMILIES: [&str; 10] = [
-    "mov", "add", "sub", "cmp", "lea", "push", "pop", "jcc", "call", "ret",
+pub const FAMILIES: [&str; 11] = [
+    "mov", "add", "sub", "cmp", "lea", "push", "pop", "jcc", "jmp", "call", "ret",
 ];
 
 /// One generated case, before recording.
@@ -727,6 +727,9 @@ enum Kind {
         cc: u8,
         rel8: bool,
     },
+    JmpRel(bool),
+    JmpReg,
+    JmpMem,
     CallRel,
     CallReg,
     CallMem,
@@ -1156,6 +1159,12 @@ fn forms() -> Vec<Form> {
         }
     }
 
+    // jmp
+    out.push(stack("jmp_rel8", "jmp", Kind::JmpRel(true)));
+    out.push(stack("jmp_rel32", "jmp", Kind::JmpRel(false)));
+    out.push(stack("jmp_r64", "jmp", Kind::JmpReg));
+    out.push(stack("jmp_m64", "jmp", Kind::JmpMem));
+
     // call, ret
     out.push(stack("call_rel32", "call", Kind::CallRel));
     out.push(stack("call_r64", "call", Kind::CallReg));
@@ -1497,6 +1506,43 @@ fn gen_case(
             let instr = Instruction::with_branch(*code, target)?;
             let expect = if taken { target } else { CODE_ADDR + len };
             plain(form, b, instr, Some(expect), None)
+        }
+        Kind::JmpRel(rel8) => {
+            let (code, len) = if *rel8 {
+                (Code::Jmp_rel8_64, 2)
+            } else {
+                (Code::Jmp_rel32_64, 5)
+            };
+            let target = pick_rel_target(rng, len, *rel8);
+            let instr = Instruction::with_branch(code, target)?;
+            plain(form, b, instr, Some(target), None)
+        }
+        Kind::JmpReg => {
+            let rsp = setup_stack(rng, &mut b)?;
+            let reg = rng.below(16) as usize;
+            let target = if reg == RSP_INDEX {
+                rsp
+            } else {
+                let t = pick_target(rng);
+                b.set_full(reg, t);
+                t
+            };
+            let instr = Instruction::with1(Code::Jmp_rm64, GPR64[reg])?;
+            plain(form, b, instr, Some(target), None)
+        }
+        Kind::JmpMem => {
+            let rsp = setup_stack(rng, &mut b)?;
+            let (m, ea) = stack_mem(rng, &mut b, rsp)?;
+            let target = pick_target(rng);
+            match ea {
+                Some(ea) => b.put(ea, &target.to_le_bytes())?,
+                None => b.put(
+                    rsp.wrapping_add(m.displacement as u64),
+                    &target.to_le_bytes(),
+                )?,
+            }
+            let instr = Instruction::with1(Code::Jmp_rm64, m)?;
+            plain(form, b, instr, Some(target), ea)
         }
         Kind::CallRel => {
             setup_stack(rng, &mut b)?;
