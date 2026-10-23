@@ -84,7 +84,7 @@ Phase 0's lessons still hold. New ones from M1:
 | **New spike programs:**<br>• `fib_rec`<br>• `deep_rec` (depth 100,000)<br>• `tail_rec` (100,000 tail jumps)<br>• `ret_tricks`<br>• `call_table`<br>• `shared_tail`<br>• `longjmp_like`<br>• `big_function` (2,806 instructions, 2 chunks) | All 12 cases are checked natively (`cases_match_native`). They pass in wasmtime under 6 option sets, including every block as its own chunk and every call unwinding. They also pass in Node and in Chromium page and Worker. |
 | **Partitioning** (`func.rs`): ownership, shared tails, chunks that keep loop nests whole | 7 unit tests, including 200 random rounds checking that no loop below the hard cap is ever split. |
 | **Scaling:** Phase 0's 201k-instruction region, which didn't compile in minutes in Phase 0 | Now 102 chunks. Cranelift takes 9.2-9.8 s, V8 eager TurboFan 2.0-2.1 s, and V8 by default 10-15 ms to compile plus about 53 ms to the first run. |
-| **Targets in CI** (`.github/workflows/targets.yml`):<br>• source mirror (trust on first use)<br>• MinGW builds of 7zz.exe and coremark.exe<br>• census and `targets-<sha7>` releases<br>• native smoke tests on windows-2025 and under wine64 on Linux | Run 39983593568: all 4 jobs green, `targets-4b411bf` published. The Windows job does `7zz i`, 7z and zip round trips with `diff -r`, and the CoreMark CRC check; the Wine job does the same. |
+| **Targets in CI** (`.github/workflows/targets.yml`):<br>• source mirror (trust on first use)<br>• MinGW builds of 7zz.exe and coremark.exe<br>• census and `targets-<sha7>` releases<br>• native smoke tests on windows-2025 and under wine64 on Linux | Runs 39983593568 and 39987562814 (PR head `7613c87`): all 4 jobs green; `targets-4b411bf` and `targets-7613c87` published with identical binaries. `tests/targets/targets.lock` names `targets-7613c87`, whose census uses the profile's decoding. The Windows job does `7zz i`, 7z and zip round trips with `diff -r`, and the CoreMark CRC check; the Wine job does the same. |
 | **PE reader** (`x64wasm::pe`): headers, sections, imports, exports, relocations, `.pdata`, TLS, COFF symbols; `function_entries()` for M2 | 14 self-contained tests, including corruption and truncation sweeps. Matches `objdump -p` on 7zz.exe: 186 imports and 8,567 DIR64 relocations. |
 | **Census** (`testkit census`): per-`Code`/mnemonic/feature/class counts, profile and exclusions, imports, out-of-profile functions by name, `--check` against the fixtures | 7 unit tests. Run on the `targets-4b411bf` binaries; tables in `docs/design/instruction-scope.md`. |
 
@@ -149,7 +149,7 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 | Node main thread, default | 3711-3839 | 3839-4095 |
 | Node main thread, TurboFan | 8963 | 8656 |
 
-**Targets** (`targets-4b411bf`):
+**Targets** (`targets-4b411bf`, rebuilt bit for bit as the locked `targets-7613c87`):
 - `7zz.exe`: 4,032,180 bytes, sha256 `8f69827c58da9b407644c4439a296fd4062b68c478b951e484f2360eec959da2`.
 - `coremark.exe`: 265,161 bytes, sha256 `6b96da27e6df645047a3f7ca284e8a568556f20756f7b05848efdceb18d846e1`.
 - Both identical in `targets-0c3a264`.
@@ -175,6 +175,7 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 - **`testkit census --check` fails** (130 of 491) until the instruction milestones add fixtures. CI doesn't gate on it before M5.
 - **wasmtime loop timings depend on code placement** on this VM. Benchmark baselines in M4/M5 should come from V8 and same-machine native runs.
 - **apt installs in CI were flaky:** the Azure Ubuntu mirror trickled at about 40 KB/s, and 3 targets runs hung or timed out. `scripts/apt-install.sh` now limits each attempt and retries without that mirror; a mock test covered both the stall and the failure path.
+- **One release publish failed with a transient 403.** The `targets` run of `6d4536c` was refused by the GitHub releases API with "Resource not accessible by integration", although its token had `contents: write`. `hello-7613c87` published 38 s later, and the same step published `targets-7613c87` on the next commit. If it recurs, re-run the job once, or retry the publish step.
 - **Phase 0's translator gaps remain until M3:** `lock` and atomics, FS/GS, the 67h prefix, precise faults.
 
 ## Next step: M2 (PE loading)
