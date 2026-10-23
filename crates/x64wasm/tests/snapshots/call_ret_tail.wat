@@ -321,7 +321,7 @@
             i64.const 4107
             local.set $rip
             global.get $depth
-            i32.const 1000
+            i32.const 500
             i32.ge_u
             if ;; label = @5
               i32.const 1
@@ -478,7 +478,7 @@
           i64.const 4113
           local.set $rip
           global.get $depth
-          i32.const 1000
+          i32.const 500
           i32.ge_u
           if ;; label = @4
             i32.const 1

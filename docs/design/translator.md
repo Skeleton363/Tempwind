@@ -112,6 +112,20 @@ See `abi.md`. It is the only place that starts guest code from the host, and the
 3. Every translated block address is in `lookup`, so execution can resume at any block.
 4. `depth` equals the number of guest calls whose wasm frames are live (or the trampoline has just reset it).
 
+## Module layout
+
+Function 0 is `run`, 1 `lookup`, 2 `flags`, and 3 + i is chunk i at table index i; global 0 is `depth` (see `abi.md`). Chunks are named after their guest function (`fn_0x140001000`, `fn_0x140001000_c1`, …) in the name section, so profiles show guest addresses. `Translation::functions` lists every guest function with its chunks (wasm index and block addresses), and the IR dump is grouped the same way.
+
+## Defaults (M1)
+
+Chosen from the M1 measurements (4-core Xeon @ 2.8 GHz cloud VM, release builds, each 3 runs; full numbers in `docs/status/phase-1.md`):
+
+| Option | Default | Why |
+|---|---|---|
+| `max_function_insns` | 2000 | On Phase 0's 201k-instruction region, compile time grows with chunk size above it: Cranelift 9.2-9.8 s at 2000, 11.7-12.5 s at 5000, 14.4-16.1 s at 10000, about 19 s at 20000; V8 TurboFan (eager) 2.0-2.1 s at 2000, 2.3-2.5 s at 5000. Below it the gain is at most about 10 % (Cranelift 8.1-8.6 s at 500), for 1.6 % (1000) to 4.4 % (500) more wasm and more cross-chunk state syncs. V8's default lazy Liftoff path doesn't care (10-15 ms compile, about 53 ms to the first run at every size). |
+| `max_chunk_insns` | 20000 | 10× the soft limit, as planned. |
+| `call_depth_limit` | 500 | Deepest guest recursion without the guard (one guest call = one wasm frame, the frame of a small or of a 2000-instruction function): wasmtime with its default 512 KiB stack 1487; Chromium 141 Worker 1879-1919 (`deep_fat`: 2275); Chromium page 3583-3839; Node 24 main thread 3585-3711 under `--liftoff-only` (the largest frames), 8656-8963 under TurboFan. 500 leaves 3× margin in wasmtime, 3.8× in a Worker and 7× on a page, for the frames below the trampoline and, from M2, host calls that run on the same stack. |
+
 ## What M2 and later change
 
 - **Several modules per process** (AOT image, run-time translations): the table becomes imported and shared, and `lookup` becomes a hash table in the host region of guest memory, probed inline by translated code and filled by the runtime. Direct calls inside a module stay direct.

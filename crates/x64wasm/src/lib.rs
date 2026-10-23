@@ -29,12 +29,14 @@ pub struct Options {
 }
 
 impl Options {
-    /// Default [`Options::max_function_insns`].
+    /// Default [`Options::max_function_insns`]: where compile time starts
+    /// to grow with chunk size (`docs/design/translator.md`, "Defaults").
     pub const DEFAULT_MAX_FUNCTION_INSNS: usize = 2000;
-    /// Default [`Options::max_chunk_insns`].
+    /// Default [`Options::max_chunk_insns`]: 10x the soft limit.
     pub const DEFAULT_MAX_CHUNK_INSNS: usize = 20_000;
-    /// Default [`Options::call_depth_limit`].
-    pub const DEFAULT_CALL_DEPTH_LIMIT: u32 = 1000;
+    /// Default [`Options::call_depth_limit`]: a third of the shallowest
+    /// measured stack (wasmtime's 512 KiB, about 1500 guest calls).
+    pub const DEFAULT_CALL_DEPTH_LIMIT: u32 = 500;
 }
 
 impl Default for Options {
