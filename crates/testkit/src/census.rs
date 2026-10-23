@@ -589,6 +589,7 @@ fn to_markdown(
     bins: &[Binary],
     combined: &Tally,
     scope: &BTreeSet<String>,
+    gap_only: &BTreeSet<String>,
     cov: &Option<Coverage>,
 ) -> String {
     let mut s = String::new();
@@ -783,6 +784,18 @@ fn to_markdown(
                 .join(", ")
         }
     );
+    if !gap_only.is_empty() {
+        let _ = writeln!(
+            s,
+            "{} of them occur only in gaps (import thunks, `___chkstk_ms`, or bytes that are data): {}.\n",
+            gap_only.len(),
+            gap_only
+                .iter()
+                .map(|f| format!("`{f}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     match cov {
         Some(c) => {
             let _ = writeln!(
@@ -868,7 +881,15 @@ pub fn run(args: &Args) -> Result<()> {
         .ok()
         .map(|f| coverage(&scope, &f));
 
-    let md = to_markdown(&bins, &combined, &scope, &cov);
+    let mut in_functions = Tally::default();
+    for b in &bins {
+        in_functions.merge(&b.in_functions);
+    }
+    let gap_only: BTreeSet<String> = scope
+        .difference(&scope_forms(&in_functions))
+        .cloned()
+        .collect();
+    let md = to_markdown(&bins, &combined, &scope, &gap_only, &cov);
     if let Some(path) = &args.json {
         let text = serde_json::to_string_pretty(&to_json(&bins, &combined, &scope, &cov))?;
         std::fs::write(path, text + "\n").with_context(|| format!("writing {}", path.display()))?;

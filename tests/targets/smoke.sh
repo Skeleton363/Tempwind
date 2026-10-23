@@ -57,12 +57,27 @@ for fmt in 7z zip; do
   echo "ok: 7zz round trip, $fmt"
 done
 
-# Iteration count small enough to finish in a second or two; the "at least 10
-# secs" complaint is expected and ignored.
+# A run of 200 iterations takes milliseconds. CoreMark then reports "ERROR! Must
+# execute for at least 10 secs" and "Errors detected" instead of "Correct
+# operation validated", whatever the results. So check what CoreMark validates
+# itself: the run type it recognizes (2K performance run, seeds 0 0 0x66) and the
+# four CRCs it compares with its known values; a wrong CRC prints an extra
+# "ERROR! ... crc" line.
 step="coremark 0x0 0x0 0x66 200"
 exe "$coremark" 0x0 0x0 0x66 200 > coremark.out || true
 cat coremark.out
-grep -q "Correct operation validated" coremark.out
+grep -q "2K performance run parameters for coremark" coremark.out
+grep -q "seedcrc          : 0xe9f5" coremark.out
+grep -q "\[0\]crclist       : 0xe714" coremark.out
+grep -q "\[0\]crcmatrix     : 0x1fd7" coremark.out
+grep -q "\[0\]crcstate      : 0x8e3a" coremark.out
+if grep -q "ERROR! .* crc" coremark.out; then
+  echo "coremark reported a wrong crc" >&2
+  false
+fi
+# The only complaint allowed is the 10 second one.
+[ "$(grep -c 'ERROR' coremark.out)" -eq 1 ]
+grep -q "ERROR! Must execute for at least 10 secs" coremark.out
 echo "ok: $step"
 
 step=
