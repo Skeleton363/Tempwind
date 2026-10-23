@@ -17,9 +17,11 @@ Keep this section current; add each command when it first works.
 - Lint and unit/integration tests (includes L1 fixture replay, spike tests in wasmtime, L5 snapshots): `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 - L1 oracle (x86-64 Linux only): `cargo run -p testkit --release -- record` re-records `crates/testkit/fixtures/l1/`; `-- record --check` diffs a fresh recording against them; `-- replay` prints a per-family summary.
 - Spike programs for the JS hosts: `cargo run -p testkit --release -- spike --out target/spike`
-- Translator CLI: `cargo run -p x64wasm-cli -- translate|ir|wat --base 0x140001000 --hex "48 01 d8 c3" [-o out.wasm] [--shared]`
+- Translator CLI: `cargo run -p x64wasm-cli -- translate|ir|wat --base 0x140001000 --hex "48 01 d8 c3" [-o out.wasm] [--shared] [--max-function-insns N] [--max-chunk-insns N] [--call-depth-limit N | --no-depth-guard]`
 - Regenerate IR/WAT snapshots: `UPDATE_SNAPSHOTS=1 cargo test -p x64wasm --test snapshots`
-- Translator measurements: `cargo test -p testkit --release --test spike_bench -- --ignored --nocapture --test-threads=1`
+- Translator measurements: `cargo test -p testkit --release --test spike_bench -- --ignored --nocapture --test-threads=1` (wasmtime); in V8, `cargo run -p testkit --release -- spike --bench --out target/bench/translator`, then `node tests/bench/translator/bench.mjs [--runs N]` (Node, four V8 configurations) and `node tests/bench/translator/bench.mjs --browser` (recursion depth in Chromium page and Worker).
+- Phase 1 targets (7zz.exe, coremark.exe, built in CI by `.github/workflows/targets.yml` from the sources pinned in `tests/targets/sources.json`): `scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe` (also `coremark.exe`, `census.json`, `census.md`, `build-info.json`). Mirrored sources: releases `src-7zip-25.01` and `src-coremark-1f483d5`.
+- Instruction census: `cargo run -p testkit --release -- census FILE... [--json PATH] [--md PATH] [--check]`; `--check` fails while in-scope forms lack L1 fixtures (scope rule: `docs/design/instruction-scope.md`).
 - JS (Node 24): `npm ci`, then `npm run test:node` and `npm run test:browser` (Playwright, headless Chromium). Both need `target/spike`. `CHROME_PATH=/path/to/chrome npm run test:browser` uses another browser. Never run `playwright install` in a session; the image already has Playwright's Chromium.
 - Docker: `tools/start-dockerd.sh` (idempotent; the SessionStart hook runs it).
 - Emscripten probe (wasm64 vs x86_64-linux type sizes, pthreads): `native/spike/run.sh`; report in `native/spike/out/report.md`.

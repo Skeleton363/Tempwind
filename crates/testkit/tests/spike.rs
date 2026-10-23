@@ -1,17 +1,45 @@
-//! The Phase 0 spike programs, translated and run in wasmtime with fixed
-//! expected results, plus the manifest `testkit spike` writes for the JS
-//! hosts.
+//! The spike programs, translated and run in wasmtime with fixed expected
+//! results (checked natively too on x86-64 Unix), plus the manifest
+//! `testkit spike` writes for the JS hosts.
 
 use testkit::host::Host;
 use testkit::spike::{self, Case};
 use x64wasm::Options;
 use x64wasm::abi;
+use x64wasm::ir::Term;
 
-fn run_case(case: &Case) {
-    let t = case.translate(&Options::default()).unwrap();
+fn run_case_with(case: &Case, opts: &Options) {
+    let t = case.translate(opts).unwrap();
     let host = Host::new().unwrap();
     let (out, machine) = case.run(&host, &t.wasm).unwrap();
-    case.check(&out, &machine).unwrap();
+    case.check(&out, &machine)
+        .unwrap_or_else(|e| panic!("{e:#} with {opts:?}"));
+}
+
+fn run_case(case: &Case) {
+    run_case_with(case, &Options::default());
+}
+
+/// Option sets under which every case must still pass: correctness must not
+/// depend on where chunks are cut or how deep calls nest on the wasm stack.
+fn option_sweep() -> Vec<Options> {
+    let o = |max_function_insns, max_chunk_insns, call_depth_limit| Options {
+        max_function_insns,
+        max_chunk_insns,
+        call_depth_limit,
+        ..Options::default()
+    };
+    vec![
+        Options::default(),
+        // Small chunks, loops kept whole.
+        o(8, 1000, Some(1000)),
+        // Every block its own chunk, loops cut too.
+        o(1, 1, Some(1000)),
+        // Every call unwinds to the trampoline.
+        o(Options::DEFAULT_MAX_FUNCTION_INSNS, 20_000, Some(0)),
+        o(1, 1, Some(0)),
+        o(30, 60, Some(3)),
+    ]
 }
 
 #[test]
@@ -50,6 +78,117 @@ fn high_address() {
 }
 
 #[test]
+fn fib_rec() {
+    for n in [0, 1, 2, 10, 20] {
+        run_case(&spike::fib_rec(n).unwrap());
+    }
+}
+
+#[test]
+fn deep_rec() {
+    run_case(&spike::deep_rec(10).unwrap());
+    run_case(&spike::deep_rec(100_000).unwrap());
+}
+
+#[test]
+fn tail_rec() {
+    for n in [0, 1, 2, 7, 100_000] {
+        run_case(&spike::tail_rec(n).unwrap());
+    }
+}
+
+#[test]
+fn ret_tricks() {
+    run_case(&spike::ret_tricks().unwrap());
+}
+
+#[test]
+fn call_table() {
+    run_case(&spike::call_table().unwrap());
+}
+
+#[test]
+fn shared_tail() {
+    let case = spike::shared_tail().unwrap();
+    // main, fa, fb: the epilogue belongs to fa, and fb reaches it by a tail
+    // transfer.
+    let t = case.translate(&Options::default()).unwrap();
+    assert_eq!(t.functions.len(), 3);
+    let epilogue = *t.blocks.last().unwrap();
+    assert!(t.functions[1].chunks[0].blocks.contains(&epilogue));
+    assert!(!t.functions[2].chunks[0].blocks.contains(&epilogue));
+    run_case(&case);
+}
+
+#[test]
+fn longjmp_like() {
+    run_case(&spike::longjmp_like().unwrap());
+}
+
+#[test]
+fn big_function() {
+    let case = spike::big_function(100).unwrap();
+    let t = case.translate(&Options::default()).unwrap();
+    assert!(t.guest_instructions > Options::DEFAULT_MAX_FUNCTION_INSNS);
+    assert_eq!(t.functions.len(), 1);
+    let chunks = &t.functions[0].chunks;
+    assert!(chunks.len() >= 2, "{} chunks", chunks.len());
+    // Each loop (from a backward branch's target to the branch) stays in
+    // one chunk.
+    let chunk_of = |addr: u64| chunks.iter().position(|c| c.blocks.contains(&addr));
+    let prog = x64wasm::lift(
+        x64wasm::CodeRegion {
+            base: case.code_base,
+            bytes: &case.code,
+        },
+        &case.entries(),
+    )
+    .unwrap();
+    let mut loops = 0;
+    for block in &prog.blocks {
+        if let Term::Branch { taken, .. } = block.term
+            && taken <= block.addr
+        {
+            let inside = t
+                .blocks
+                .iter()
+                .filter(|&&a| (taken..=block.addr).contains(&a));
+            for &a in inside {
+                assert_eq!(
+                    chunk_of(a),
+                    chunk_of(block.addr),
+                    "loop at {taken:#x} split"
+                );
+            }
+            loops += 1;
+        }
+    }
+    assert_eq!(loops, 100);
+    run_case(&case);
+    run_case(&spike::big_function(7).unwrap());
+}
+
+#[test]
+fn cases_pass_under_every_option_set() {
+    for opts in option_sweep() {
+        for case in spike::cases().unwrap() {
+            run_case_with(&case, &opts);
+        }
+    }
+}
+
+/// The expected results of every case hold for the machine code itself.
+#[cfg(all(target_arch = "x86_64", unix))]
+#[test]
+fn cases_match_native() {
+    for case in spike::cases().unwrap() {
+        let run = spike::native::run_case(&case).unwrap();
+        case.check_with(&run.state, |addr, len| run.read(addr, len))
+            .unwrap_or_else(|e| panic!("native: {e:#}"));
+    }
+}
+
+#[test]
 fn manifest_follows_the_abi_doc() {
     let dir = std::env::temp_dir().join(format!("tempwind-spike-{}", std::process::id()));
     spike::write(&dir).unwrap();
@@ -65,7 +204,20 @@ fn manifest_follows_the_abi_doc() {
     let names: Vec<&str> = cases.iter().map(|c| c["name"].as_str().unwrap()).collect();
     assert_eq!(
         names,
-        ["sum_loop", "fib_recursive", "array", "high_address"]
+        [
+            "sum_loop",
+            "fib_recursive",
+            "array",
+            "high_address",
+            "fib_rec",
+            "deep_rec",
+            "tail_rec",
+            "ret_tricks",
+            "call_table",
+            "shared_tail",
+            "longjmp_like",
+            "big_function",
+        ]
     );
     let is_hex = |v: &serde_json::Value| {
         v.as_str()

@@ -9,13 +9,13 @@
 use std::collections::{BTreeSet, HashMap};
 
 use iced_x86::{
-    Code, ConditionCode, Decoder, DecoderError, DecoderOptions, Formatter, Instruction,
-    IntelFormatter, Mnemonic, OpKind, Register,
+    Code, ConditionCode, Decoder, DecoderError, Formatter, Instruction, IntelFormatter, Mnemonic,
+    OpKind, Register,
 };
 
 use crate::abi;
 use crate::ir::{
-    BinOp, Block, Cond, FlagOp, Gpr, Insn, Op, Program, RSP, Temp, Term, Value, Width,
+    BinOp, Block, CallTarget, Cond, FlagOp, Gpr, Insn, Op, Program, RSP, Temp, Term, Value, Width,
 };
 use crate::{CodeRegion, Error};
 
@@ -35,28 +35,31 @@ struct Decoded {
 enum Flow {
     /// Falls through to the next instruction.
     Next,
-    /// Ends the block. `ret_site` is a call's return address.
-    End { term: Term, ret_site: Option<u64> },
+    /// Ends the block.
+    End(Term),
 }
 
 impl Flow {
+    /// Addresses that become block leaders: branch targets, call targets and
+    /// return sites.
     fn successors(&self) -> Vec<u64> {
         match self {
             Flow::Next => Vec::new(),
-            Flow::End { term, ret_site } => {
-                let mut out: Vec<u64> = ret_site.iter().copied().collect();
-                match term {
-                    Term::Jump(t) => out.push(*t),
-                    Term::Branch {
-                        taken, fallthrough, ..
-                    } => {
-                        out.push(*taken);
-                        out.push(*fallthrough);
-                    }
-                    Term::Indirect(_) | Term::Exit { .. } => {}
-                }
-                out
-            }
+            Flow::End(term) => match *term {
+                Term::Jump(t) => vec![t],
+                Term::Branch {
+                    taken, fallthrough, ..
+                } => vec![taken, fallthrough],
+                Term::Call {
+                    target: CallTarget::Direct(t),
+                    ret,
+                } => vec![ret, t],
+                Term::Call {
+                    target: CallTarget::Indirect(_),
+                    ret,
+                } => vec![ret],
+                Term::Indirect(_) | Term::Ret(_) | Term::Exit { .. } => Vec::new(),
+            },
         }
     }
 }
@@ -139,13 +142,10 @@ fn unsupported(addr: u64, len: u32, text: String) -> Decoded {
             ops: Vec::new(),
             temps: 0,
         },
-        flow: Flow::End {
-            term: Term::Exit {
-                reason: abi::EXIT_UNSUPPORTED,
-                rip: addr,
-            },
-            ret_site: None,
-        },
+        flow: Flow::End(Term::Exit {
+            reason: abi::EXIT_UNSUPPORTED,
+            rip: addr,
+        }),
     }
 }
 
@@ -153,7 +153,7 @@ fn unsupported(addr: u64, len: u32, text: String) -> Decoded {
 pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<Program, Error> {
     let mut lifter = Lifter {
         region,
-        decoder: Decoder::with_ip(64, region.bytes, region.base, DecoderOptions::NONE),
+        decoder: Decoder::with_ip(64, region.bytes, region.base, crate::DECODER_OPTIONS),
         formatter: IntelFormatter::new(),
         want_text,
         cache: HashMap::new(),
@@ -205,7 +205,7 @@ pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<
             insns.push(decoded.insn.clone());
             let next = pc.wrapping_add(decoded.insn.len as u64);
             match &decoded.flow {
-                Flow::End { term, .. } => break term.clone(),
+                Flow::End(term) => break term.clone(),
                 Flow::Next if leaders.contains(&next) => break Term::Jump(next),
                 Flow::Next => pc = next,
             }
@@ -586,19 +586,19 @@ impl Lower<'_> {
             Mnemonic::Call => match insn.code() {
                 Code::Call_rel32_64 => {
                     self.push64(Value::Imm(next));
-                    Ok(Flow::End {
-                        term: Term::Jump(insn.near_branch_target()),
-                        ret_site: Some(next),
-                    })
+                    Ok(Flow::End(Term::Call {
+                        target: CallTarget::Direct(insn.near_branch_target()),
+                        ret: next,
+                    }))
                 }
                 Code::Call_rm64 => {
                     let target = self.read(0, Width::W64)?;
                     let target = self.snapshot(target);
                     self.push64(Value::Imm(next));
-                    Ok(Flow::End {
-                        term: Term::Indirect(target),
-                        ret_site: Some(next),
-                    })
+                    Ok(Flow::End(Term::Call {
+                        target: CallTarget::Indirect(target),
+                        ret: next,
+                    }))
                 }
                 _ => Err(Unsupported),
             },
@@ -611,22 +611,15 @@ impl Lower<'_> {
                 let target = self.load(Width::W64, Value::Reg(RSP));
                 let sp = self.bin(BinOp::Add, Value::Reg(RSP), Value::Imm(8 + extra));
                 self.set_reg(RSP, sp);
-                Ok(Flow::End {
-                    term: Term::Indirect(target),
-                    ret_site: None,
-                })
+                Ok(Flow::End(Term::Ret(target)))
             }
             Mnemonic::Jmp => match insn.code() {
-                Code::Jmp_rel8_64 | Code::Jmp_rel32_64 => Ok(Flow::End {
-                    term: Term::Jump(insn.near_branch_target()),
-                    ret_site: None,
-                }),
+                Code::Jmp_rel8_64 | Code::Jmp_rel32_64 => {
+                    Ok(Flow::End(Term::Jump(insn.near_branch_target())))
+                }
                 Code::Jmp_rm64 => {
                     let target = self.read(0, Width::W64)?;
-                    Ok(Flow::End {
-                        term: Term::Indirect(target),
-                        ret_site: None,
-                    })
+                    Ok(Flow::End(Term::Indirect(target)))
                 }
                 _ => Err(Unsupported),
             },
@@ -634,14 +627,11 @@ impl Lower<'_> {
                 if insn.op_kind(0) != OpKind::NearBranch64 {
                     return Err(Unsupported);
                 }
-                Ok(Flow::End {
-                    term: Term::Branch {
-                        cond: cond(insn.condition_code())?,
-                        taken: insn.near_branch_target(),
-                        fallthrough: next,
-                    },
-                    ret_site: None,
-                })
+                Ok(Flow::End(Term::Branch {
+                    cond: cond(insn.condition_code())?,
+                    taken: insn.near_branch_target(),
+                    fallthrough: next,
+                }))
             }
             _ => Err(Unsupported),
         }

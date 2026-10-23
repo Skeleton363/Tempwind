@@ -7,6 +7,8 @@
 //!   RSP and the status flags) against a data page at a fixed address, so the
 //!   same snippet and addresses can also be run through the translator and
 //!   the results compared bit for bit.
+//! - [`run_case`] runs a whole spike program at its own guest addresses, to
+//!   check its expected results natively.
 
 use std::sync::Mutex;
 
@@ -34,13 +36,14 @@ impl Mapping {
             None => (std::ptr::null_mut(), 0),
         };
         // SAFETY: an anonymous private mapping; with MAP_FIXED_NOREPLACE the
-        // kernel refuses to replace an existing mapping.
+        // kernel refuses to replace an existing mapping. MAP_NORESERVE: large
+        // case memories are mostly untouched.
         let ptr = unsafe {
             libc::mmap(
                 addr,
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | flags,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | flags,
                 -1,
                 0,
             )
@@ -279,4 +282,191 @@ impl Sandbox {
         out.exit = abi::EXIT_LEFT_CODE;
         Ok((out, self.data.bytes()[..SANDBOX_DATA_SIZE].to_vec()))
     }
+}
+
+/// Result of [`run_case`]: the final registers and the case's memory.
+pub struct NativeRun {
+    /// Registers and flags after the case returned to the sentinel; RIP is
+    /// [`abi::SENTINEL_RET`] and the exit reason `EXIT_LEFT_CODE`, as in a
+    /// translated run.
+    pub state: CpuState,
+    /// Time spent in guest code (plus the few instructions of the stub).
+    pub elapsed: std::time::Duration,
+    memory: Mapping,
+    memory_base: u64,
+}
+
+impl NativeRun {
+    /// Reads guest memory after the run.
+    pub fn read(&self, addr: u64, len: usize) -> Result<Vec<u8>> {
+        let start = addr.checked_sub(self.memory_base).map(|s| s as usize);
+        match start {
+            Some(s) if s + len <= self.memory.len => Ok(self.memory.bytes()[s..s + len].to_vec()),
+            _ => bail!("native read {addr:#x}+{len:#x} is outside the case's memory"),
+        }
+    }
+}
+
+/// Serializes native case runs: they map memory at fixed guest addresses.
+static CASE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Slots of the case stub's data page: 16 GPRs, RFLAGS, entry, host RSP.
+const SLOT_RFLAGS: usize = 16;
+const SLOT_ENTRY: usize = 17;
+const SLOT_HOST_RSP: usize = 18;
+const SLOTS: usize = 19;
+
+/// Runs a spike case natively.
+///
+/// - The case's memory is mapped read/write/execute at its guest addresses,
+///   from the lowest address its code or memory uses (64 KiB aligned) up to
+///   `memory_bytes`; the stack must lie above that address.
+/// - Its initial memory is written, except that a sentinel return address
+///   (an 8-byte `init_mem` entry holding [`abi::SENTINEL_RET`]) is replaced
+///   by the address of a stub that stores the registers and returns to Rust.
+/// - The registers and RFLAGS are loaded and the case's entry is jumped to.
+///
+/// # Safety (not `unsafe` because test cases are trusted)
+/// The case must return to the sentinel and only touch its own memory.
+pub fn run_case(case: &super::Case) -> Result<NativeRun> {
+    let _guard = CASE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let init_mem = case.all_init_mem();
+    let lowest = init_mem
+        .iter()
+        .chain(&case.expect_mem)
+        .map(|(addr, _)| *addr)
+        .chain([case.code_base])
+        .min()
+        .unwrap();
+    let base = (lowest & !0xffff).max(0x1_0000);
+    ensure!(case.memory_bytes > base, "{}: no memory to map", case.name);
+    let mut memory = Mapping::new(Some(base), (case.memory_bytes - base) as usize)?;
+
+    // The stub: page 0 holds the slots (RW), page 1 the code (RX), so the
+    // code reaches the slots RIP-relatively wherever the kernel maps it.
+    let mut stub = Mapping::new(None, 2 * PAGE)?;
+    let stub_base = stub.ptr as u64;
+    let mut a = CodeAssembler::new(64)?;
+    let mut slots = Vec::with_capacity(SLOTS);
+    for _ in 0..SLOTS {
+        let mut l = a.create_label();
+        a.set_label(&mut l)?;
+        a.dq(&[0])?;
+        slots.push(l);
+    }
+    a.db(&vec![0xcc; PAGE - 8 * SLOTS])?;
+    // Prologue (called from Rust): save callee-saved registers and the host
+    // RSP, load the guest flags and registers, jump to the entry.
+    for r in [rbx, rbp, r12, r13, r14, r15] {
+        a.push(r)?;
+    }
+    a.mov(qword_ptr(slots[SLOT_HOST_RSP]), rsp)?;
+    a.push(qword_ptr(slots[SLOT_RFLAGS]))?;
+    a.popfq()?;
+    for (i, &r) in GPR64.iter().enumerate() {
+        if i != 4 {
+            a.mov(r, qword_ptr(slots[i]))?;
+        }
+    }
+    a.mov(rsp, qword_ptr(slots[4]))?;
+    a.jmp(qword_ptr(slots[SLOT_ENTRY]))?;
+    // Epilogue, where the case returns: store the guest registers, switch
+    // back to the host stack, store the flags, restore and return.
+    let mut epilogue = a.create_label();
+    a.set_label(&mut epilogue)?;
+    for (i, &r) in GPR64.iter().enumerate() {
+        a.mov(qword_ptr(slots[i]), r)?;
+    }
+    a.mov(rsp, qword_ptr(slots[SLOT_HOST_RSP]))?;
+    a.pushfq()?;
+    a.pop(qword_ptr(slots[SLOT_RFLAGS]))?;
+    for r in [r15, r14, r13, r12, rbp, rbx] {
+        a.pop(r)?;
+    }
+    a.ret()?;
+    let assembled = a.assemble_options(
+        stub_base,
+        iced_x86::BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS,
+    )?;
+    let return_stub = assembled.label_ip(&epilogue)?;
+    let code = assembled.inner.code_buffer;
+    ensure!(code.len() <= 2 * PAGE, "case stub too large");
+    stub.bytes_mut()[..code.len()].copy_from_slice(&code);
+
+    let input = case.init_state();
+    // User mode can't set IF/IOPL; refuse TF/DF/AC and other control bits.
+    ensure!(
+        input.rflags & !(abi::flags::STATUS | abi::flags::RESERVED1 | abi::flags::IF) == 0,
+        "{}: rflags {:#x} has control bits set",
+        case.name,
+        input.rflags
+    );
+    let sentinel = abi::SENTINEL_RET.to_le_bytes();
+    let mem = memory.bytes_mut();
+    for (addr, bytes) in &init_mem {
+        let at = (addr - base) as usize;
+        let bytes = if bytes[..] == sentinel {
+            &return_stub.to_le_bytes()[..]
+        } else {
+            &bytes[..]
+        };
+        ensure!(
+            at + bytes.len() <= mem.len(),
+            "{}: init memory outside",
+            case.name
+        );
+        mem[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    memory.protect(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC)?;
+    let slot_bytes = stub.bytes_mut();
+    let mut set_slot =
+        |i: usize, v: u64| slot_bytes[8 * i..8 * i + 8].copy_from_slice(&v.to_le_bytes());
+    for (i, &v) in input.gpr.iter().enumerate() {
+        set_slot(i, v);
+    }
+    set_slot(SLOT_RFLAGS, input.rflags);
+    set_slot(SLOT_ENTRY, case.entry);
+    // Only the code page becomes executable; the slots stay writable.
+    // SAFETY: the second page of the stub mapping holds only code.
+    let rc = unsafe {
+        libc::mprotect(
+            stub.ptr.add(PAGE) as *mut libc::c_void,
+            PAGE,
+            libc::PROT_READ | libc::PROT_EXEC,
+        )
+    };
+    ensure!(
+        rc == 0,
+        "mprotect failed: {}",
+        std::io::Error::last_os_error()
+    );
+
+    let start = std::time::Instant::now();
+    // SAFETY: the stub's prologue saves the callee-saved registers and the
+    // host RSP, and the epilogue restores them and returns; the case returns
+    // to the epilogue through the patched sentinel and only touches its own
+    // memory (the caller vouches for the case).
+    unsafe {
+        let f: extern "sysv64" fn() = std::mem::transmute(stub.ptr.add(PAGE));
+        f();
+    }
+    let elapsed = start.elapsed();
+
+    let slot_bytes = stub.bytes();
+    let slot = |i: usize| u64::from_le_bytes(slot_bytes[8 * i..8 * i + 8].try_into().unwrap());
+    let mut state = CpuState {
+        rip: abi::SENTINEL_RET,
+        rflags: slot(SLOT_RFLAGS),
+        exit: abi::EXIT_LEFT_CODE,
+        ..CpuState::default()
+    };
+    for (i, r) in state.gpr.iter_mut().enumerate() {
+        *r = slot(i);
+    }
+    Ok(NativeRun {
+        state,
+        elapsed,
+        memory,
+        memory_base: base,
+    })
 }

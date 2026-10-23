@@ -1,4 +1,5 @@
-//! `testkit`: record and replay instruction fixtures, write spike programs.
+//! `testkit`: record and replay instruction fixtures, write spike programs,
+//! take the instruction census of PE files.
 
 use std::path::PathBuf;
 
@@ -26,13 +27,21 @@ enum Command {
     Spike {
         #[arg(long, default_value = "target/spike")]
         out: PathBuf,
+        /// Write the translator measurement programs instead (for
+        /// tests/bench/translator/bench.mjs), e.g. to target/bench/translator.
+        #[arg(long)]
+        bench: bool,
     },
+    /// Instruction and import census of PE files (docs/design/instruction-scope.md).
+    Census(testkit::census::Args),
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Record { check } => testkit::oracle::record(check),
         Command::Replay => testkit::oracle::replay(),
-        Command::Spike { out } => testkit::spike::write(&out),
+        Command::Spike { out, bench: false } => testkit::spike::write(&out),
+        Command::Spike { out, bench: true } => testkit::spike::bench::write(&out),
+        Command::Census(args) => testkit::census::run(&args),
     }
 }

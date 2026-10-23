@@ -18,6 +18,9 @@ impl Host {
         let mut config = Config::new();
         config.wasm_memory64(true);
         config.wasm_threads(true);
+        // ABI v2: tail transfers between translated functions use
+        // `return_call` and `return_call_indirect`.
+        config.wasm_tail_call(true);
         Ok(Host {
             engine: Engine::new(&config)?,
         })

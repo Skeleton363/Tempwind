@@ -111,13 +111,11 @@ jobs:
 
   mingw-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: Install MinGW-w64
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+        run: scripts/apt-install.sh gcc-mingw-w64-x86-64
       - name: Build hello.exe
         run: tests/native/build.sh
       - uses: actions/upload-artifact@v7

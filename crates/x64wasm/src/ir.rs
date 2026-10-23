@@ -4,7 +4,10 @@
 //! Shape:
 //! - A [`Program`] is a list of basic [`Block`]s sorted by guest address.
 //! - A block holds guest instructions ([`Insn`]) in order and ends in one
-//!   [`Term`] (jump, conditional branch, indirect branch or exit).
+//!   [`Term`] (jump, conditional branch, call, return, indirect branch or
+//!   exit). Calls and returns stay explicit because they map to wasm calls
+//!   and returns; their ops already did the stack work (push the return
+//!   address; pop it and adjust RSP), exactly as native code does.
 //! - Each instruction lowers to [`Op`]s over 64-bit values. A [`Value`] is a
 //!   guest register (read at the point the op executes), an instruction-local
 //!   temporary, or an immediate. Temporaries never live across instruction
@@ -249,6 +252,15 @@ impl Cond {
     }
 }
 
+/// The target of a [`Term::Call`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallTarget {
+    /// `call rel32`.
+    Direct(u64),
+    /// `call r/m64`: the target, read before the return address was pushed.
+    Indirect(Value),
+}
+
 /// How a block ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Term {
@@ -260,8 +272,13 @@ pub enum Term {
         taken: u64,
         fallthrough: u64,
     },
-    /// Continue at a computed guest address.
+    /// Continue at a computed guest address (`jmp r/m64`).
     Indirect(Value),
+    /// A call. The ops have pushed `ret`, the address of the next
+    /// instruction, where control continues when the callee returns.
+    Call { target: CallTarget, ret: u64 },
+    /// A return to the popped address `value`; the ops have adjusted RSP.
+    Ret(Value),
     /// Exit to the host with `reason` and RIP = `rip`.
     Exit { reason: u32, rip: u64 },
 }
@@ -308,14 +325,22 @@ impl Program {
     }
 
     /// Flag liveness: marks every [`Op::Flags`] record whose flags no reader
-    /// (a conditional branch, or any exit to the host or unknown code) can
-    /// observe before the next record overwrites them.
+    /// (a conditional branch, a call or return, or any exit to the host or
+    /// unknown code) can observe before the next record overwrites them.
+    ///
+    /// Direct jumps are followed across function and chunk boundaries: every
+    /// boundary stores the whole lazy record to the state block, so a record
+    /// no path reads is dead wherever the path continues.
     pub fn analyze_flags(&mut self) {
         let index = self.index_map();
         let mut live_in = vec![false; self.blocks.len()];
         let live_after_term = |term: &Term, live_in: &[bool]| match term {
             Term::Jump(target) => index.get(target).is_none_or(|&i| live_in[i]),
-            Term::Branch { .. } | Term::Indirect(_) | Term::Exit { .. } => true,
+            Term::Branch { .. }
+            | Term::Indirect(_)
+            | Term::Call { .. }
+            | Term::Ret(_)
+            | Term::Exit { .. } => true,
         };
         let block_live_in = |block: &Block, live_out: bool| {
             let mut live = live_out;
@@ -442,6 +467,11 @@ impl fmt::Display for Term {
                 cond.name()
             ),
             Term::Indirect(v) => write!(f, "jump [{v}]"),
+            Term::Call { target, ret } => match target {
+                CallTarget::Direct(t) => write!(f, "call {t:#x} ret {ret:#x}"),
+                CallTarget::Indirect(v) => write!(f, "call [{v}] ret {ret:#x}"),
+            },
+            Term::Ret(v) => write!(f, "ret [{v}]"),
             Term::Exit { reason, rip } => {
                 let name = match *reason {
                     abi::EXIT_LEFT_CODE => "left_code",

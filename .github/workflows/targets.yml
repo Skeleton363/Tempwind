@@ -1,0 +1,251 @@
+# Phase 1 targets: mirror the upstream sources of 7-Zip and CoreMark as releases
+# of this repo, build 7zz.exe and coremark.exe with MinGW-w64, take the
+# instruction census, smoke-test the executables natively on Windows and under
+# Wine on Linux, and publish `targets-<sha7>` (see tests/targets/README.md).
+#
+# Sessions cannot reach the upstream hosts; they use the mirrors and the
+# targets release through scripts/fetch-artifact.sh.
+name: targets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "tests/targets/**"
+      - "!tests/targets/targets.lock"
+      - "!tests/targets/README.md"
+      - ".github/workflows/targets.yml"
+      - "crates/x64wasm/src/pe.rs"
+      - "crates/testkit/src/census.rs"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: targets-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  # Fetch the upstream sources, verify them against tests/targets/sources.json
+  # and mirror them. Trust on first use: an empty pin fails the job and prints
+  # the value to put into sources.json.
+  sources:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 7-Zip source
+        run: |
+          set -euo pipefail
+          version=$(jq -r '."7zip".version' tests/targets/sources.json)
+          url=$(jq -r '."7zip".url' tests/targets/sources.json)
+          mirror_url=$(jq -r '."7zip".mirror_url' tests/targets/sources.json)
+          pinned=$(jq -r '."7zip".sha256' tests/targets/sources.json)
+          license=$(jq -r '."7zip".license' tests/targets/sources.json)
+          mkdir -p dl
+          file="dl/$(basename "$url")"
+          if ! curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$file"; then
+            echo "::warning::$url failed; trying $mirror_url"
+            curl -fsSL --retry 3 --retry-delay 5 "$mirror_url" -o "$file"
+          fi
+          found=$(sha256sum "$file" | awk '{print $1}')
+          echo "7-Zip $version: $(stat -c %s "$file") bytes, sha256 $found"
+          if [ -z "$pinned" ]; then
+            echo "::error file=tests/targets/sources.json::Not pinned yet: set \"7zip\".\"sha256\" to \"$found\" (found for $version)"
+            exit 1
+          fi
+          if [ "$pinned" != "$found" ]; then
+            echo "::error file=tests/targets/sources.json::sha256 mismatch for 7-Zip $version: pinned $pinned, found $found"
+            exit 1
+          fi
+          tag="src-7zip-$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          (cd dl && sha256sum "$(basename "$file")" > "$(basename "$file").sha256")
+          notes="Mirror of the 7-Zip $version source, fetched from $url (fallback $mirror_url). License: $license. sha256 $found. Mirrored by workflow run $RUN_URL."
+          gh release create "$tag" "$file" "$file.sha256" \
+            --target "$GITHUB_SHA" --prerelease --title "$tag" --notes "$notes"
+          echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: CoreMark source
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          repo=$(jq -r '.coremark.repo' tests/targets/sources.json)
+          ref=$(jq -r '.coremark.ref' tests/targets/sources.json)
+          commit=$(jq -r '.coremark.commit' tests/targets/sources.json)
+          pinned=$(jq -r '.coremark.sha256' tests/targets/sources.json)
+          license=$(jq -r '.coremark.license' tests/targets/sources.json)
+          slug=${repo#https://github.com/}
+          resolved=
+          if [ -z "$commit" ]; then
+            resolved=$(git ls-remote "$repo" "refs/heads/$ref" "refs/tags/$ref" | awk 'NR==1 {print $1}')
+            [ -n "$resolved" ] || { echo "::error::cannot resolve $ref in $repo"; exit 1; }
+            use=$resolved
+          else
+            use=$commit
+          fi
+          mkdir -p dl
+          file="dl/coremark-$use.tar.gz"
+          curl -fsSL --retry 3 --retry-delay 5 "$repo/archive/$use.tar.gz" -o "$file"
+          found=$(sha256sum "$file" | awk '{print $1}')
+          echo "CoreMark $use: $(stat -c %s "$file") bytes, sha256 $found"
+          if [ -z "$commit" ] || [ -z "$pinned" ]; then
+            [ -z "$commit" ] && echo "::error file=tests/targets/sources.json::Not pinned yet: set \"coremark\".\"commit\" to \"$use\" ($ref resolved to it)"
+            [ -z "$pinned" ] && echo "::error file=tests/targets/sources.json::Not pinned yet: set \"coremark\".\"sha256\" to \"$found\" (tarball of $use)"
+            exit 1
+          fi
+          if [ "$pinned" != "$found" ]; then
+            echo "::error file=tests/targets/sources.json::sha256 mismatch for CoreMark $use: pinned $pinned, found $found"
+            exit 1
+          fi
+          tag="src-coremark-${use:0:7}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          (cd dl && sha256sum "$(basename "$file")" > "$(basename "$file").sha256")
+          notes="Mirror of CoreMark commit $use of $repo ($ref when pinned), fetched from $repo/archive/$use.tar.gz. License: $license. sha256 $found. Mirrored by workflow run $RUN_URL."
+          gh release create "$tag" "$file" "$file.sha256" \
+            --target "$GITHUB_SHA" --prerelease --title "$tag" --notes "$notes"
+          echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install MinGW-w64
+        timeout-minutes: 30
+        run: scripts/apt-install.sh gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download the mirrored sources
+        run: |
+          set -euo pipefail
+          version=$(jq -r '."7zip".version' tests/targets/sources.json)
+          commit=$(jq -r '.coremark.commit' tests/targets/sources.json)
+          mkdir -p target/targets/src
+          gh release download "src-7zip-$version" -D target/targets/src --clobber
+          gh release download "src-coremark-${commit:0:7}" -D target/targets/src --clobber
+          ls -l target/targets/src
+
+      - name: Build 7zz.exe
+        run: |
+          version=$(jq -r '."7zip".version' tests/targets/sources.json)
+          tests/targets/7zip/build.sh "target/targets/src/7z${version//./}-src.tar.xz"
+
+      - name: Build coremark.exe
+        run: |
+          commit=$(jq -r '.coremark.commit' tests/targets/sources.json)
+          tests/targets/coremark/build.sh "target/targets/src/coremark-$commit.tar.gz"
+
+      - name: Build hello.exe
+        run: tests/native/build.sh
+
+      - name: Census
+        run: |
+          cargo run -p testkit --release -- census \
+            --json target/targets/census.json --md target/targets/census.md \
+            target/targets/7zz.exe target/targets/coremark.exe target/native/hello.exe
+
+      - name: build-info.json
+        run: tests/targets/build-info.sh target/targets/build-info.json
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/targets/{7zz.exe,coremark.exe,census.json,census.md,build-info.json} dist/
+          cd dist
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+          ls -l
+
+      - name: Job summary
+        run: |
+          {
+            cat target/targets/census.md
+            echo
+            echo "## Binaries"
+            echo '```'
+            (cd dist && cat ./*.sha256 && ls -l 7zz.exe coremark.exe)
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: targets
+          path: dist
+          if-no-files-found: error
+
+      - name: Publish release targets-<sha7>
+        run: |
+          set -euo pipefail
+          tag="targets-${GITHUB_SHA:0:7}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          notes="7zz.exe (7-Zip Alone2) and coremark.exe built with MinGW-w64 from commit ${GITHUB_SHA} by workflow run ${RUN_URL}, with the instruction census and build-info.json. Sources: see build-info.json."
+          gh release create "$tag" dist/* \
+            --target "$GITHUB_SHA" --prerelease --title "$tag" --notes "$notes"
+          echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"
+
+  windows-native:
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: targets
+          path: targets
+      - name: Smoke test, native Windows
+        run: tests/targets/smoke.sh targets
+
+  linux-wine:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: targets
+          path: targets
+      - name: Install Wine
+        timeout-minutes: 30
+        run: |
+          scripts/apt-install.sh wine64
+          # Ubuntu's wine64 package installs the launcher as /usr/lib/wine/wine64 only.
+          wine=$(command -v wine64 || echo /usr/lib/wine/wine64)
+          test -x "$wine"
+          echo "WINE=$wine" >> "$GITHUB_ENV"
+      - name: Smoke test under wine64
+        env:
+          WINEDEBUG: "-all"
+          WINEPREFIX: ${{ runner.temp }}/wineprefix
+        run: |
+          unset DISPLAY
+          "$WINE" --version
+          "$WINE" wineboot --init || true
+          RUN="$WINE" tests/targets/smoke.sh targets

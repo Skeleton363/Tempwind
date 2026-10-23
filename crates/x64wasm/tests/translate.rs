@@ -38,6 +38,7 @@ fn module_shape_follows_the_abi() {
             0x1_4000_1000,
             &Options {
                 shared_memory: shared,
+                ..Options::default()
             },
         );
         validate(&t.wasm);
@@ -85,6 +86,82 @@ fn discovers_blocks_and_return_sites() {
 }
 
 #[test]
+fn functions_chunks_and_names() {
+    let base = 0x1000;
+    let t = translate(&hex(CALL_LEA), base, &Options::default());
+    validate(&t.wasm);
+    // The caller (entry block and return site) and the callee.
+    assert_eq!(
+        t.functions,
+        [
+            x64wasm::FunctionInfo {
+                addr: base,
+                chunks: vec![x64wasm::ChunkInfo {
+                    wasm_index: 3,
+                    blocks: vec![base, base + 9],
+                }],
+            },
+            x64wasm::FunctionInfo {
+                addr: base + 11,
+                chunks: vec![x64wasm::ChunkInfo {
+                    wasm_index: 4,
+                    blocks: vec![base + 11],
+                }],
+            },
+        ]
+    );
+    let wat = wasmprinter::print_bytes(&t.wasm).unwrap();
+    assert!(wat.contains("(func $fn_0x1000 (;3;) (type 2)"));
+    assert!(wat.contains("(func $fn_0x100b (;4;) (type 2)"));
+    assert!(wat.contains("(table $chunks (;0;) 2 2 funcref)"));
+    assert!(wat.contains("(global $depth (;0;) (mut i32)"));
+    assert!(t.ir.starts_with("function 0x1000: wasm function 3 (fn_0x1000)\n"));
+
+    // Without the depth guard, calls don't test `depth` (they still count it).
+    let unguarded = translate(
+        &hex(CALL_LEA),
+        base,
+        &Options {
+            call_depth_limit: None,
+            ..Options::default()
+        },
+    );
+    validate(&unguarded.wasm);
+    assert!(unguarded.wasm.len() < t.wasm.len());
+}
+
+#[test]
+fn large_functions_are_cut_into_chunks() {
+    // 300 x `add rax, rcx`, then ret: one function, chunks of 100.
+    let code = "4801c8".repeat(300) + "c3";
+    let opts = Options {
+        max_function_insns: 100,
+        max_chunk_insns: 1000,
+        ..Options::default()
+    };
+    let t = translate(&hex(&code), 0x1000, &opts);
+    validate(&t.wasm);
+    // A straight line is one block, which is never cut.
+    assert_eq!(t.functions.len(), 1);
+    assert_eq!(t.functions[0].chunks.len(), 1);
+    // Branches make blocks: a jne over each add (75 03) makes 301
+    // one-instruction blocks, cut 100 per chunk.
+    let code = "7503 4801c8 ".repeat(150) + "c3";
+    let t = translate(&hex(&code), 0x1000, &opts);
+    validate(&t.wasm);
+    let chunks = &t.functions[0].chunks;
+    let sizes: Vec<usize> = chunks.iter().map(|c| c.blocks.len()).collect();
+    assert_eq!(sizes, [100, 100, 100, 1]);
+    assert_eq!(
+        chunks.iter().map(|c| c.wasm_index).collect::<Vec<_>>(),
+        [3, 4, 5, 6]
+    );
+    let wat = wasmprinter::print_bytes(&t.wasm).unwrap();
+    assert!(wat.contains("$fn_0x1000_c1"));
+    assert!(wat.contains("return_call $fn_0x1000_c1"));
+}
+
+#[test]
 fn dead_flags_are_marked() {
     let prog = x64wasm::lift(
         CodeRegion {
@@ -107,7 +184,7 @@ fn dead_flags_are_marked() {
         .collect();
     // cmp (read by je), add (overwritten by sub), sub (read by jne)
     assert_eq!(flags, [(0x1005, true), (0x100b, false), (0x100e, true)]);
-    assert!(matches!(prog.blocks[2].term, Term::Indirect(_)));
+    assert!(matches!(prog.blocks[2].term, Term::Ret(_)));
 }
 
 #[test]
@@ -169,6 +246,7 @@ fn arbitrary_bytes_translate_to_valid_modules() {
                 &entries,
                 &Options {
                     shared_memory: shared,
+                    ..Options::default()
                 },
             )
             .unwrap();

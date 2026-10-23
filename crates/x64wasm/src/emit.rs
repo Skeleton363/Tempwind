@@ -1,64 +1,90 @@
-//! IR -> WebAssembly (memory64) code generation.
+//! IR -> WebAssembly (memory64) code generation, one wasm function per
+//! chunk (ABI v2, `docs/design/abi.md`; design in `docs/design/translator.md`).
 //!
-//! Module layout (see `docs/design/abi.md`):
+//! Module layout:
 //! - imports `env.memory` (memory64), exports `run(state: i64) -> i32`;
-//! - function 0 `run`: loads the guest registers from the state block into
-//!   locals, dispatches to blocks, stores everything back on exit;
-//! - function 1 `lookup(rip: i64) -> i32`: guest address -> block index
-//!   (binary search compiled to code; -1 if there is no block);
+//! - function 0 `run`: the trampoline. Looks up `state.rip`, calls the chunk
+//!   through the table, and loops on `STATUS_UNWIND`;
+//! - function 1 `lookup(rip: i64) -> (i32, i32)`: guest address -> (table
+//!   index, entry), a binary search compiled to code; (-1, 0) if there is no
+//!   block;
 //! - function 2 `flags(op, a, b, r) -> i64`: materializes the status flags of
-//!   a lazy flag record.
+//!   a lazy flag record;
+//! - functions 3.. : one per chunk, `(state: i64, entry: i32, ret: i64) -> i32`,
+//!   table index = function index - 3;
+//! - global 0 `depth` (mutable i32): nested guest calls on the wasm stack.
 //!
-//! Control flow inside `run`:
+//! Control flow inside a chunk:
 //!
 //! ```text
-//! block $exit
+//! <load registers and the lazy flag record from the state block>
+//! block $leave
 //!   loop $dispatch
 //!     block $bN-1 ... block $b0 block $miss
-//!       br_table [$b0 .. $bN-1] default=$miss   (on local idx)
-//!     end  <miss: reason = LEFT_CODE, br $exit>
+//!       br_table [$b0 .. $bN-1] default=$miss   (on the `entry` parameter)
+//!     end  unreachable
 //!     end  <code of block 0>
 //!     ...
 //!     end  <code of block N-1>
 //!   end
+//!   unreachable
 //! end
-//! <epilogue: store state, return reason>
+//! <store registers and flags; RIP unless RETURNED; return status>
 //! ```
 //!
 //! Every label `$bj` with `j > k` encloses the code of block `k`, so forward
-//! direct branches are plain `br $bj` (or a fall-through when `j = k + 1`).
-//! Backward branches set `idx` and go through `$dispatch`; a block that
-//! branches to itself is wrapped in its own `loop`. Indirect branches call
-//! `lookup` and dispatch.
+//! branches inside the chunk are plain `br $bj` (or a fall-through when
+//! `j = k + 1`). Backward branches set `entry` and go through `$dispatch`; a
+//! block that branches to itself is wrapped in its own `loop`. Returns,
+//! unwinds and exits set `status` (and `rip`) and leave through `$leave`.
+//! Calls and tail transfers store the state inline and use `call` /
+//! `call_indirect` and `return_call` / `return_call_indirect`.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use wasm_encoder::{
-    BlockType, CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-    ImportSection, IndirectNameMap, InstructionSink, MemArg, MemoryType, Module, NameMap,
-    NameSection, TypeSection, ValType,
+    BlockType, CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind,
+    ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection,
+    IndirectNameMap, InstructionSink, MemArg, MemoryType, Module, NameMap, NameSection, RefType,
+    TableSection, TableType, TypeSection, ValType,
 };
 
 use crate::Options;
 use crate::abi;
+use crate::func::Partition;
 use crate::ir::{
-    BinOp, Block, CC_EAGER, Cond, FlagOp, Op, Program, Temp, Term, Value, Width, reg_name,
+    BinOp, Block, CC_EAGER, CallTarget, Cond, FlagOp, Op, Program, Temp, Term, Value, Width,
+    reg_name,
 };
 
-// Locals of `run`.
-const L_STATE: u32 = 0;
-const L_GPR0: u32 = 1;
-const L_RIP: u32 = 17;
-const L_RFLAGS_IN: u32 = 18;
-const L_CC_A: u32 = 19;
-const L_CC_B: u32 = 20;
-const L_CC_R: u32 = 21;
-const L_SCRATCH: u32 = 22;
-const L_TEMP0: u32 = 23;
+// Parameters and locals of a chunk function.
+const P_STATE: u32 = 0;
+/// The block to start at; reused as the dispatch index.
+const P_ENTRY: u32 = 1;
+/// The return address the wasm caller expects.
+const P_RET: u32 = 2;
+const L_GPR0: u32 = 3;
+const L_RIP: u32 = 19;
+const L_CC_A: u32 = 20;
+const L_CC_B: u32 = 21;
+const L_CC_R: u32 = 22;
+const L_SCRATCH: u32 = 23;
+const L_TEMP0: u32 = 24;
 
 const F_RUN: u32 = 0;
 const F_LOOKUP: u32 = 1;
 const F_FLAGS: u32 = 2;
+/// Function index of chunk 0.
+pub const F_CHUNK0: u32 = 3;
+
+const T_RUN: u32 = 0;
+const T_FLAGS: u32 = 1;
+const T_CHUNK: u32 = 2;
+const T_LOOKUP: u32 = 3;
+
+const TABLE: u32 = 0;
+const G_DEPTH: u32 = 0;
 
 fn mem(offset: u64) -> MemArg {
     MemArg {
@@ -70,7 +96,7 @@ fn mem(offset: u64) -> MemArg {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Label {
-    Exit,
+    Leave,
     Dispatch,
     Block(usize),
     Miss,
@@ -78,9 +104,15 @@ enum Label {
     If,
 }
 
-struct RunEmitter<'p> {
+struct ChunkEmitter<'p> {
     prog: &'p Program,
-    index: HashMap<u64, usize>,
+    part: &'p Partition,
+    index: &'p HashMap<u64, usize>,
+    /// This chunk's index (its table index).
+    chunk: u32,
+    /// Program block indices of this chunk, in entry order.
+    blocks: &'p [usize],
+    depth_limit: Option<u32>,
     labels: Vec<Label>,
     /// The lazy flag record kind known statically at this point, if any.
     known_cc: Option<(FlagOp, Width)>,
@@ -88,20 +120,21 @@ struct RunEmitter<'p> {
     keep: Option<Temp>,
     /// A temporary that is on top of the wasm stack instead of in its local.
     on_stack: Option<Temp>,
-    temps: u32,
     l_cc_op: u32,
-    l_idx: u32,
-    l_reason: u32,
+    l_status: u32,
+    l_func: u32,
+    /// Something branches to `$leave`.
+    leave_used: bool,
 }
 
-impl RunEmitter<'_> {
+impl ChunkEmitter<'_> {
     fn depth(&self, label: Label) -> u32 {
-        // The outer labels sit at fixed stack positions (pushed in `run`:
-        // Exit, Dispatch, Block(N-1) .. Block(0), Miss); only the few labels
-        // inside a block are searched.
-        let n = self.prog.blocks.len();
+        // The outer labels sit at fixed stack positions (Leave, Dispatch,
+        // Block(N-1) .. Block(0), Miss); only the few labels inside a block
+        // are searched.
+        let n = self.blocks.len();
         let pos = match label {
-            Label::Exit => 0,
+            Label::Leave => 0,
             Label::Dispatch => 1,
             Label::Block(j) => 2 + (n - 1 - j),
             _ => self
@@ -160,8 +193,13 @@ impl RunEmitter<'_> {
                 count(v);
             }
         }
+        // The value a terminator pushes first.
         let term_value = match term {
-            Some(Term::Indirect(v)) => Some(*v),
+            Some(Term::Indirect(v) | Term::Ret(v)) => Some(*v),
+            Some(Term::Call {
+                target: CallTarget::Indirect(v),
+                ..
+            }) => Some(*v),
             _ => None,
         };
         if let Some(v) = term_value {
@@ -400,41 +438,196 @@ impl RunEmitter<'_> {
         }
     }
 
-    /// Transfers control to the block at `target`, or exits if there is none.
-    /// `fall` is the index of the block whose code follows, if control can
-    /// fall through to it from here.
+    /// (chunk, entry) of the block at `addr`.
+    fn locate(&self, addr: u64) -> Option<(u32, u32)> {
+        self.index.get(&addr).map(|&b| self.part.block_pos[b])
+    }
+
+    /// Loads the registers and the lazy flag record from the state block.
+    fn load_state(&self, f: &mut InstructionSink<'_>) {
+        for i in 0..16u32 {
+            f.local_get(P_STATE);
+            f.i64_load(mem(abi::gpr_offset(i)));
+            f.local_set(L_GPR0 + i);
+        }
+        f.local_get(P_STATE);
+        f.i32_load(mem(abi::STATE_CC_OP));
+        f.local_set(self.l_cc_op);
+        for (local, offset) in [
+            (L_CC_A, abi::STATE_CC_A),
+            (L_CC_B, abi::STATE_CC_B),
+            (L_CC_R, abi::STATE_CC_R),
+        ] {
+            f.local_get(P_STATE);
+            f.i64_load(mem(offset));
+            f.local_set(local);
+        }
+    }
+
+    /// Stores the registers and the lazy flag record to the state block.
+    fn store_state(&self, f: &mut InstructionSink<'_>) {
+        for i in 0..16u32 {
+            f.local_get(P_STATE);
+            f.local_get(L_GPR0 + i);
+            f.i64_store(mem(abi::gpr_offset(i)));
+        }
+        f.local_get(P_STATE);
+        f.local_get(self.l_cc_op);
+        f.i32_store(mem(abi::STATE_CC_OP));
+        for (local, offset) in [
+            (L_CC_A, abi::STATE_CC_A),
+            (L_CC_B, abi::STATE_CC_B),
+            (L_CC_R, abi::STATE_CC_R),
+        ] {
+            f.local_get(P_STATE);
+            f.local_get(local);
+            f.i64_store(mem(offset));
+        }
+    }
+
+    /// Leaves through `$leave` with `status`; RIP must already be in its local.
+    fn leave(&mut self, f: &mut InstructionSink<'_>, status: i32) {
+        f.i32_const(status);
+        f.local_set(self.l_status);
+        self.br_leave(f);
+    }
+
+    fn br_leave(&mut self, f: &mut InstructionSink<'_>) {
+        self.leave_used = true;
+        f.br(self.depth(Label::Leave));
+    }
+
+    /// Continues at `rip` through the trampoline.
+    fn unwind_to(&mut self, f: &mut InstructionSink<'_>, rip: u64) {
+        f.i64_const(rip as i64);
+        f.local_set(L_RIP);
+        self.leave(f, abi::STATUS_UNWIND);
+    }
+
+    fn exit(&mut self, f: &mut InstructionSink<'_>, reason: u32, rip: u64) {
+        f.local_get(P_STATE);
+        f.i32_const(reason as i32);
+        f.i32_store(mem(abi::STATE_EXIT));
+        f.i64_const(rip as i64);
+        f.local_set(L_RIP);
+        self.leave(f, abi::STATUS_EXIT);
+    }
+
+    /// Transfers control to the block at `target`: inside the chunk, as a
+    /// tail call to another chunk, or through the trampoline if there is no
+    /// block. `fall` is the index of the block whose code follows, if control
+    /// can fall through to it from here.
     fn goto(&mut self, f: &mut InstructionSink<'_>, target: u64, k: usize, fall: Option<usize>) {
-        match self.index.get(&target).copied() {
-            Some(j) if Some(j) == fall => {}
-            Some(j)
-                if j == k
+        match self.locate(target) {
+            Some((c, j)) if c == self.chunk => {
+                let j = j as usize;
+                if Some(j) == fall {
+                } else if j == k
                     && self
                         .labels
                         .iter()
                         .rev()
                         .take(2)
-                        .any(|&l| l == Label::SelfLoop) =>
-            {
-                f.br(self.depth(Label::SelfLoop));
+                        .any(|&l| l == Label::SelfLoop)
+                {
+                    f.br(self.depth(Label::SelfLoop));
+                } else if j > k {
+                    f.br(self.depth(Label::Block(j)));
+                } else {
+                    f.i32_const(j as i32);
+                    f.local_set(P_ENTRY);
+                    f.br(self.depth(Label::Dispatch));
+                }
             }
-            Some(j) if j > k => {
-                f.br(self.depth(Label::Block(j)));
-            }
-            Some(j) => {
+            Some((c, j)) => {
+                self.store_state(f);
+                f.local_get(P_STATE);
                 f.i32_const(j as i32);
-                f.local_set(self.l_idx);
-                f.br(self.depth(Label::Dispatch));
+                f.local_get(P_RET);
+                f.return_call(F_CHUNK0 + c);
             }
-            None => self.exit(f, abi::EXIT_LEFT_CODE, target),
+            None => self.unwind_to(f, target),
         }
     }
 
-    fn exit(&self, f: &mut InstructionSink<'_>, reason: u32, rip: u64) {
-        f.i64_const(rip as i64);
-        f.local_set(L_RIP);
-        f.i32_const(reason as i32);
-        f.local_set(self.l_reason);
-        f.br(self.depth(Label::Exit));
+    /// Unwinds instead of calling when `depth` has reached the limit. RIP
+    /// must already hold the call target.
+    fn depth_guard(&mut self, f: &mut InstructionSink<'_>) {
+        if let Some(limit) = self.depth_limit {
+            f.global_get(G_DEPTH);
+            f.i32_const(limit as i32);
+            f.i32_ge_u();
+            self.unwind_if(f);
+        }
+    }
+
+    /// Unwinds (RIP already set) if the i32 on the stack is nonzero.
+    fn unwind_if(&mut self, f: &mut InstructionSink<'_>) {
+        f.if_(BlockType::Empty);
+        self.labels.push(Label::If);
+        self.leave(f, abi::STATUS_UNWIND);
+        f.end();
+        self.labels.pop();
+    }
+
+    fn add_depth(f: &mut InstructionSink<'_>, delta: i32) {
+        f.global_get(G_DEPTH);
+        f.i32_const(delta);
+        f.i32_add();
+        f.global_set(G_DEPTH);
+    }
+
+    /// After a call: pass a status other than RETURNED up, else reload.
+    fn after_call(&mut self, f: &mut InstructionSink<'_>) {
+        Self::add_depth(f, -1);
+        f.local_tee(self.l_status);
+        f.if_(BlockType::Empty);
+        f.local_get(self.l_status);
+        f.return_();
+        f.end();
+        self.load_state(f);
+        self.known_cc = None;
+    }
+
+    fn call(&mut self, f: &mut InstructionSink<'_>, target: CallTarget, ret: u64) {
+        match target {
+            CallTarget::Direct(t) => {
+                let Some((c, j)) = self.locate(t) else {
+                    self.unwind_to(f, t);
+                    return;
+                };
+                if self.depth_limit.is_some() {
+                    f.i64_const(t as i64);
+                    f.local_set(L_RIP);
+                }
+                self.depth_guard(f);
+                self.store_state(f);
+                Self::add_depth(f, 1);
+                f.local_get(P_STATE);
+                f.i32_const(j as i32);
+                f.i64_const(ret as i64);
+                f.call(F_CHUNK0 + c);
+            }
+            CallTarget::Indirect(v) => {
+                self.value(f, v);
+                f.local_tee(L_RIP);
+                f.call(F_LOOKUP);
+                f.local_set(P_ENTRY);
+                f.local_tee(self.l_func);
+                f.i32_const(0);
+                f.i32_lt_s();
+                self.unwind_if(f);
+                self.depth_guard(f);
+                self.store_state(f);
+                Self::add_depth(f, 1);
+                f.local_get(P_STATE);
+                f.local_get(P_ENTRY);
+                f.i64_const(ret as i64);
+                f.local_get(self.l_func);
+                f.call_indirect(TABLE, T_CHUNK);
+            }
+        }
+        self.after_call(f);
     }
 
     fn block(&mut self, f: &mut InstructionSink<'_>, k: usize, block: &Block) {
@@ -455,7 +648,7 @@ impl RunEmitter<'_> {
             let last = i + 1 == block.insns.len();
             self.insn(f, &insn.ops, last.then_some(&block.term));
         }
-        let next = (k + 1 < self.prog.blocks.len()).then_some(k + 1);
+        let next = (k + 1 < self.blocks.len()).then_some(k + 1);
         match block.term {
             Term::Jump(t) => self.goto(f, t, k, next),
             Term::Branch {
@@ -464,12 +657,13 @@ impl RunEmitter<'_> {
                 fallthrough,
             } => {
                 // Prefer falling through to the next block on the else path.
-                let (cond, taken, fallthrough) =
-                    if next.is_some() && self.index.get(&taken).copied() == next {
-                        (cond.negate(), fallthrough, taken)
-                    } else {
-                        (cond, taken, fallthrough)
-                    };
+                let next_addr = next.map(|j| self.prog.blocks[self.blocks[j]].addr);
+                let (cond, taken, fallthrough) = if next_addr.is_some() && next_addr == Some(taken)
+                {
+                    (cond.negate(), fallthrough, taken)
+                } else {
+                    (cond, taken, fallthrough)
+                };
                 self.cond(f, cond);
                 f.if_(BlockType::Empty);
                 self.labels.push(Label::If);
@@ -478,12 +672,39 @@ impl RunEmitter<'_> {
                 self.labels.pop();
                 self.goto(f, fallthrough, k, next);
             }
+            Term::Call { target, ret } => {
+                self.call(f, target, ret);
+                self.goto(f, ret, k, next);
+            }
+            Term::Ret(v) => {
+                // RETURNED (0) if the popped address is the expected one,
+                // else UNWIND (1) to it.
+                self.value(f, v);
+                f.local_tee(L_RIP);
+                f.local_get(P_RET);
+                f.i64_ne();
+                f.local_set(self.l_status);
+                self.br_leave(f);
+            }
             Term::Indirect(v) => {
                 self.value(f, v);
                 f.local_tee(L_RIP);
                 f.call(F_LOOKUP);
-                f.local_set(self.l_idx);
-                f.br(self.depth(Label::Dispatch));
+                f.local_set(P_ENTRY);
+                f.local_tee(self.l_func);
+                f.i32_const(self.chunk as i32);
+                f.i32_eq();
+                f.br_if(self.depth(Label::Dispatch));
+                f.local_get(self.l_func);
+                f.i32_const(0);
+                f.i32_lt_s();
+                self.unwind_if(f);
+                self.store_state(f);
+                f.local_get(P_STATE);
+                f.local_get(P_ENTRY);
+                f.local_get(P_RET);
+                f.local_get(self.l_func);
+                f.return_call_indirect(TABLE, T_CHUNK);
             }
             Term::Exit { reason, rip } => self.exit(f, reason, rip),
         }
@@ -493,28 +714,12 @@ impl RunEmitter<'_> {
         }
     }
 
-    fn run(&mut self, f: &mut InstructionSink<'_>) {
-        let n = self.prog.blocks.len();
-        // Prologue.
-        for i in 0..16u32 {
-            f.local_get(L_STATE);
-            f.i64_load(mem(abi::gpr_offset(i)));
-            f.local_set(L_GPR0 + i);
-        }
-        f.local_get(L_STATE);
-        f.i64_load(mem(abi::STATE_RFLAGS));
-        f.local_tee(L_RFLAGS_IN);
-        f.local_set(L_CC_A);
-        f.i32_const(CC_EAGER as i32);
-        f.local_set(self.l_cc_op);
-        f.local_get(L_STATE);
-        f.i64_load(mem(abi::STATE_RIP));
-        f.local_tee(L_RIP);
-        f.call(F_LOOKUP);
-        f.local_set(self.l_idx);
+    fn body(&mut self, f: &mut InstructionSink<'_>) {
+        let n = self.blocks.len();
+        self.load_state(f);
 
         f.block(BlockType::Empty);
-        self.labels.push(Label::Exit);
+        self.labels.push(Label::Leave);
         f.loop_(BlockType::Empty);
         self.labels.push(Label::Dispatch);
         for k in (0..n).rev() {
@@ -523,47 +728,39 @@ impl RunEmitter<'_> {
         }
         f.block(BlockType::Empty);
         self.labels.push(Label::Miss);
-        f.local_get(self.l_idx);
+        f.local_get(P_ENTRY);
         let targets: Vec<u32> = (0..n).map(|k| self.depth(Label::Block(k))).collect();
         f.br_table(targets, self.depth(Label::Miss));
         f.end();
         self.labels.pop();
-        // Miss: RIP holds an address without a block.
-        f.i32_const(abi::EXIT_LEFT_CODE as i32);
-        f.local_set(self.l_reason);
-        f.br(self.depth(Label::Exit));
-        let prog = self.prog;
-        for (k, block) in prog.blocks.iter().enumerate() {
+        // Callers only pass entries of this chunk.
+        f.unreachable();
+        let (prog, blocks) = (self.prog, self.blocks);
+        for (k, &b) in blocks.iter().enumerate() {
             f.end();
             assert_eq!(self.labels.pop(), Some(Label::Block(k)));
-            self.block(f, k, block);
+            self.block(f, k, &prog.blocks[b]);
         }
         f.end(); // loop
         self.labels.pop();
         f.unreachable();
-        f.end(); // exit block
+        f.end(); // leave block
         self.labels.pop();
-
-        // Epilogue.
-        for i in 0..16u32 {
-            f.local_get(L_STATE);
-            f.local_get(L_GPR0 + i);
-            f.i64_store(mem(abi::gpr_offset(i)));
+        if !self.leave_used {
+            f.unreachable();
+            f.end();
+            return;
         }
-        f.local_get(L_STATE);
+
+        // Leave: RETURNED, UNWIND or EXIT.
+        self.store_state(f);
+        f.local_get(self.l_status);
+        f.if_(BlockType::Empty);
+        f.local_get(P_STATE);
         f.local_get(L_RIP);
         f.i64_store(mem(abi::STATE_RIP));
-        f.local_get(L_STATE);
-        f.local_get(L_RFLAGS_IN);
-        f.i64_const(!abi::flags::STATUS as i64);
-        f.i64_and();
-        self.materialize_flags(f);
-        f.i64_or();
-        f.i64_store(mem(abi::STATE_RFLAGS));
-        f.local_get(L_STATE);
-        f.local_get(self.l_reason);
-        f.i32_store(mem(abi::STATE_EXIT));
-        f.local_get(self.l_reason);
+        f.end();
+        f.local_get(self.l_status);
         f.end();
     }
 }
@@ -640,35 +837,122 @@ fn dynamic_cond(f: &mut InstructionSink<'_>, base: Cond) {
     }
 }
 
-/// `lookup(rip: i64) -> i32`: binary search over the sorted block addresses.
-fn emit_lookup(addrs: &[u64]) -> Function {
-    fn search(f: &mut InstructionSink<'_>, addrs: &[u64], lo: usize, hi: usize) {
-        if hi - lo <= 4 {
-            for (i, &addr) in addrs.iter().enumerate().take(hi).skip(lo) {
+/// `lookup(rip: i64) -> (func: i32, entry: i32)`: binary search over the
+/// sorted block addresses; `(-1, 0)` if there is no block at `rip`.
+fn emit_lookup(addrs: &[(u64, (u32, u32))]) -> Function {
+    fn search(f: &mut InstructionSink<'_>, addrs: &[(u64, (u32, u32))]) {
+        if addrs.len() <= 4 {
+            for &(addr, (func, entry)) in addrs {
                 f.local_get(0);
                 f.i64_const(addr as i64);
                 f.i64_eq();
                 f.if_(BlockType::Empty);
-                f.i32_const(i as i32);
+                f.i32_const(func as i32);
+                f.i32_const(entry as i32);
                 f.return_();
                 f.end();
             }
         } else {
-            let mid = (lo + hi) / 2;
+            let mid = addrs.len() / 2;
             f.local_get(0);
-            f.i64_const(addrs[mid] as i64);
+            f.i64_const(addrs[mid].0 as i64);
             f.i64_lt_u();
             f.if_(BlockType::Empty);
-            search(f, addrs, lo, mid);
+            search(f, &addrs[..mid]);
             f.else_();
-            search(f, addrs, mid, hi);
+            search(f, &addrs[mid..]);
             f.end();
         }
     }
     let mut func = Function::new([]);
     let mut f = func.instructions();
-    search(&mut f, addrs, 0, addrs.len());
+    search(&mut f, addrs);
     f.i32_const(-1);
+    f.i32_const(0);
+    f.end();
+    func
+}
+
+/// `run(state: i64) -> i32`: the trampoline (`docs/design/abi.md`).
+fn emit_run() -> Function {
+    const STATE: u32 = 0;
+    const FUNC: u32 = 1;
+    const ENTRY: u32 = 2;
+    const STATUS: u32 = 3;
+    let mut func = Function::new([(3, ValType::I32)]);
+    let mut f = func.instructions();
+    // The lazy flag record starts materialized from RFLAGS.
+    f.local_get(STATE);
+    f.i32_const(CC_EAGER as i32);
+    f.i32_store(mem(abi::STATE_CC_OP));
+    f.local_get(STATE);
+    f.local_get(STATE);
+    f.i64_load(mem(abi::STATE_RFLAGS));
+    f.i64_store(mem(abi::STATE_CC_A));
+    f.i32_const(0);
+    f.global_set(G_DEPTH);
+
+    f.block(BlockType::Empty); // $done
+    f.loop_(BlockType::Empty); // $next
+    f.local_get(STATE);
+    f.i64_load(mem(abi::STATE_RIP));
+    f.call(F_LOOKUP);
+    f.local_set(ENTRY);
+    f.local_tee(FUNC);
+    f.i32_const(0);
+    f.i32_lt_s();
+    f.if_(BlockType::Empty);
+    f.i32_const(abi::EXIT_LEFT_CODE as i32);
+    f.local_set(STATUS);
+    f.br(2);
+    f.end();
+    f.local_get(STATE);
+    f.local_get(ENTRY);
+    f.i64_const(abi::NO_RET as i64);
+    f.local_get(FUNC);
+    f.call_indirect(TABLE, T_CHUNK);
+    f.local_tee(STATUS);
+    f.i32_const(abi::STATUS_EXIT);
+    f.i32_eq();
+    f.if_(BlockType::Empty);
+    f.local_get(STATE);
+    f.i32_load(mem(abi::STATE_EXIT));
+    f.local_set(STATUS);
+    f.br(2);
+    f.end();
+    // RETURNED: the guest returned to NO_RET itself.
+    f.local_get(STATUS);
+    f.i32_eqz();
+    f.if_(BlockType::Empty);
+    f.local_get(STATE);
+    f.i64_const(abi::NO_RET as i64);
+    f.i64_store(mem(abi::STATE_RIP));
+    f.end();
+    f.i32_const(0);
+    f.global_set(G_DEPTH);
+    f.br(0);
+    f.end(); // loop
+    f.end(); // $done
+
+    // Materialize RFLAGS; STATUS holds the exit reason.
+    f.local_get(STATE);
+    f.local_get(STATE);
+    f.i64_load(mem(abi::STATE_RFLAGS));
+    f.i64_const(!abi::flags::STATUS as i64);
+    f.i64_and();
+    f.local_get(STATE);
+    f.i32_load(mem(abi::STATE_CC_OP));
+    for offset in [abi::STATE_CC_A, abi::STATE_CC_B, abi::STATE_CC_R] {
+        f.local_get(STATE);
+        f.i64_load(mem(offset));
+    }
+    f.call(F_FLAGS);
+    f.i64_or();
+    f.i64_store(mem(abi::STATE_RFLAGS));
+    f.local_get(STATE);
+    f.local_get(STATUS);
+    f.i32_store(mem(abi::STATE_EXIT));
+    f.local_get(STATUS);
     f.end();
     func
 }
@@ -805,16 +1089,23 @@ fn emit_flags() -> Function {
     func
 }
 
-/// Encodes `prog` as a module following the ABI.
-pub fn emit(prog: &Program, opts: &Options) -> Vec<u8> {
+/// Encodes `prog`, partitioned as `part`, as a module following the ABI.
+pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
     let mut module = Module::new();
+    let n_chunks = part.chunks.len() as u32;
 
     let mut types = TypeSection::new();
-    types.ty().function([ValType::I64], [ValType::I32]); // 0: run, lookup
+    types.ty().function([ValType::I64], [ValType::I32]); // T_RUN
     types.ty().function(
         [ValType::I32, ValType::I64, ValType::I64, ValType::I64],
         [ValType::I64],
-    ); // 1: flags
+    ); // T_FLAGS
+    types
+        .ty()
+        .function([ValType::I64, ValType::I32, ValType::I64], [ValType::I32]); // T_CHUNK
+    types
+        .ty()
+        .function([ValType::I64], [ValType::I32, ValType::I32]); // T_LOOKUP
     module.section(&types);
 
     let mut imports = ImportSection::new();
@@ -832,83 +1123,148 @@ pub fn emit(prog: &Program, opts: &Options) -> Vec<u8> {
     module.section(&imports);
 
     let mut funcs = FunctionSection::new();
-    funcs.function(0);
-    funcs.function(0);
-    funcs.function(1);
+    funcs.function(T_RUN);
+    funcs.function(T_LOOKUP);
+    funcs.function(T_FLAGS);
+    for _ in 0..n_chunks {
+        funcs.function(T_CHUNK);
+    }
     module.section(&funcs);
+
+    let mut tables = TableSection::new();
+    tables.table(TableType {
+        element_type: RefType::FUNCREF,
+        table64: false,
+        minimum: n_chunks as u64,
+        maximum: Some(n_chunks as u64),
+        shared: false,
+    });
+    module.section(&tables);
+
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::i32_const(0),
+    );
+    module.section(&globals);
 
     let mut exports = ExportSection::new();
     exports.export(abi::RUN_EXPORT, ExportKind::Func, F_RUN);
     module.section(&exports);
 
-    let temps = prog
+    let mut elements = ElementSection::new();
+    let chunk_funcs: Vec<u32> = (0..n_chunks).map(|c| F_CHUNK0 + c).collect();
+    elements.active(
+        Some(TABLE),
+        &ConstExpr::i32_const(0),
+        Elements::Functions(Cow::Borrowed(&chunk_funcs)),
+    );
+    module.section(&elements);
+
+    let index = prog.index_map();
+    let mut code = CodeSection::new();
+    code.function(&emit_run());
+    let lookup: Vec<(u64, (u32, u32))> = prog
         .blocks
         .iter()
-        .flat_map(|b| b.insns.iter().map(|i| i.temps))
-        .max()
-        .unwrap_or(0);
-    let l_cc_op = L_TEMP0 + temps;
-    let mut run = Function::new([(L_TEMP0 - 1 + temps, ValType::I64), (3, ValType::I32)]);
-    let mut emitter = RunEmitter {
-        prog,
-        index: prog.index_map(),
-        labels: Vec::new(),
-        known_cc: None,
-        keep: None,
-        on_stack: None,
-        temps,
-        l_cc_op,
-        l_idx: l_cc_op + 1,
-        l_reason: l_cc_op + 2,
-    };
-    emitter.run(&mut run.instructions());
-
-    let addrs: Vec<u64> = prog.blocks.iter().map(|b| b.addr).collect();
-    let mut code = CodeSection::new();
-    code.function(&run);
-    code.function(&emit_lookup(&addrs));
+        .zip(&part.block_pos)
+        .map(|(b, &pos)| (b.addr, pos))
+        .collect();
+    code.function(&emit_lookup(&lookup));
     code.function(&emit_flags());
+    let mut temps = Vec::with_capacity(part.chunks.len());
+    for (c, chunk) in part.chunks.iter().enumerate() {
+        let t = chunk
+            .blocks
+            .iter()
+            .flat_map(|&b| prog.blocks[b].insns.iter().map(|i| i.temps))
+            .max()
+            .unwrap_or(0);
+        temps.push(t);
+        let l_cc_op = L_TEMP0 + t;
+        let mut func = Function::new([(L_TEMP0 - L_GPR0 + t, ValType::I64), (3, ValType::I32)]);
+        let mut emitter = ChunkEmitter {
+            prog,
+            part,
+            index: &index,
+            chunk: c as u32,
+            blocks: &chunk.blocks,
+            depth_limit: opts.call_depth_limit,
+            labels: Vec::new(),
+            known_cc: None,
+            keep: None,
+            on_stack: None,
+            l_cc_op,
+            l_status: l_cc_op + 1,
+            l_func: l_cc_op + 2,
+            leave_used: false,
+        };
+        emitter.body(&mut func.instructions());
+        code.function(&func);
+    }
     module.section(&code);
 
-    module.section(&names(&emitter));
+    module.section(&names(prog, part, &temps));
     module.finish()
 }
 
-fn names(e: &RunEmitter<'_>) -> NameSection {
+fn names(prog: &Program, part: &Partition, temps: &[u32]) -> NameSection {
     let mut names = NameSection::new();
     let mut funcs = NameMap::new();
     funcs.append(F_RUN, "run");
     funcs.append(F_LOOKUP, "lookup");
     funcs.append(F_FLAGS, "flags");
+    for c in 0..part.chunks.len() {
+        funcs.append(F_CHUNK0 + c as u32, &part.chunk_name(prog, c));
+    }
     names.functions(&funcs);
 
+    let mut locals = IndirectNameMap::new();
     let mut run = NameMap::new();
-    run.append(L_STATE, "state");
-    for i in 0..16u8 {
-        run.append(L_GPR0 + i as u32, reg_name(i));
+    for (i, n) in ["state", "func", "entry", "status"].iter().enumerate() {
+        run.append(i as u32, n);
     }
-    run.append(L_RIP, "rip");
-    run.append(L_RFLAGS_IN, "rflags_in");
-    run.append(L_CC_A, "cc_a");
-    run.append(L_CC_B, "cc_b");
-    run.append(L_CC_R, "cc_r");
-    run.append(L_SCRATCH, "scratch");
-    for t in 0..e.temps {
-        run.append(L_TEMP0 + t, &format!("t{t}"));
-    }
-    run.append(e.l_cc_op, "cc_op");
-    run.append(e.l_idx, "idx");
-    run.append(e.l_reason, "reason");
+    locals.append(F_RUN, &run);
     let mut lookup = NameMap::new();
     lookup.append(0, "rip");
+    locals.append(F_LOOKUP, &lookup);
     let mut flags = NameMap::new();
     for (i, n) in ["op", "a", "b", "r", "sign", "cf_of"].iter().enumerate() {
         flags.append(i as u32, n);
     }
-    let mut locals = IndirectNameMap::new();
-    locals.append(F_RUN, &run);
-    locals.append(F_LOOKUP, &lookup);
     locals.append(F_FLAGS, &flags);
+    for (c, &t) in temps.iter().enumerate() {
+        let mut chunk = NameMap::new();
+        chunk.append(P_STATE, "state");
+        chunk.append(P_ENTRY, "entry");
+        chunk.append(P_RET, "ret");
+        for i in 0..16u8 {
+            chunk.append(L_GPR0 + i as u32, reg_name(i));
+        }
+        chunk.append(L_RIP, "rip");
+        chunk.append(L_CC_A, "cc_a");
+        chunk.append(L_CC_B, "cc_b");
+        chunk.append(L_CC_R, "cc_r");
+        chunk.append(L_SCRATCH, "scratch");
+        for i in 0..t {
+            chunk.append(L_TEMP0 + i, &format!("t{i}"));
+        }
+        chunk.append(L_TEMP0 + t, "cc_op");
+        chunk.append(L_TEMP0 + t + 1, "status");
+        chunk.append(L_TEMP0 + t + 2, "func");
+        locals.append(F_CHUNK0 + c as u32, &chunk);
+    }
     names.locals(&locals);
+
+    let mut tables = NameMap::new();
+    tables.append(TABLE, "chunks");
+    names.tables(&tables);
+    let mut globals = NameMap::new();
+    globals.append(G_DEPTH, "depth");
+    names.globals(&globals);
     names
 }

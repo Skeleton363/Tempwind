@@ -1,3 +1,5 @@
+function 0x100000: wasm function 3 (fn_0x100000)
+
 block 0x100000:
   0x100000: mov eax,0
     rax = 0x0
@@ -24,4 +26,4 @@ block 0x100014:
     t0 = load64 [rsp]
     t1 = add rsp, 0x8
     rsp = t1
-  -> jump [t0]
+  -> ret [t0]

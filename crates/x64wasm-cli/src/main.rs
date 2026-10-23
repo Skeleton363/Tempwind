@@ -4,6 +4,7 @@
 //! x64wasm translate --base 0x140001000 --hex "48 01 d8 c3" -o out.wasm
 //! x64wasm ir        --base 0x1000 --file code.bin --entry 0x1010
 //! x64wasm wat       --base 0x1000 --hex "4801d8c3" --shared
+//! x64wasm translate --base 0x1000 --file code.bin --max-function-insns 500 --no-depth-guard -o out.wasm
 //! ```
 
 use std::path::PathBuf;
@@ -62,6 +63,20 @@ struct Input {
     /// Import shared memory (max 16 GiB).
     #[arg(long)]
     shared: bool,
+    /// Cut functions with more guest instructions than this into chunks
+    /// (never inside a loop nest).
+    #[arg(long, default_value_t = Options::DEFAULT_MAX_FUNCTION_INSNS)]
+    max_function_insns: usize,
+    /// Cut loop nests with more guest instructions than this too.
+    #[arg(long, default_value_t = Options::DEFAULT_MAX_CHUNK_INSNS)]
+    max_chunk_insns: usize,
+    /// Nested guest calls on the wasm stack before a call unwinds instead.
+    #[arg(long, default_value_t = Options::DEFAULT_CALL_DEPTH_LIMIT)]
+    call_depth_limit: u32,
+    /// Disable the call-depth guard (measurements only: deep recursion then
+    /// overflows the wasm stack).
+    #[arg(long, conflicts_with = "call_depth_limit")]
+    no_depth_guard: bool,
 }
 
 fn parse_u64(s: &str) -> Result<u64, String> {
@@ -100,6 +115,9 @@ impl Input {
         };
         let opts = Options {
             shared_memory: self.shared,
+            max_function_insns: self.max_function_insns,
+            max_chunk_insns: self.max_chunk_insns,
+            call_depth_limit: (!self.no_depth_guard).then_some(self.call_depth_limit),
         };
         let region = CodeRegion {
             base: self.base,
@@ -119,10 +137,13 @@ fn main() -> Result<()> {
             let t = input.translate()?;
             std::fs::write(&output, &t.wasm)
                 .with_context(|| format!("writing {}", output.display()))?;
+            let chunks: usize = t.functions.iter().map(|f| f.chunks.len()).sum();
             eprintln!(
-                "{} guest instructions, {} blocks, {} bytes -> {}",
+                "{} guest instructions, {} blocks, {} functions ({} chunks), {} bytes -> {}",
                 t.guest_instructions,
                 t.blocks.len(),
+                t.functions.len(),
+                chunks,
                 t.wasm.len(),
                 output.display()
             );

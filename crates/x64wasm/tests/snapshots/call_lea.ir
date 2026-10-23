@@ -1,3 +1,5 @@
+function 0x1000: wasm function 3 (fn_0x1000)
+
 block 0x1000:
   0x1000: push rbx
     t0 = sub rsp, 0x8
@@ -9,7 +11,7 @@ block 0x1000:
     t0 = sub rsp, 0x8
     store64 [t0], 0x1009
     rsp = t0
-  -> jump 0x100b
+  -> call 0x100b ret 0x1009
 
 block 0x1009:
   0x1009: pop rbx
@@ -21,7 +23,9 @@ block 0x1009:
     t0 = load64 [rsp]
     t1 = add rsp, 0x8
     rsp = t1
-  -> jump [t0]
+  -> ret [t0]
+
+function 0x100b: wasm function 4 (fn_0x100b)
 
 block 0x100b:
   0x100b: lea rax,[rbx+rbx*2]
@@ -32,4 +36,4 @@ block 0x100b:
     t0 = load64 [rsp]
     t1 = add rsp, 0x8
     rsp = t1
-  -> jump [t0]
+  -> ret [t0]
