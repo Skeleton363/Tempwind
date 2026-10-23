@@ -1,3 +1,5 @@
+function 0x140001000: wasm function 3 (fn_0x140001000)
+
 block 0x140001000:
   0x140001000: add rax,rbx
     t0 = add rax, rbx
@@ -7,4 +9,4 @@ block 0x140001000:
     t0 = load64 [rsp]
     t1 = add rsp, 0x8
     rsp = t1
-  -> jump [t0]
+  -> ret [t0]

@@ -76,3 +76,14 @@ fn sum_loop() {
 fn call_lea() {
     check("call_lea", 0x1000, "53 4889cb e802000000 5b c3 488d045b c3");
 }
+
+/// A call, a return and a tail transfer between functions:
+/// `call f; call g; ret / f: add rax, 1; jmp g / g: add rax, 2; ret`.
+#[test]
+fn call_ret_tail() {
+    check(
+        "call_ret_tail",
+        0x1000,
+        "e806000000 e807000000 c3 4883c001 eb00 4883c002 c3",
+    );
+}

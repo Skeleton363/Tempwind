@@ -1,0 +1,45 @@
+function 0x1000: wasm function 3 (fn_0x1000)
+
+block 0x1000:
+  0x1000: call 000000000000100Bh
+    t0 = sub rsp, 0x8
+    store64 [t0], 0x1005
+    rsp = t0
+  -> call 0x100b ret 0x1005
+
+block 0x1005:
+  0x1005: call 0000000000001011h
+    t0 = sub rsp, 0x8
+    store64 [t0], 0x100a
+    rsp = t0
+  -> call 0x1011 ret 0x100a
+
+block 0x100a:
+  0x100a: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]
+
+function 0x100b: wasm function 4 (fn_0x100b)
+
+block 0x100b:
+  0x100b: add rax,1
+    t0 = add rax, 0x1
+    flags.add64 rax, 0x1, t0  ; dead
+    rax = t0
+  0x100f: jmp short 0000000000001011h
+  -> jump 0x1011
+
+function 0x1011: wasm function 5 (fn_0x1011)
+
+block 0x1011:
+  0x1011: add rax,2
+    t0 = add rax, 0x2
+    flags.add64 rax, 0x2, t0
+    rax = t0
+  0x1015: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

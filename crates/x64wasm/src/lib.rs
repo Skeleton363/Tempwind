@@ -5,6 +5,7 @@
 
 pub mod abi;
 pub mod emit;
+pub mod func;
 pub mod ir;
 pub mod lift;
 pub mod pe;
@@ -12,10 +13,39 @@ pub mod pe;
 use std::fmt;
 
 /// Translation options.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Options {
     /// Import guest memory as shared memory (needed when several workers run guest threads).
     pub shared_memory: bool,
+    /// Functions with more guest instructions than this are cut into chunks
+    /// (one wasm function each), never inside a loop nest (soft limit).
+    pub max_function_insns: usize,
+    /// Loop nests larger than this are cut too (hard limit).
+    pub max_chunk_insns: usize,
+    /// Guest calls nested deeper than this on the wasm stack unwind to the
+    /// trampoline instead. `None` disables the guard (for measurements only:
+    /// deep guest recursion then overflows the wasm stack).
+    pub call_depth_limit: Option<u32>,
+}
+
+impl Options {
+    /// Default [`Options::max_function_insns`].
+    pub const DEFAULT_MAX_FUNCTION_INSNS: usize = 2000;
+    /// Default [`Options::max_chunk_insns`].
+    pub const DEFAULT_MAX_CHUNK_INSNS: usize = 20_000;
+    /// Default [`Options::call_depth_limit`].
+    pub const DEFAULT_CALL_DEPTH_LIMIT: u32 = 1000;
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            shared_memory: false,
+            max_function_insns: Self::DEFAULT_MAX_FUNCTION_INSNS,
+            max_chunk_insns: Self::DEFAULT_MAX_CHUNK_INSNS,
+            call_depth_limit: Some(Self::DEFAULT_CALL_DEPTH_LIMIT),
+        }
+    }
 }
 
 /// Guest code to translate: `bytes` are mapped at guest address `base`.
@@ -25,6 +55,25 @@ pub struct CodeRegion<'a> {
     pub bytes: &'a [u8],
 }
 
+/// One guest function of a [`Translation`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionInfo {
+    /// Guest address of the function's entry.
+    pub addr: u64,
+    /// Its chunks, one wasm function each.
+    pub chunks: Vec<ChunkInfo>,
+}
+
+/// One chunk (wasm function) of a guest function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChunkInfo {
+    /// Index of the wasm function in the module.
+    pub wasm_index: u32,
+    /// Guest addresses of its blocks, sorted; a block's position is its
+    /// `entry` index.
+    pub blocks: Vec<u64>,
+}
+
 /// The result of translating a code region.
 #[derive(Clone, Debug)]
 pub struct Translation {
@@ -32,7 +81,10 @@ pub struct Translation {
     pub wasm: Vec<u8>,
     /// Guest addresses of every translated basic block, sorted.
     pub blocks: Vec<u64>,
-    /// Human-readable IR dump (empty from [`translate_without_dump`]).
+    /// Guest functions in entry address order.
+    pub functions: Vec<FunctionInfo>,
+    /// Human-readable IR dump grouped by function and chunk (empty from
+    /// [`translate_without_dump`]).
     pub ir: String,
     /// Number of guest instructions translated.
     pub guest_instructions: usize,
@@ -102,11 +154,36 @@ fn translate_impl(
     }
     let mut prog = lift::lift(region, entries, dump)?;
     prog.analyze_flags();
-    let wasm = emit::emit(&prog, opts);
+    let part = func::partition(&prog, entries, opts);
+    let wasm = emit::emit(&prog, &part, opts);
+    let functions = part
+        .functions
+        .iter()
+        .map(|f| FunctionInfo {
+            addr: f.entry,
+            chunks: f
+                .chunks
+                .iter()
+                .map(|&c| ChunkInfo {
+                    wasm_index: emit::F_CHUNK0 + c as u32,
+                    blocks: part.chunks[c]
+                        .blocks
+                        .iter()
+                        .map(|&b| prog.blocks[b].addr)
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect();
     Ok(Translation {
         wasm,
         blocks: prog.blocks.iter().map(|b| b.addr).collect(),
-        ir: if dump { prog.dump() } else { String::new() },
+        functions,
+        ir: if dump {
+            part.dump(&prog, emit::F_CHUNK0)
+        } else {
+            String::new()
+        },
         guest_instructions: prog.insn_count(),
     })
 }

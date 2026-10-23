@@ -1,79 +1,48 @@
-//! Phase 0 measurements (ignored by default; numbers only mean something in
-//! a release build):
+//! Translator measurements in wasmtime (ignored by default; numbers only
+//! mean something in a release build, on an idle machine):
 //!
 //! ```text
-//! cargo test -p testkit --release --test spike_bench -- --ignored --nocapture
+//! cargo test -p testkit --release --test spike_bench -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! - translation throughput (guest instructions per second) and wasm bytes
-//!   per guest instruction on a large generated region;
-//! - sum_loop with n = 10^8 in wasmtime vs the same machine code run natively.
+//! - translation throughput, wasm size and Cranelift compile time of Phase
+//!   0's 201k-instruction region, for several `max_function_insns`;
+//! - sum_loop with n = 10^8, and the call-heavy fib_rec(30) and byte_calls
+//!   (a leaf call per byte of 1 MiB), in wasmtime vs the same machine code
+//!   run natively;
+//! - the deepest guest recursion wasmtime survives without the call-depth
+//!   guard.
+//!
+//! The V8 side is `tests/bench/translator/bench.mjs`.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use iced_x86::code_asm::*;
 use testkit::host::Host;
-use testkit::spike;
+use testkit::spike::bench::{self, REGION_BASE, REGION_PARTS, best_of};
+use testkit::spike::{self, Case};
 use x64wasm::{CodeRegion, Options};
 
-/// A large region of straight-line code with forward branches, calls and
-/// returns, using every supported instruction family.
-fn generated_region(base: u64, chunks: usize) -> Vec<u8> {
-    let mut a = CodeAssembler::new(64).unwrap();
-    let regs = [
-        rax, rcx, rdx, rbx, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
-    ];
-    let mut f = a.create_label();
-    for i in 0..chunks {
-        let r = regs[i % regs.len()];
-        let s = regs[(i * 7 + 3) % regs.len()];
-        let mut skip = a.create_label();
-        a.mov(r, s).unwrap();
-        a.add(r, (i as i32) & 0x7f).unwrap();
-        a.sub(r, qword_ptr(rbx + s * 8 + 0x40)).unwrap();
-        a.lea(s, ptr(r + s * 4 + 0x1234)).unwrap();
-        a.mov(qword_ptr(rbp - 0x20), r).unwrap();
-        a.cmp(r, s).unwrap();
-        a.jae(skip).unwrap();
-        a.push(r).unwrap();
-        a.add(dword_ptr(rsp), 3).unwrap();
-        a.pop(s).unwrap();
-        a.set_label(&mut skip).unwrap();
-        if i % 16 == 15 {
-            a.call(f).unwrap();
-        }
-    }
-    a.ret().unwrap();
-    a.set_label(&mut f).unwrap();
-    a.add(rax, 1).unwrap();
-    a.ret().unwrap();
-    a.assemble(base).unwrap()
-}
-
-fn best_of<T>(runs: usize, mut f: impl FnMut() -> T) -> (Duration, T) {
-    let mut best = Duration::MAX;
-    let mut out = None;
-    for _ in 0..runs {
-        let start = Instant::now();
-        let v = f();
-        best = best.min(start.elapsed());
-        out = Some(v);
-    }
-    (best, out.unwrap())
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1e3
 }
 
 #[test]
 #[ignore = "measurement; run with --release --ignored --nocapture"]
 fn translation_throughput() {
-    let base = 0x1_4000_1000;
-    let code = generated_region(base, 20_000);
-    let region = CodeRegion { base, bytes: &code };
+    let (code, _) = bench::generated_region(REGION_BASE, REGION_PARTS);
+    let region = CodeRegion {
+        base: REGION_BASE,
+        bytes: &code,
+    };
     let opts = Options::default();
-    let (with_dump, t) = best_of(5, || x64wasm::translate(region, &[base], &opts).unwrap());
+    let (with_dump, t) = best_of(5, || {
+        x64wasm::translate(region, &[REGION_BASE], &opts).unwrap()
+    });
     let (no_dump, t2) = best_of(5, || {
-        x64wasm::translate_without_dump(region, &[base], &opts).unwrap()
+        x64wasm::translate_without_dump(region, &[REGION_BASE], &opts).unwrap()
     });
     assert_eq!(t.wasm, t2.wasm);
+    let (lift, _) = best_of(5, || x64wasm::lift(region, &[REGION_BASE]).unwrap());
     let n = t.guest_instructions as f64;
     println!(
         "region: {} guest instructions, {} code bytes, {} blocks",
@@ -83,49 +52,85 @@ fn translation_throughput() {
     );
     println!(
         "translate (with IR dump):    {:>8.2} ms  {:>6.2} M insn/s",
-        with_dump.as_secs_f64() * 1e3,
+        ms(with_dump),
         n / with_dump.as_secs_f64() / 1e6
     );
     println!(
         "translate_without_dump:      {:>8.2} ms  {:>6.2} M insn/s",
-        no_dump.as_secs_f64() * 1e3,
+        ms(no_dump),
         n / no_dump.as_secs_f64() / 1e6
     );
     println!(
-        "wasm: {} bytes, {:.1} bytes per guest instruction ({:.2} per guest code byte)",
-        t.wasm.len(),
-        t.wasm.len() as f64 / n,
-        t.wasm.len() as f64 / code.len() as f64
+        "  of which lift (decode, IR with text, flag liveness): {:>8.2} ms",
+        ms(lift)
     );
-    // Everything is one wasm function for now, so compile a smaller region.
-    let small = generated_region(base, 1_000);
-    let ts = x64wasm::translate_without_dump(
-        CodeRegion {
-            base,
-            bytes: &small,
-        },
-        &[base],
-        &opts,
-    )
-    .unwrap();
     let host = Host::new().unwrap();
-    let (compile, _) = best_of(1, || host.compile(&ts.wasm).unwrap());
-    println!(
-        "wasmtime (cranelift) compile of {} guest instructions / {} blocks in one function: {:.1} ms",
-        ts.guest_instructions,
-        ts.blocks.len(),
-        compile.as_secs_f64() * 1e3
-    );
-    for case in spike::cases().unwrap() {
-        let t = case.translate(&opts).unwrap();
+    for max in [500, 1000, 2000, 5000, 10_000, 20_000] {
+        let opts = Options {
+            max_function_insns: max,
+            max_chunk_insns: 10 * max,
+            ..Options::default()
+        };
+        let t = x64wasm::translate_without_dump(region, &[REGION_BASE], &opts).unwrap();
+        let chunks: usize = t.functions.iter().map(|f| f.chunks.len()).sum();
+        let (compile, _) = best_of(3, || host.compile(&t.wasm).unwrap());
         println!(
-            "{:>14}: {:>3} insns, {:>5} wasm bytes ({:.0} B/insn incl. fixed prologue/epilogue/helpers)",
+            "max_function_insns {max:>5}: {} functions, {chunks:>4} chunks, wasm {} bytes ({:.1} B/insn, {:.2} B/code byte), cranelift compile {:.0} ms",
+            t.functions.len(),
+            t.wasm.len(),
+            t.wasm.len() as f64 / n,
+            t.wasm.len() as f64 / code.len() as f64,
+            ms(compile)
+        );
+    }
+    // Time to the first `run` of the default module (compile, instantiate,
+    // run `f`).
+    let case = bench::region_case(REGION_PARTS).unwrap();
+    let t = case.translate(&Options::default()).unwrap();
+    let (first, ()) = best_of(3, || {
+        let (out, machine) = case.run(&host, &t.wasm).unwrap();
+        case.check(&out, &machine).unwrap();
+    });
+    println!("region, default options: first run (compile + instantiate + run) {:.0} ms", ms(first));
+    for case in spike::cases().unwrap() {
+        let t = case.translate(&Options::default()).unwrap();
+        println!(
+            "{:>14}: {:>4} insns, {:>6} wasm bytes ({:.0} B/insn incl. trampoline/lookup/flags)",
             case.name,
             t.guest_instructions,
             t.wasm.len(),
             t.wasm.len() as f64 / t.guest_instructions as f64
         );
     }
+}
+
+/// Times `case` translated (run only, compiled once, best of `runs`) and
+/// natively, and prints the ratio.
+#[cfg(all(target_arch = "x86_64", unix))]
+fn wasm_vs_native(label: &str, case: &Case, runs: usize) {
+    let t = case.translate(&Options::default()).unwrap();
+    let host = Host::new().unwrap();
+    let module = host.compile(&t.wasm).unwrap();
+    let mut machine = host.machine(case.memory_bytes).unwrap();
+    let mut wasm_time = Duration::MAX;
+    for _ in 0..runs {
+        for (addr, bytes) in case.all_init_mem() {
+            machine.write(addr, &bytes).unwrap();
+        }
+        machine.write_state(case.state_addr, &case.init_state()).unwrap();
+        let start = std::time::Instant::now();
+        machine.run(&module, case.state_addr).unwrap();
+        wasm_time = wasm_time.min(start.elapsed());
+        let out = machine.read_state(case.state_addr).unwrap();
+        case.check(&out, &machine).unwrap();
+    }
+    let native_time = bench::native_time(case, runs).unwrap();
+    println!(
+        "{label}: wasmtime {:.2} ms, native {:.2} ms, ratio {:.2}x",
+        ms(wasm_time),
+        ms(native_time),
+        wasm_time.as_secs_f64() / native_time.as_secs_f64()
+    );
 }
 
 #[cfg(all(target_arch = "x86_64", unix))]
@@ -158,10 +163,69 @@ fn sum_loop_wasm_vs_native() {
     assert_eq!(sum, expected);
     println!(
         "sum_loop n=1e8: wasmtime {:.1} ms, native {:.1} ms, ratio {:.2}x ({:.2} ns/iteration wasm, {:.2} native)",
-        wasm_time.as_secs_f64() * 1e3,
-        native_time.as_secs_f64() * 1e3,
+        ms(wasm_time),
+        ms(native_time),
         wasm_time.as_secs_f64() / native_time.as_secs_f64(),
         wasm_time.as_secs_f64() * 1e9 / n as f64,
         native_time.as_secs_f64() * 1e9 / n as f64
     );
+}
+
+#[cfg(all(target_arch = "x86_64", unix))]
+#[test]
+#[ignore = "measurement; run with --release --ignored --nocapture"]
+fn call_heavy_wasm_vs_native() {
+    wasm_vs_native("fib_rec(30)", &spike::fib_rec(30).unwrap(), 5);
+    wasm_vs_native(
+        "byte_calls 1 MiB",
+        &bench::byte_calls(1 << 20).unwrap(),
+        5,
+    );
+}
+
+/// Deepest `n` in `lo..hi` for which `ok(n)`, assuming it is monotonic.
+fn deepest(mut lo: u64, mut hi: u64, mut ok: impl FnMut(u64) -> bool) -> u64 {
+    assert!(ok(lo));
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if ok(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+#[test]
+#[ignore = "measurement; run with --release --ignored --nocapture"]
+fn deepest_recursion_without_guard() {
+    let host = Host::new().unwrap();
+    let no_guard = Options {
+        call_depth_limit: None,
+        ..Options::default()
+    };
+    for (label, make) in [
+        ("deep_rec", &(|n| bench::deep_probe(n).unwrap()) as &dyn Fn(u64) -> Case),
+        ("deep_fat (2000-insn frame)", &|n| bench::deep_fat(n, 2000).unwrap()),
+    ] {
+        let probe = make(1);
+        let t = probe.translate(&no_guard).unwrap();
+        let module = host.compile(&t.wasm).unwrap();
+        let depth = deepest(1, 4_000_000, |n| {
+            let case = make(n);
+            let mut machine = host.machine(case.memory_bytes).unwrap();
+            for (addr, bytes) in case.all_init_mem() {
+                machine.write(addr, &bytes).unwrap();
+            }
+            match machine.run_state(&module, case.state_addr, &case.init_state()) {
+                Ok(out) => {
+                    case.check(&out, &machine).unwrap();
+                    true
+                }
+                Err(_) => false,
+            }
+        });
+        println!("{label}: wasmtime (default 512 KiB wasm stack) survives depth {depth}");
+    }
 }
