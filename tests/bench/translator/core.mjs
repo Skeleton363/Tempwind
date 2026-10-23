@@ -74,12 +74,17 @@ export class Machine {
   }
 }
 
-/** Compile, instantiate, first run and best-of-`runs` run times of a case. */
+/**
+ * Compile, instantiate, first run and best-of-`runs` run times of a case.
+ * Compiles synchronously: Node does not keep its event loop alive for an
+ * asynchronous compile under --no-wasm-lazy-compilation, and every module
+ * here is below Chromium's 8 MB limit for synchronous compiles.
+ */
 export async function timeCase(spec, bytes, runs) {
-  const t0 = now();
-  const module = await WebAssembly.compile(freshBytes(bytes));
-  const t1 = now();
   const m = new Machine(spec);
+  const t0 = now();
+  const module = new WebAssembly.Module(freshBytes(bytes));
+  const t1 = now();
   await m.instantiate(module);
   const t2 = now();
   m.reset();
@@ -101,7 +106,7 @@ export async function timeCase(spec, bytes, runs) {
  * stack overflow is a RangeError.
  */
 export async function deepest(spec, bytes, hi = 1 << 20) {
-  const module = await WebAssembly.compile(bytes);
+  const module = new WebAssembly.Module(bytes);
   const m = new Machine(spec);
   await m.instantiate(module);
   const ok = (n) => {

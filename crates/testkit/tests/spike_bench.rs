@@ -91,7 +91,10 @@ fn translation_throughput() {
         let (out, machine) = case.run(&host, &t.wasm).unwrap();
         case.check(&out, &machine).unwrap();
     });
-    println!("region, default options: first run (compile + instantiate + run) {:.0} ms", ms(first));
+    println!(
+        "region, default options: first run (compile + instantiate + run) {:.0} ms",
+        ms(first)
+    );
     for case in spike::cases().unwrap() {
         let t = case.translate(&Options::default()).unwrap();
         println!(
@@ -117,7 +120,9 @@ fn wasm_vs_native(label: &str, case: &Case, runs: usize) {
         for (addr, bytes) in case.all_init_mem() {
             machine.write(addr, &bytes).unwrap();
         }
-        machine.write_state(case.state_addr, &case.init_state()).unwrap();
+        machine
+            .write_state(case.state_addr, &case.init_state())
+            .unwrap();
         let start = std::time::Instant::now();
         machine.run(&module, case.state_addr).unwrap();
         wasm_time = wasm_time.min(start.elapsed());
@@ -176,11 +181,7 @@ fn sum_loop_wasm_vs_native() {
 #[ignore = "measurement; run with --release --ignored --nocapture"]
 fn call_heavy_wasm_vs_native() {
     wasm_vs_native("fib_rec(30)", &spike::fib_rec(30).unwrap(), 5);
-    wasm_vs_native(
-        "byte_calls 1 MiB",
-        &bench::byte_calls(1 << 20).unwrap(),
-        5,
-    );
+    wasm_vs_native("byte_calls 1 MiB", &bench::byte_calls(1 << 20).unwrap(), 5);
 }
 
 /// Deepest `n` in `lo..hi` for which `ok(n)`, assuming it is monotonic.
@@ -206,8 +207,13 @@ fn deepest_recursion_without_guard() {
         ..Options::default()
     };
     for (label, make) in [
-        ("deep_rec", &(|n| bench::deep_probe(n).unwrap()) as &dyn Fn(u64) -> Case),
-        ("deep_fat (2000-insn frame)", &|n| bench::deep_fat(n, 2000).unwrap()),
+        (
+            "deep_rec",
+            &(|n| bench::deep_probe(n).unwrap()) as &dyn Fn(u64) -> Case,
+        ),
+        ("deep_fat (2000-insn frame)", &|n| {
+            bench::deep_fat(n, 2000).unwrap()
+        }),
     ] {
         let probe = make(1);
         let t = probe.translate(&no_guard).unwrap();

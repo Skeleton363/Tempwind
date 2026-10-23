@@ -252,11 +252,31 @@ pub fn write(out: &Path) -> Result<()> {
         ..Options::default()
     };
     let mut cases: Vec<(String, Case, Options, bool)> = vec![
-        ("sum_loop".into(), sum_loop(100_000_000)?, Options::default(), true),
+        (
+            "sum_loop".into(),
+            sum_loop(100_000_000)?,
+            Options::default(),
+            true,
+        ),
         ("fib_rec".into(), fib_rec(30)?, Options::default(), true),
-        ("byte_calls".into(), byte_calls(1 << 20)?, Options::default(), true),
-        ("deep_probe".into(), deep_probe(1000)?, no_guard.clone(), false),
-        ("deep_fat".into(), deep_fat(1000, 2000)?, no_guard.clone(), false),
+        (
+            "byte_calls".into(),
+            byte_calls(1 << 20)?,
+            Options::default(),
+            true,
+        ),
+        (
+            "deep_probe".into(),
+            deep_probe(1000)?,
+            no_guard.clone(),
+            false,
+        ),
+        (
+            "deep_fat".into(),
+            deep_fat(1000, 2000)?,
+            no_guard.clone(),
+            false,
+        ),
     ];
     for max in [500, 1000, 2000, 5000, 10_000, 20_000] {
         let opts = Options {
@@ -264,7 +284,12 @@ pub fn write(out: &Path) -> Result<()> {
             max_chunk_insns: 10 * max,
             ..Options::default()
         };
-        cases.push((format!("region_{max}"), region_case(REGION_PARTS)?, opts, false));
+        cases.push((
+            format!("region_{max}"),
+            region_case(REGION_PARTS)?,
+            opts,
+            false,
+        ));
     }
     let mut entries = Vec::new();
     for (name, case, opts, timed) in cases {

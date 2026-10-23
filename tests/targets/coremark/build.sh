@@ -7,7 +7,8 @@
 #
 # The five upstream core files are compiled together with port/core_portme.c;
 # the upstream Makefile is not used (its default target would run the binary).
-# Single-threaded; -static keeps the exe free of MinGW runtime DLLs.
+# Single-threaded; -static keeps the exe free of MinGW runtime DLLs;
+# --no-insert-timestamp zeroes the PE timestamp so rebuilds are comparable.
 # Seeds and iterations come from the command line, for example
 #   coremark.exe 0x0 0x0 0x66 2000
 set -euo pipefail
@@ -40,6 +41,6 @@ flags="-O2"
   "$src"/core_list_join.c "$src"/core_main.c "$src"/core_matrix.c \
   "$src"/core_state.c "$src"/core_util.c \
   "$root/tests/targets/coremark/port/core_portme.c" \
-  -static -o "$out/coremark.exe"
+  -static -Wl,--no-insert-timestamp -o "$out/coremark.exe"
 echo "built $out/coremark.exe"
 sha256sum "$out/coremark.exe"

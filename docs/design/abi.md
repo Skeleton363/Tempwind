@@ -27,6 +27,8 @@ Internal to the module, and not part of the host contract until M2 links modules
 | `flags` | `(op: i32, a: i64, b: i64, r: i64) -> i64` | Materializes the status flags of a lazy flag record (as in v1). |
 | `depth` | mutable `i32` global | Number of nested guest calls on the wasm stack (call-depth guard). |
 
+Index layout in M1: function 0 is `run`, 1 `lookup`, 2 `flags`, and 3 + i is chunk i, which sits at table index i (one table, exactly as long as the number of chunks). Global 0 is `depth`. Nothing but `run` is exported. The name section names every function, local, the table (`chunks`) and the global; a chunk is named after its guest function's entry, `fn_0x140001000`, or `fn_0x140001000_c1` and so on for the chunks of a large function that don't hold the entry.
+
 ## Statuses (between translated functions)
 
 Every guest function returns one of:
@@ -137,6 +139,8 @@ A test function returns to the host by `ret`ing to a sentinel return address tha
 | `cargo run -p testkit --release -- record --check` | Re-record in memory and fail if anything differs from the committed fixtures |
 | `cargo run -p testkit --release -- replay` | Replay fixtures through the translator and print a summary |
 | `cargo run -p testkit --release -- spike --out target/spike` | Write spike wasm and manifest for the JS hosts |
+| `cargo run -p testkit --release -- spike --bench --out target/bench/translator` | Write the translator measurement modules and their manifest (the spike format plus `options`, `nativeMs`, `guestInstructions`, `functions`, `chunks`) for `node tests/bench/translator/bench.mjs` |
+| `node tests/bench/translator/bench.mjs` / `… --browser` | Translator measurements in V8: Node under four V8 configurations, or the recursion-depth probes in Chromium page and Worker |
 | `cargo run -p testkit --release -- census FILE...` | Instruction and import census of PE files (M1) |
 | `npm ci` then `npm run test:node` | Node: run `target/spike` cases |
 | `npm run test:browser` | Playwright, headless Chromium: translator spike, threads spike, WebGPU spike |

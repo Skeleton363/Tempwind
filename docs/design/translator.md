@@ -15,8 +15,8 @@ So the unit of translation has to be smaller than a region, and control transfer
 ## Pipeline
 
 1. **Decode and lift** (`lift.rs`), as in Phase 0: recursive traversal from the entry points; direct branch and call targets inside the region, branch fall-throughs and call return sites are block leaders; blocks are formed by decoding linearly. Each guest instruction lowers to IR ops; each block ends in one terminator.
-2. **Partition into functions** (new, `lift.rs` or a new `func.rs`): group blocks into guest functions, and cut large functions into chunks.
-3. **Flag liveness** (`ir.rs`), as in Phase 0, per wasm function, treating every boundary as a reader.
+2. **Flag liveness** (`ir.rs`), as in Phase 0, over the whole program: calls, returns, indirect jumps and exits are readers; direct jumps are followed into their target, even across a function or chunk boundary. That is sound because every boundary stores the whole lazy record (M1), so a record that no path reads is dead wherever the path continues.
+3. **Partition into functions** (`func.rs`): group blocks into guest functions, and cut large functions into chunks.
 4. **Emit** (`emit.rs`): one wasm function per chunk, the table, `lookup`, `flags`, `run`.
 
 ## Terminators
@@ -37,13 +37,14 @@ The IR keeps call and return explicit, because they map to wasm call and return:
 
 **Function entries** are the given entry points and every direct call target inside the region. (M2 adds exports, `.pdata` function starts, TLS callbacks and address-taken code found through relocations.)
 
-**Block ownership.** Functions are processed in address order. Each one claims, breadth-first, the blocks it reaches through `Jump`, `Branch` and the return site of `Call`. It never follows a call target, and never enters a block that is another function's entry or already claimed. Every block belongs to exactly one function. An edge to a block of another function is a **tail transfer**.
+**Block ownership.** Functions are processed in address order. Each one claims, breadth-first, the blocks it reaches through `Jump`, `Branch` and the return site of `Call`. It never follows a call target, and never enters a block that is another function's entry or already claimed. Every block belongs to exactly one function. An edge to a block of another function is a **tail transfer**. (Every block is reachable from some entry without following call targets, because the lifter only makes leaders of branch targets, return sites and call targets. A block nobody claims would still become a function of its own.)
 
 **Every block is an entry.** The dispatch `br_table` at the top of each wasm function already lists every block (it serves backward branches), so making any block startable costs nothing in the function. `lookup` maps every block address to `(function, block index)`. This makes re-entry possible anywhere: after an unwind, at a return site whose wasm frame is gone, or at an indirect target in the middle of a function.
 
-**Chunks.** A function with more than `Options::max_function_insns` guest instructions (default set by measurement, starting at about 2000) is cut into chunks, in block address order:
-- A cut never splits a strongly connected component of the function's CFG (a loop nest), so hot loops stay inside one wasm function.
-- An SCC larger than the hard cap (`Options::max_chunk_insns`, about 10× the soft limit) is cut anyway; correctness does not depend on where cuts fall.
+**Chunks.** A function with more than `Options::max_function_insns` guest instructions (the soft limit; default below) is cut into chunks:
+- The units are the strongly connected components of the function's CFG (its jump, branch and return-site edges), taken in the order of their first block. They are packed into the current chunk until the next unit would take it past the soft limit; then a new chunk starts. So a cut never splits a loop nest, and hot loops stay inside one wasm function.
+- A unit larger than the hard cap (`Options::max_chunk_insns`, 10× the soft limit by default) is cut anyway, in address order, into pieces of at most the hard cap. Correctness does not depend on where cuts fall: every block is an entry. (A single block is never cut, so a block longer than the hard cap is a chunk of its own.)
+- A chunk's blocks are sorted by address, but a chunk need not be a contiguous address range, since loop nests can interleave.
 - Edges between chunks are tail transfers.
 
 ## Lowering
@@ -82,19 +83,24 @@ store
 if t == ret: return RETURNED
 state.rip = t; return UNWIND
 ```
+In code: `rip = t; status = (t != ret)` (RETURNED is 0, UNWIND is 1), then the function's shared epilogue, which stores the registers and the flag record, and RIP unless the status is RETURNED. Unwinds and exits leave through the same epilogue; a chunk that never uses it doesn't get one.
 `ret` is the function's third parameter, the address its wasm caller expects. Returns to anywhere else unwind to the trampoline, which resumes at the popped address through `lookup`. This keeps every unusual control flow correct: longjmp, C++ and SEH unwinding, return-address tricks, coroutines and stack switching. Only their speed changes.
 
 ### Jumps and branches
 - To a block of the same wasm function: forward `br`, backward `br` to the dispatch loop with the block index, a self-loop as its own `loop`. This is the Phase 0 scheme.
 - To a block of another wasm function: store, then `return_call $g(state, entry, ret)`. `ret` passes through unchanged, because the tail-called code returns to our caller.
 - To an address without a block: store, `state.rip = target`, `UNWIND`.
-- `Indirect(value)`: `lookup(value)`. A hit in the same function becomes a local dispatch; a hit elsewhere becomes `return_call_indirect`; a miss becomes `UNWIND`.
+- `Indirect(value)`: `lookup(value)`. A hit in the same chunk becomes a local dispatch; a hit elsewhere becomes `return_call_indirect`; a miss becomes `UNWIND`.
 
 ### Exits
-`Exit { reason, rip }`: store, `state.rip = rip`, `state.exit = reason`, return `EXIT`. Callers pass `EXIT` up untouched, and `run` materializes RFLAGS.
+`Exit { reason, rip }`: store, `state.rip = rip`, `state.exit = reason`, return `EXIT`. Callers pass `EXIT` up untouched, and `run` materializes RFLAGS. The lifter produces `Exit` for unsupported instructions and for falling off the end of the region; a jump, call or return to an address without a block unwinds instead, and the trampoline's lookup miss then exits with `EXIT_LEFT_CODE`.
 
 ### Call-depth guard
-Guest recursion maps onto the wasm stack, which is about 1 MB in V8 (less in some workers). The mutable global `depth` counts nested guest calls. Past `CALL_DEPTH_LIMIT` (default set by measurement, about 1000), a call stores the state, sets `rip` to the target and unwinds instead. The trampoline then runs the callee at depth 0, and its eventual return unwinds again and resumes the caller at its return site. Deep recursion costs speed, never a wasm stack overflow, which would lose the registers held in locals.
+Guest recursion maps onto the wasm stack, which is about 1 MB in V8 (less in some workers). The mutable global `depth` counts nested guest calls. Past `Options::call_depth_limit` (default below), a call stores the state, sets `rip` to the target and unwinds instead. The trampoline then runs the callee at depth 0, and its eventual return unwinds again and resumes the caller at its return site. Deep recursion costs speed, never a wasm stack overflow, which would lose the registers held in locals.
+
+Once the guard has fired, every frame below the cut returns through the trampoline: its wasm frame is gone, so its `ret` no longer matches. A recursion of depth d with limit L therefore costs about d − L trampoline round trips on the way back up (`deep_rec`, d = 100,000, still runs in milliseconds).
+
+`call_depth_limit: None` removes the guard; the measurement of how deep V8 can go uses it. Nothing else should.
 
 ### The trampoline
 See `abi.md`. It is the only place that starts guest code from the host, and the only consumer of `UNWIND` and `EXIT`.

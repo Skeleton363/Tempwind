@@ -29,7 +29,7 @@
 #   LFLAGS_STRIP=                       upstream links with -s (strip); we keep
 #                                       the COFF symbols for the census and for
 #                                       readable debugging.
-#   LDFLAGS_STATIC_3="-static-libgcc -static-libstdc++ -L<shim>"
+#   LDFLAGS_STATIC_3="-static-libgcc -static-libstdc++ -Wl,--no-insert-timestamp -L<shim>"
 #                                       with IS_MINGW the makefile already passes
 #                                       -static, which links libgcc, libstdc++ and
 #                                       winpthread statically; this repeats it so
@@ -38,6 +38,8 @@
 #                                       link line names import libraries with
 #                                       Windows capitalization (-lShell32,
 #                                       -lUser32) and MinGW-w64's are lowercase.
+#                                       --no-insert-timestamp leaves the PE header
+#                                       timestamp zero so rebuilds are comparable.
 # Not set, on purpose: USE_ASM (the C code paths are what we translate), IS_X64
 # (it only selects assembler flags), ST_MODE (7-Zip's own threads stay on; run
 # with -mmt1 for a single compression thread). Compiler flags stay upstream's
@@ -91,7 +93,7 @@ args=(
   "MY_MKDIR=mkdir -p"
   "RM=rm -f"
   LFLAGS_STRIP=
-  "LDFLAGS_STATIC_3=-static-libgcc -static-libstdc++ -L$shimlib"
+  "LDFLAGS_STATIC_3=-static-libgcc -static-libstdc++ -Wl,--no-insert-timestamp -L$shimlib"
 )
 cd "$work/CPP/7zip/Bundles/Alone2"
 make -j"${JOBS:-$(nproc)}" -f ../../cmpl_gcc.mak "${args[@]}"
