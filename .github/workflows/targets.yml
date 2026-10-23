@@ -237,13 +237,16 @@ jobs:
         run: |
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends wine64
-          command -v wine64 || ls /usr/lib/wine
+          # Ubuntu's wine64 package installs the launcher as /usr/lib/wine/wine64 only.
+          wine=$(command -v wine64 || echo /usr/lib/wine/wine64)
+          test -x "$wine"
+          echo "WINE=$wine" >> "$GITHUB_ENV"
       - name: Smoke test under wine64
         env:
           WINEDEBUG: "-all"
           WINEPREFIX: ${{ runner.temp }}/wineprefix
-          RUN: wine64
         run: |
           unset DISPLAY
-          wine64 --version
-          tests/targets/smoke.sh targets
+          "$WINE" --version
+          "$WINE" wineboot --init || true
+          RUN="$WINE" tests/targets/smoke.sh targets
