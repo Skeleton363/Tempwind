@@ -1,11 +1,13 @@
-//! The ABI between translated modules and their hosts (v2). See
+//! The ABI between translated modules and their hosts (v3). See
 //! `docs/design/abi.md` and `docs/design/translator.md`.
 //!
-//! A translated module imports `env.memory` (memory64) and exports
-//! `run(state: i64) -> i32`. Guest virtual addresses equal offsets in that
-//! memory. `state` is the guest address of a [`STATE_SIZE`]-byte CPU state
-//! block laid out as below. Inside the module, each guest function is a wasm
-//! function `(state: i64, entry: i32, ret: i64) -> i32` returning a status.
+//! A translated module imports `env.memory` (memory64), the process-wide
+//! funcref table `env.table`, and the globals `env.table_base`, `env.lookup`
+//! and `env.depth`; it exports `run(state: i64) -> i32`. Guest virtual
+//! addresses equal offsets in that memory. `state` is the guest address of a
+//! [`STATE_SIZE`]-byte CPU state block laid out as below. Each guest function
+//! is a wasm function `(state: i64, entry: i32, ret: i64) -> i32` returning a
+//! status; modules reach each other's functions through the lookup table.
 
 /// Module name of the imported guest memory.
 pub const MEMORY_MODULE: &str = "env";
@@ -13,6 +15,17 @@ pub const MEMORY_MODULE: &str = "env";
 pub const MEMORY_NAME: &str = "memory";
 /// Name of the exported entry function `(state: i64) -> i32`.
 pub const RUN_EXPORT: &str = "run";
+/// Field name (module `env`) of the imported process-wide funcref table.
+pub const TABLE_NAME: &str = "table";
+/// Field name of the imported immutable `i32` global: the table index of the
+/// module's chunk 0.
+pub const TABLE_BASE_NAME: &str = "table_base";
+/// Field name of the imported immutable `i64` global: the guest address of
+/// the lookup header.
+pub const LOOKUP_NAME: &str = "lookup";
+/// Field name of the imported mutable `i32` global: nested guest calls on the
+/// wasm stack, shared by all modules.
+pub const DEPTH_NAME: &str = "depth";
 
 /// Maximum memory64 size browsers allow, in 64 KiB pages (16 GiB).
 pub const MAX_MEMORY_PAGES: u64 = 262_144;
@@ -67,8 +80,79 @@ pub const fn gpr_offset(index: u32) -> u64 {
 pub const EXIT_LEFT_CODE: u32 = 1;
 /// The instruction at RIP is not supported; registers hold the state before it.
 pub const EXIT_UNSUPPORTED: u32 = 2;
-/// Reserved: a guest fault; the state block holds the fault address and kind.
+/// A guest fault; the state block holds the fault address and kind.
 pub const EXIT_FAULT: u32 = 3;
+/// A host function stopped execution (process exit, unimplemented API, shim
+/// error); the host knows why.
+pub const EXIT_HOST: u32 = 4;
+
+/// Fault kind at [`STATE_FAULT_KIND`]: a read.
+pub const FAULT_READ: u32 = 1;
+/// Fault kind: a write.
+pub const FAULT_WRITE: u32 = 2;
+/// Fault kind: execution (no executable code at the address).
+pub const FAULT_EXECUTE: u32 = 3;
+
+/// Lookup header field: guest address of the slot array (u64).
+pub const LOOKUP_SLOTS: u64 = 0;
+/// Lookup header field: number of slots - 1, the slot count being a power of
+/// two (u64).
+pub const LOOKUP_MASK: u64 = 8;
+/// Lookup header field: occupied slots, kept by the host (u64).
+pub const LOOKUP_USED: u64 = 16;
+/// Size of the lookup header.
+pub const LOOKUP_HEADER_SIZE: u64 = 32;
+/// Size of a lookup slot: key u64 (0 = empty), func u32, entry u32.
+pub const LOOKUP_SLOT_SIZE: u64 = 16;
+/// Multiplier of the lookup hash.
+pub const LOOKUP_HASH_MUL: u64 = 0x9E37_79B9_7F4A_7C15;
+/// Right shift of the lookup hash.
+pub const LOOKUP_HASH_SHIFT: u32 = 32;
+
+/// The slot index a lookup probe for `key` starts at; probing continues at
+/// `(i + 1) & mask`.
+pub const fn lookup_hash(key: u64, mask: u64) -> u64 {
+    (key.wrapping_mul(LOOKUP_HASH_MUL) >> LOOKUP_HASH_SHIFT) & mask
+}
+
+/// Name of the custom section that lists a module's blocks.
+pub const BLOCKS_SECTION: &str = "x64wasm.blocks";
+/// Version of the `x64wasm.blocks` format.
+pub const BLOCKS_VERSION: u32 = 1;
+/// Size of the `x64wasm.blocks` header: version, chunks, n, reserved (u32).
+pub const BLOCKS_HEADER_SIZE: usize = 16;
+/// Size of an `x64wasm.blocks` entry: addr u64, chunk u32, entry u32.
+pub const BLOCKS_ENTRY_SIZE: usize = 16;
+
+/// Size of a run-time translator request (`x64wasm_rt.wasm`).
+pub const RT_REQUEST_SIZE: usize = 40;
+/// Request field: guest address of the first code byte (u64).
+pub const RT_REQ_CODE_BASE: usize = 0;
+/// Request field: pointer to the code bytes in the translator's memory (u32).
+pub const RT_REQ_CODE_PTR: usize = 8;
+/// Request field: number of code bytes (u32).
+pub const RT_REQ_CODE_LEN: usize = 12;
+/// Request field: guest address to translate from (u64).
+pub const RT_REQ_ENTRY: usize = 16;
+/// Request field: pointer to a sorted u64 array of addresses that already
+/// have blocks (u32).
+pub const RT_REQ_KNOWN_PTR: usize = 24;
+/// Request field: number of known addresses (u32).
+pub const RT_REQ_KNOWN_LEN: usize = 28;
+/// Request field: flags, 0 (u32).
+pub const RT_REQ_FLAGS: usize = 32;
+/// Size of a run-time translator result.
+pub const RT_RESULT_SIZE: usize = 20;
+/// Result field: 0 ok, 1 error (u32).
+pub const RT_RES_STATUS: usize = 0;
+/// Result field: pointer to the module bytes (u32).
+pub const RT_RES_WASM_PTR: usize = 4;
+/// Result field: module length (u32).
+pub const RT_RES_WASM_LEN: usize = 8;
+/// Result field: pointer to the UTF-8 error text (u32).
+pub const RT_RES_MSG_PTR: usize = 12;
+/// Result field: error text length (u32).
+pub const RT_RES_MSG_LEN: usize = 16;
 
 /// Status of a guest function: a `ret` popped exactly the caller's expected
 /// return address. GPRs and the lazy flag record are stored; RIP is not.
@@ -151,6 +235,14 @@ impl CpuState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lookup_hash_vectors() {
+        // The same vectors are checked in runtime/src/abi.mjs's users.
+        assert_eq!(super::lookup_hash(0x1_4000_1000, 0xfff), 0x30e);
+        assert_eq!(super::lookup_hash(0x8001_0000, 0xffff), 0xbd54);
+        assert_eq!(super::lookup_hash(0x7fff_ffff_0000, 0x3ff), 0xb5);
+    }
+
     use super::*;
 
     #[test]

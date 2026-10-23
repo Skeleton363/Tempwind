@@ -1,6 +1,6 @@
 # Translator design: function-level translation (Phase 1)
 
-Status: **decided in the Phase 1 plan; implemented in M1.** The module ABI is in `abi.md` (v2). This note says how guest code maps onto wasm functions and why.
+Status: **decided in the Phase 1 plan; implemented in M1; linking and images in M2.** The module ABI is in `abi.md` (v3). This note says how guest code maps onto wasm functions and why.
 
 ## Problem
 
@@ -35,7 +35,7 @@ The IR keeps call and return explicit, because they map to wasm call and return:
 
 ## Functions and chunks
 
-**Function entries** are the given entry points and every direct call target inside the region. (M2 adds exports, `.pdata` function starts, TLS callbacks and address-taken code found through relocations.)
+**Function entries** are the given entry points and every direct call target inside the region. For images (M2), `Pe::function_entries()` adds the entry point, exports, `.pdata` function starts, TLS callbacks and code addresses found through relocations, and jump-table recovery adds switch targets (below).
 
 **Block ownership.** Functions are processed in address order. Each one claims, breadth-first, the blocks it reaches through `Jump`, `Branch` and the return site of `Call`. It never follows a call target, and never enters a block that is another function's entry or already claimed. Every block belongs to exactly one function. An edge to a block of another function is a **tail transfer**. (Every block is reachable from some entry without following call targets, because the lifter only makes leaders of branch targets, return sites and call targets. A block nobody claims would still become a function of its own.)
 
@@ -67,11 +67,11 @@ if status != RETURNED: return status         ; state already stored by the calle
 load
 <continue at the return-site block>          ; usually the next block: a fall-through
 ```
-A direct call to an address without a translated block (outside the region, or into a different module in M2) stores the state, sets `state.rip = target` and returns `UNWIND`.
+A direct call to an address outside the module probes the lookup table (`abi.md` v3) and becomes an indirect call through the shared table on a hit; on a miss it stores the state, sets `state.rip = target` and returns `UNWIND`.
 
 ### Indirect call
-Like a direct call, but `(func, entry) = lookup(target)` first:
-- on a hit, the call is `call_indirect` through the table;
+Like a direct call, but `(func, entry) = lookup(target)` first, a probe of the process-wide lookup table:
+- on a hit, the call is `call_indirect` through the shared table;
 - on a miss, `state.rip = target` and `UNWIND`.
 
 The return address is already on the guest stack either way.
@@ -89,7 +89,7 @@ In code: `rip = t; status = (t != ret)` (RETURNED is 0, UNWIND is 1), then the f
 ### Jumps and branches
 - To a block of the same wasm function: forward `br`, backward `br` to the dispatch loop with the block index, a self-loop as its own `loop`. This is the Phase 0 scheme.
 - To a block of another wasm function: store, then `return_call $g(state, entry, ret)`. `ret` passes through unchanged, because the tail-called code returns to our caller.
-- To an address without a block: store, `state.rip = target`, `UNWIND`.
+- To an address outside the module: probe the lookup table; a hit becomes `return_call_indirect`, a miss stores, sets `state.rip = target` and unwinds.
 - `Indirect(value)`: `lookup(value)`. A hit in the same chunk becomes a local dispatch; a hit elsewhere becomes `return_call_indirect`; a miss becomes `UNWIND`.
 
 ### Exits
@@ -114,7 +114,7 @@ See `abi.md`. It is the only place that starts guest code from the host, and the
 
 ## Module layout
 
-Function 0 is `run`, 1 `lookup`, 2 `flags`, and 3 + i is chunk i at table index i; global 0 is `depth` (see `abi.md`). Chunks are named after their guest function (`fn_0x140001000`, `fn_0x140001000_c1`, …) in the name section, so profiles show guest addresses. `Translation::functions` lists every guest function with its chunks (wasm index and block addresses), and the IR dump is grouped the same way.
+Function 0 is `run`, 1 `lookup`, 2 `flags`, and 3 + i is chunk i at table index `table_base + i`; globals 0-2 are the imported `table_base`, `lookup` and `depth` (see `abi.md`). Chunks are named after their guest function (`fn_0x140001000`, `fn_0x140001000_c1`, …) in the name section, so profiles show guest addresses. `Translation::functions` lists every guest function with its chunks (wasm index and block addresses), and the IR dump is grouped the same way.
 
 ## Defaults (M1)
 
@@ -126,11 +126,14 @@ Chosen from the M1 measurements (4-core Xeon @ 2.8 GHz cloud VM, release builds,
 | `max_chunk_insns` | 20000 | 10× the soft limit, as planned. |
 | `call_depth_limit` | 500 | Deepest guest recursion without the guard (one guest call = one wasm frame, the frame of a small or of a 2000-instruction function): wasmtime with its default 512 KiB stack 1487; Chromium 141 Worker 1879-1919 (`deep_fat`: 2275); Chromium page 3583-3839; Node 24 main thread 3585-3711 under `--liftoff-only` (the largest frames), 8656-8963 under TurboFan. 500 leaves 3× margin in wasmtime, 3.8× in a Worker and 7× on a page, for the frames below the trampoline and, from M2, host calls that run on the same stack. |
 
-## What M2 and later change
+## Linking and images (M2)
 
-- **Several modules per process** (AOT image, run-time translations): the table becomes imported and shared, and `lookup` becomes a hash table in the host region of guest memory, probed inline by translated code and filled by the runtime. Direct calls inside a module stay direct.
-- **Host calls** (import thunks): a wasm import called inline from translated code, so API calls do not unwind the wasm stack.
-- **Faults** (NULL check, store check): `EXIT_FAULT` with the fault address and kind in the state block.
+- **Several modules per process** (the AOT image, run-time translations) share the funcref table, the `depth` global and a hash-table `lookup` in guest memory, which translated code probes inline and the runtime fills (`abi.md` v3). Direct calls inside a module stay direct.
+- **Host calls:** an import's IAT slot holds a thunk address whose lookup slot names the host-call function, so API calls are ordinary indirect calls into JS and don't unwind the wasm stack.
+- **Whole images** (`x64wasm::image`): one module per image, decoding only inside executable sections. Unsupported instructions, among them the out-of-profile code of 7zz.exe's CPUID-dispatched functions, translate to `EXIT_UNSUPPORTED` exits like anywhere else, so they cost nothing unless reached.
+- **Jump tables:** absolute tables are already covered by relocation targets. GCC's relative tables (`lea base; movsxd idx, [base + idx*4]; add idx, base; jmp idx` behind a bounds check) are recovered by pattern, and their targets become block leaders. A target that recovery misses is translated at run time.
+- **Run-time translation:** a lookup miss inside an executable section returns `EXIT_LEFT_CODE` to the runtime, which translates from that address with the wasm32 build of the translator, links the module and resumes (`runtime.md`). Known addresses are passed in, so nothing is translated twice.
+- **Faults (NULL check, store check):** `EXIT_FAULT` with the fault address and kind in the state block, from M3/M6.
 
 ## Measurements (M1)
 
