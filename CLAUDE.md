@@ -31,7 +31,8 @@ Keep this section current; add each command when it first works.
 
 ## How we work
 - One phase at a time, in order. Before starting, read docs/plan.md and the latest docs/status/ note.
-- Branch from main. One draft PR per session, titled "[Phase N] <what>".
+- Branch from main. One draft PR per milestone, titled "[Phase N] <what>"; a session covers a phase.
+- Commits: author and committer `Skeleton363 <46569584+Skeleton363@users.noreply.github.com>`, unsigned. The SessionStart hook sets this in cloud sessions; check `git config user.email` before the first commit. Commit messages and PR descriptions carry no `Co-Authored-By`, `Claude-Session` or "Generated with Claude Code" lines. Post PR comments only where required.
 - Done = all CI checks green, the test summary in your final message, and docs/status/phase-N.md updated (what works, measurements, decisions, known issues, next step).
 - Sessions don't share memory: record every decision in docs/status/.
 - Commit and push work in progress at least every 30 minutes; the cloud sandbox can reset.
@@ -59,3 +60,11 @@ Keep this section current; add each command when it first works.
 - Routine work (docs, CI, test plumbing, shell UI, small fixes): builder (Sonnet, medium).
 - Translator core, Wine system-call layer, memory model and threads, graphics backend, hard bugs: deep-worker (Opus, high).
 - If an attempt fails the same tests twice, retry one tier up. Never use max effort unless asked.
+
+## Working efficiently
+Quality first: rework is the most expensive waste. Cut the rest:
+- Contracts and tests before code: design notes and ABI changes are committed before agents start; fixtures or a failing test come before a fix.
+- Read narrowly: Grep, then Read with offset/limit. Never read fixtures, `census.json`, snapshots or CI logs whole; save logs to a file and grep them.
+- Keep command output short (`cargo test -q`, `| tail -n 40`); full output only while diagnosing.
+- Delegate large, self-contained work, not lookups one Grep answers. The brief names the files, the contract and the tests that decide "done"; agents report in about 150 words; the coordinator reviews diffs, not whole files.
+- Verify before pushing, including CI scripts that can run in the session. Wait for PR events instead of polling CI.
