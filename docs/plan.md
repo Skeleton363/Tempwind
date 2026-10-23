@@ -89,6 +89,23 @@ Phases run in order. Each has a done-when.
    - A Windows job that runs a MinGW-built x86-64 test `.exe` natively and checks its output.
 10. `docs/status/phase-0.md`: what works, measurements, decisions, risks, and any changes the environment's setup script needs.
 
+## Phase 1 milestones
+
+Each milestone ends with CI green, a draft PR "[Phase 1] <milestone>", and `docs/status/phase-1.md` updated. Decisions taken when planning Phase 1:
+
+- 7-Zip runs before Wine on a Win32 shim written in JS in `runtime/`.
+- "Native on Linux" is the same `.exe` under Ubuntu's wine64. Real Windows is the reference of truth.
+- The 7-Zip CLI is the standalone `7zz.exe` (Alone2 bundle).
+
+| # | Milestone | Done when |
+|---|---|---|
+| M1 | Function-level translation and target census | One wasm function per guest function (`docs/design/translator.md`, ABI v2 in `docs/design/abi.md`), with guest call/ret mapped to wasm call/return. Phase 0's 201k-instruction region compiles in seconds. CI builds 7zz.exe and coremark.exe with MinGW and publishes them. `testkit census` defines the instruction scope (`docs/design/instruction-scope.md`). |
+| M2 | PE loading | AOT translation of whole PE images; JS runtime with import thunks as host calls and run-time translation of missed code. A small MinGW test PE runs translated == native. 7zz.exe and coremark.exe translate and compile in V8 and wasmtime. |
+| M3 | Integer instructions and CRT startup | Fixture format v2 and every in-scope integer form. MinGW CRT startup and the L2 C programs run translated == native. |
+| M4 | SSE, x87 and CoreMark | In-scope SSE/SSE2 and x87 forms. CoreMark validates translated and is tracked in CI. |
+| M5 | 7-Zip exactly like native | The command matrix (formats, methods, `t`, `l`, `x`, `h`) matches native Windows byte for byte. Every in-scope form has fixtures and replay is 100 %. `7z b` is tracked. |
+| M6 | Speed and close-out | Register-sync and flag liveness, loop structuring, call fast path. The cost of the guest-memory checks is measured on real code. |
+
 ## Working rules
 
 How sessions work, which tools and network hosts are available, clean-room rules and delegation are in `CLAUDE.md`.

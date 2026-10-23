@@ -12,11 +12,25 @@ export const STATE_GPR = 0x000;
 export const STATE_RIP = 0x080;
 export const STATE_RFLAGS = 0x088;
 export const STATE_EXIT = 0x090;
+export const STATE_CC_OP = 0x094;
+export const STATE_CC_A = 0x098;
+export const STATE_CC_B = 0x0a0;
+export const STATE_CC_R = 0x0a8;
+export const STATE_FS_BASE = 0x0b0;
+export const STATE_GS_BASE = 0x0b8;
+export const STATE_FAULT_ADDR = 0x0c0;
+export const STATE_FAULT_KIND = 0x0c8;
 export const STATE_XMM = 0x100;
-export const STATE_SIZE = 0x200;
+export const STATE_MXCSR = 0x200;
+export const STATE_FCW = 0x204;
+export const STATE_FSW = 0x206;
+export const STATE_FTW = 0x208;
+export const STATE_FPR = 0x210;
+export const STATE_SIZE = 0x400;
 
 export const EXIT_LEFT_CODE = 1;
 export const EXIT_UNSUPPORTED = 2;
+export const EXIT_FAULT = 3;
 
 export const SENTINEL_RET = 0x0000_7fff_ffff_0000n;
 

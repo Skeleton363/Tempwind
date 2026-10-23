@@ -7,6 +7,7 @@ pub mod abi;
 pub mod emit;
 pub mod ir;
 pub mod lift;
+pub mod pe;
 
 use std::fmt;
 

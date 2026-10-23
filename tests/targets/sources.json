@@ -1,0 +1,17 @@
+{
+  "note": "Pinned upstream sources for the Phase 1 targets. .github/workflows/targets.yml fetches them, verifies sha256 and mirrors them as releases src-<name>-<version>. An empty sha256 or commit means: not pinned yet; the sources job prints the value it found and fails until it is pinned here (trust on first use, recorded in docs/status/phase-1.md).",
+  "7zip": {
+    "version": "25.01",
+    "url": "https://www.7-zip.org/a/7z2501-src.tar.xz",
+    "mirror_url": "https://github.com/ip7z/7zip/releases/download/25.01/7z2501-src.tar.xz",
+    "sha256": "",
+    "license": "LGPL-2.1-or-later with BSD-3-Clause parts and the unRAR restriction (DOC/License.txt)"
+  },
+  "coremark": {
+    "repo": "https://github.com/eembc/coremark",
+    "ref": "main",
+    "commit": "",
+    "sha256": "",
+    "license": "Apache-2.0 (LICENSE.md)"
+  }
+}
