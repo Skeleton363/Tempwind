@@ -125,9 +125,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install MinGW-w64
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
 
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install && rustup show
@@ -232,9 +233,10 @@ jobs:
           name: targets
           path: targets
       - name: Install Wine
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wine64
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends wine64
           command -v wine64 || ls /usr/lib/wine
       - name: Smoke test under wine64
         env:
