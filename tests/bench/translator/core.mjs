@@ -4,7 +4,7 @@
 // only standard WebAssembly APIs.
 import { GPR_NAMES, STATE_GPR, STATE_RIP, STATE_RFLAGS } from '../../../runtime/src/abi.mjs';
 import { createMemory64 } from '../../../runtime/src/memory.mjs';
-import { moduleBlocks } from '../../../runtime/src/link.mjs';
+import { moduleBlockCount } from '../../../runtime/src/link.mjs';
 import { hexToBytes, caseLookupLayout, assertV3, linkCase } from '../../../runtime/src/run.mjs';
 
 const now = () => performance.now();
@@ -32,7 +32,7 @@ export class Machine {
   constructor(spec, module) {
     assertV3(module);
     this.spec = spec;
-    this.layout = caseLookupLayout(BigInt(spec.memoryBytes), moduleBlocks(module).blocks.length);
+    this.layout = caseLookupLayout(BigInt(spec.memoryBytes), moduleBlockCount(module));
     this.memory = createMemory64({ initialPages: this.layout.pages }).memory;
     this.state = Number(BigInt(spec.state));
     this.image = (spec.init.mem ?? []).map((m) => [Number(BigInt(m.addr)), hexToBytes(m.hex)]);

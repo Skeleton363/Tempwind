@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { lookupHash, LOOKUP_SLOTS, LOOKUP_MASK, LOOKUP_USED, HOST_FUNC_INDEX } from '../../runtime/src/abi.mjs';
-import { Linker, parseBlocks, moduleBlocks, hostFunction } from '../../runtime/src/link.mjs';
+import { Linker, parseBlocks, moduleBlocks, moduleBlockCount, hostFunction, hashIndex } from '../../runtime/src/link.mjs';
 import { createMemory64 } from '../../runtime/src/memory.mjs';
 import { GuestMemory } from '../../runtime/src/guest-memory.mjs';
 import { v3Module, blocksPayload } from './v3-mini.mjs';
@@ -38,6 +38,19 @@ test('lookupHash matches the abi.rs vectors', () => {
   assert.equal(lookupHash(0x1_4000_1000n, 0xfffn), 0x30en);
   assert.equal(lookupHash(0x8001_0000n, 0xffffn), 0xbd54n);
   assert.equal(lookupHash(0x7fff_ffff_0000n, 0x3ffn), 0xb5n);
+});
+
+test('the 32-bit hash equals lookupHash for any key and mask', () => {
+  let x = 0x0123_4567_89ab_cdefn;
+  const next = () => (x = BigInt.asUintN(64, x * 6364136223846793005n + 1442695040888963407n));
+  const masks = [0n, 1n, 0xfffn, 0xffffn, 0x7fff_ffffn, 0xffff_ffffn];
+  const keys = [1n, 0xffff_ffff_ffff_ffffn, 0x8000_0000n, 0xffff_ffffn, 0x1_0000_0000n, 0x1_4000_1000n];
+  for (let i = 0; i < 2000; i++) keys.push(next());
+  for (const k of keys) {
+    for (const m of masks) {
+      assert.equal(hashIndex(Number(k & 0xffff_ffffn), Number(k >> 32n), Number(m)), Number(lookupHash(k, m)), `key ${k.toString(16)} mask ${m.toString(16)}`);
+    }
+  }
 });
 
 test('header is written and insertion lands on the hashed slot', () => {
@@ -164,6 +177,20 @@ test('moduleBlocks requires exactly one section', () => {
   assert.throws(() => moduleBlocks(none), /0 x64wasm.blocks sections/);
   const two = new WebAssembly.Module(v3Module({ run: [0x41, 1], chunks: [], blocks: [], blocksSections: 2 }));
   assert.throws(() => moduleBlocks(two), /2 x64wasm.blocks sections/);
+  const one = new WebAssembly.Module(v3Module({ run: [0x41, 1], chunks: [[0x41, 0]], blocks: [{ addr: 0x10n, chunk: 0, entry: 0 }, { addr: 0x20n, chunk: 0, entry: 1 }] }));
+  assert.equal(moduleBlockCount(one), 2);
+});
+
+test('blocks above 4 GiB, and keys differing only in the high word', async () => {
+  const { linker } = mkLinker(16);
+  const lo = 0x1000n;
+  for (const k of [lo, (1n << 32n) | lo, (2n << 32n) | lo, 0xffff_ffff_0000_1000n]) {
+    assert.equal(linker.insert(k, 1, Number(k >> 32n) & 0xff), true);
+  }
+  assert.deepEqual(linker.lookup((2n << 32n) | lo), { func: 1, entry: 2 });
+  assert.deepEqual(linker.lookup(0xffff_ffff_0000_1000n), { func: 1, entry: 0xff });
+  assert.equal(linker.lookup(3n << 32n | lo), null);
+  assert.deepEqual([...linker.sortedKeys()], [lo, (1n << 32n) | lo, (2n << 32n) | lo, 0xffff_ffff_0000_1000n]);
 });
 
 test('link grows the table, places chunks at table_base and inserts blocks', async () => {

@@ -15,7 +15,7 @@ import {
 } from './abi.mjs';
 import { createMemory64 } from './memory.mjs';
 import { GuestMemory } from './guest-memory.mjs';
-import { Linker, moduleBlocks } from './link.mjs';
+import { Linker, moduleBlockCount } from './link.mjs';
 import { makeHostCall } from './hostcall.mjs';
 import { parsePlan, checkPlan, executableSection, hex } from './plan.mjs';
 import { findShim, SHIM } from './win32/index.mjs';
@@ -82,7 +82,7 @@ export class Process {
     let aotModule, aotBlocks;
     try {
       aotModule = aot instanceof WebAssembly.Module ? aot : await WebAssembly.compile(aot);
-      aotBlocks = moduleBlocks(aotModule).blocks.length;
+      aotBlocks = moduleBlockCount(aotModule);
     } catch (e) {
       throw new ProcessError(`AOT module: ${e.message}`);
     }

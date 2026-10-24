@@ -8,7 +8,7 @@ import {
   MEMORY_MODULE, TABLE_NAME, LOOKUP_HEADER_SIZE, LOOKUP_SLOT_SIZE,
 } from './abi.mjs';
 import { createMemory64, pagesFor } from './memory.mjs';
-import { Linker, moduleBlocks } from './link.mjs';
+import { Linker, moduleBlockCount } from './link.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, v).toString(16);
 const big = (s) => BigInt(s);
@@ -71,7 +71,7 @@ export async function runCase(wasmBytes, spec, opts = {}) {
   const shared = !!opts.shared;
   const module = await WebAssembly.compile(wasmBytes);
   assertV3(module);
-  const layout = caseLookupLayout(big(spec.memoryBytes), moduleBlocks(module).blocks.length);
+  const layout = caseLookupLayout(big(spec.memoryBytes), moduleBlockCount(module));
   const { memory, form } = createMemory64({
     initialPages: layout.pages,
     maximumPages: shared ? opts.maximumPages ?? 262144 : opts.maximumPages,
