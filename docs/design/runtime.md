@@ -36,7 +36,7 @@ This follows `guest-memory.md` (option A, identity mapping). The constants live 
 | `0x8010_0000` and up | as needed | Runtime heap: lookup slots and other runtime data |
 | `imageBase` | `sizeOfImage` | The image, at its preferred base (MinGW: `0x1_4000_0000`). |
 
-- **Memory:** one memory64, non-shared in Phase 1. Its initial size covers everything above, so its minimum is the image end rounded up to 64 KiB; for a MinGW image that is a little over 5 GiB. Pages are committed lazily on Linux.
+- **Memory:** one memory64, non-shared in Phase 1. Its initial size is the larger of the image end (rounded up to 64 KiB) and 4 GiB, the end of the host region; for a MinGW image that is a little over 5 GiB. Pages are committed lazily on Linux.
 - **Bad image bases:** a load fails with a clear error when the image would overlap the NULL region, the guest heap's start, the stack, PEB/TEB, KUSER or the host region, or end above 16 GiB.
 - **No relocation:** images always load at their preferred base. Relocation comes with DLLs (Phase 2).
 
@@ -132,9 +132,9 @@ A stop sets `state.exit = EXIT_HOST` and returns `STATUS_EXIT`, and the runtime 
 
 **Shim rules:**
 - Implement the APIs a test program imports, as Microsoft documents them, for the arguments the program uses.
-- A case the shim doesn't handle (for example `WriteFile` with an `OVERLAPPED`, or an unknown handle) is an error stop with the API name and the argument. It never returns a made-up success.
+- A case the shim doesn't handle (for example `WriteFile` with an `OVERLAPPED`, or an unknown handle) is an error stop with the API name and the argument. It never returns a made-up success. Arguments that Microsoft documents as invalid stop too, even where Wine accepts them: a synchronous `WriteFile` needs `lpNumberOfBytesWritten`.
 - Shim v0 is what the M2 test program imports from `kernel32.dll`: `GetStdHandle`, `WriteFile`, `ExitProcess`.
-  - Standard handles are fixed values.
+  - Standard handles are fixed: stdin `0x3`, stdout `0x7`, stderr `0xB`.
   - `WriteFile` to stdout or stderr appends the bytes to the process's captured output; the CLI also forwards them.
 
 ## Run loop
@@ -164,7 +164,7 @@ If the run-time translator isn't loaded, or reports an error, the process stops 
 
 ## Tracing
 
-`TEMPWIND_TRACE` takes a comma-separated list. Traces go to the Node process's stderr, never into the guest's captured output.
+`TEMPWIND_TRACE` takes a comma-separated list. Traces go to the Node process's stderr, never into the guest's captured output, and each line starts with `[tempwind] `.
 
 | Value | Traces |
 |---|---|
@@ -193,4 +193,4 @@ It exercises:
 - a function that only a computed pointer reaches, which AOT cannot find and which therefore takes the run-time translation path;
 - `ExitProcess` with a non-zero code.
 
-On Windows (CI), its stdout and exit code are compared with `tests/pe/basic.expected` and the code in `tests/pe/README.md`. The translated run in Node must match both, with AOT from all entries and from the entry point only.
+On Windows (CI), its stdout and exit code are compared with `tests/pe/basic.expected` and `tests/pe/basic.exitcode`. The translated run in Node must match both, with AOT from all entries and from the entry point only.
