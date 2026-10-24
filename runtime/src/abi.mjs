@@ -114,3 +114,52 @@ export const RUNTIME_HEAP_BASE = 0x8010_0000n;
 export const HOST_FUNC_INDEX = 0;
 export const PROCESS_ID = 0x1000;
 export const THREAD_ID = 0x1004;
+
+// Phase 1 process details (docs/design/runtime.md), checked against Wine 11
+// include/winternl.h (TEB64, PEB64, NT_TIB64).
+export const NULL_REGION_SIZE = 0x1_0000n;
+/** The host region ends at 4 GiB; images may not overlap [HOST_BASE, HOST_END). */
+export const HOST_END = 0x1_0000_0000n;
+export const PEB_SIZE = 0x1000n;
+export const TEB_SIZE = 0x2000n;
+export const KUSER_SIZE = 0x1000n;
+/** Images must end at or below 16 GiB (MAX_MEMORY_PAGES). */
+export const ADDRESS_LIMIT = 0x4_0000_0000n;
+export const STACK_ALIGN = 0x1_0000n;
+export const MIN_LOOKUP_SLOTS = 4096;
+export const RFLAGS_INIT = 0x202n;
+/** Host-initiated guest call: RSP = top - GUEST_CALL_FRAME, [RSP] = SENTINEL_RET. */
+export const GUEST_CALL_FRAME = 0x38n;
+export const THUNK_BYTES = [0x0f, 0x0b, ...new Array(14).fill(0xcc)];
+
+export const TEB_STACK_BASE = 0x008;
+export const TEB_STACK_LIMIT = 0x010;
+export const TEB_SELF = 0x030;
+export const TEB_CLIENT_ID_PROCESS = 0x040;
+export const TEB_CLIENT_ID_THREAD = 0x048;
+export const TEB_TLS_POINTER = 0x058;
+export const TEB_PEB = 0x060;
+export const TEB_LAST_ERROR = 0x068;
+export const PEB_BEING_DEBUGGED = 0x002;
+export const PEB_IMAGE_BASE = 0x010;
+export const PEB_NUMBER_OF_PROCESSORS = 0x0b8;
+export const PEB_OS_MAJOR = 0x118;
+export const PEB_OS_MINOR = 0x11c;
+export const PEB_OS_BUILD = 0x120;
+export const PEB_OS_PLATFORM_ID = 0x124;
+export const OS_VERSION = { major: 10, minor: 0, build: 26100, platformId: 2 };
+
+export const IMAGE_FILE_MACHINE_AMD64 = 0x8664;
+export const IMAGE_SCN_MEM_EXECUTE = 0x2000_0000;
+export const DLL_PROCESS_ATTACH = 1;
+
+// Win32 values used by the shim.
+export const STD_INPUT_HANDLE = -10;
+export const STD_OUTPUT_HANDLE = -11;
+export const STD_ERROR_HANDLE = -12;
+/** The fixed standard handles of a Phase 1 process (classic console handle values). */
+export const STDIN_HANDLE = 0x3n;
+export const STDOUT_HANDLE = 0x7n;
+export const STDERR_HANDLE = 0xbn;
+export const INVALID_HANDLE_VALUE = 0xffff_ffff_ffff_ffffn;
+export const ERROR_INVALID_HANDLE = 6;
