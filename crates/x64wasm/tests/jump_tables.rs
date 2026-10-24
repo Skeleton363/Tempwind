@@ -247,6 +247,82 @@ fn gcc_variants() {
 }
 
 #[test]
+fn gcc_variants_from_7zz() {
+    // An unrelated instruction between the lea and the movsxd
+    // (NArchive::NXz::CHandler::GetArchiveProperty).
+    let b = build(3, |a, t, c, j, e| {
+        let mut default = a.create_label();
+        a.cmp(edx, 2).unwrap();
+        a.ja(default).unwrap();
+        a.lea(r8, ptr(*t)).unwrap();
+        a.lea(rcx, ptr(rcx + 0xf8)).unwrap();
+        a.movsxd(rax, dword_ptr(r8 + rdx * 4)).unwrap();
+        a.add(rax, r8).unwrap();
+        a.set_label(j).unwrap();
+        a.jmp(rax).unwrap();
+        cases(a, c);
+        a.set_label(&mut default).unwrap();
+        a.ret().unwrap();
+        table_data(a, t, e);
+    });
+    assert_table(&b, &lift(&b, &[]));
+
+    // The index is a copy made just before the bounds check
+    // (CUpdateCallbackConsole::ReportUpdateOperation).
+    let b = build(3, |a, t, c, j, e| {
+        let mut default = a.create_label();
+        a.mov(r8d, edx).unwrap();
+        a.cmp(edx, 2).unwrap();
+        a.ja(default).unwrap();
+        a.lea(rcx, ptr(*t)).unwrap();
+        a.movsxd(rax, dword_ptr(rcx + r8 * 4)).unwrap();
+        a.add(rax, rcx).unwrap();
+        a.set_label(j).unwrap();
+        a.jmp(rax).unwrap();
+        cases(a, c);
+        a.set_label(&mut default).unwrap();
+        a.ret().unwrap();
+        table_data(a, t, e);
+    });
+    assert_table(&b, &lift(&b, &[]));
+
+    // Near misses: the unrelated instruction writes the index, or the copy
+    // is overwritten after the check.
+    let b = build(3, |a, t, c, j, e| {
+        let mut default = a.create_label();
+        a.cmp(edx, 2).unwrap();
+        a.ja(default).unwrap();
+        a.lea(r8, ptr(*t)).unwrap();
+        a.lea(rdx, ptr(rcx + 0xf8)).unwrap();
+        a.movsxd(rax, dword_ptr(r8 + rdx * 4)).unwrap();
+        a.add(rax, r8).unwrap();
+        a.set_label(j).unwrap();
+        a.jmp(rax).unwrap();
+        cases(a, c);
+        a.set_label(&mut default).unwrap();
+        a.ret().unwrap();
+        table_data(a, t, e);
+    });
+    assert_no_table(&b, &lift(&b, &[]));
+    let b = build(3, |a, t, c, j, e| {
+        let mut default = a.create_label();
+        a.mov(r8d, edx).unwrap();
+        a.cmp(ecx, 2).unwrap();
+        a.ja(default).unwrap();
+        a.lea(rcx, ptr(*t)).unwrap();
+        a.movsxd(rax, dword_ptr(rcx + r8 * 4)).unwrap();
+        a.add(rax, rcx).unwrap();
+        a.set_label(j).unwrap();
+        a.jmp(rax).unwrap();
+        cases(a, c);
+        a.set_label(&mut default).unwrap();
+        a.ret().unwrap();
+        table_data(a, t, e);
+    });
+    assert_no_table(&b, &lift(&b, &[]));
+}
+
+#[test]
 fn table_in_a_data_region() {
     // The lea points at RDATA, outside the code; the table is read from the
     // data region and never decoded.

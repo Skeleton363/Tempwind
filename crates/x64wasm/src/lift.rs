@@ -319,9 +319,9 @@ fn lift_impl(
     let mut leaders: BTreeSet<u64> = entries.iter().copied().collect();
     let mut work: Vec<u64> = entries.to_vec();
     let mut visited: BTreeSet<u64> = BTreeSet::new();
-    // (cmp, jcc) address pairs: conditional branches and the instruction
-    // before them, candidates for jump-table bounds.
-    let mut branches: Vec<(u64, u64)> = Vec::new();
+    // (before, cmp, jcc) addresses: conditional branches and the two
+    // instructions before them, candidates for jump-table bounds.
+    let mut branches: Vec<(Option<u64>, u64, u64)> = Vec::new();
     let mut bounds: HashMap<u64, Vec<switch::Bound>> = HashMap::new();
     let mut jump_tables: BTreeMap<u64, JumpTable> = BTreeMap::new();
     let mut checked = 0;
@@ -329,6 +329,7 @@ fn lift_impl(
         while let Some(start) = work.pop() {
             let mut pc = start;
             let mut prev = None;
+            let mut prev2 = None;
             while visited.insert(pc) {
                 let Some(decoded) = lifter.decode(pc) else {
                     break;
@@ -337,6 +338,7 @@ fn lift_impl(
                 let after = decoded.after;
                 let (successors, is_branch) = match &decoded.flow {
                     Flow::Next => {
+                        prev2 = prev;
                         prev = Some(pc);
                         pc = next;
                         continue;
@@ -347,7 +349,7 @@ fn lift_impl(
                     ),
                 };
                 if let (true, Some(p)) = (is_branch, prev) {
-                    branches.push((p, pc));
+                    branches.push((prev2, p, pc));
                 }
                 for target in successors.into_iter().chain(after) {
                     if lifter.contains(target) && leaders.insert(target) {
@@ -360,11 +362,12 @@ fn lift_impl(
         // Jump tables behind the bounds found so far; their targets are
         // more code to discover.
         let mut dirty = BTreeSet::new();
-        for &(cmp, jcc) in &branches[checked..] {
+        for &(before, cmp, jcc) in &branches[checked..] {
+            let before = before.and_then(|b| lifter.raw(b));
             if let (Some(cmp), Some(jcc)) = (lifter.raw(cmp), lifter.raw(jcc))
-                && let Some((block, bound)) = switch::bound(&cmp, &jcc)
+                && let Some((block, found)) = switch::bound(before.as_ref(), &cmp, &jcc)
             {
-                bounds.entry(block).or_default().push(bound);
+                bounds.entry(block).or_default().extend(found);
                 dirty.insert(block);
             }
         }

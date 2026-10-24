@@ -1222,7 +1222,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "iced-x86",
+ "libc",
  "serde_json",
+ "testkit",
  "wasmparser 0.262.0",
  "wasmprinter 0.262.0",
  "x64wasm",

@@ -17,7 +17,10 @@
 //! zero extension reads) with an unsigned condition; the table is read from
 //! the image, and every target must lie in executable code.
 
-use iced_x86::{Code, ConditionCode, FlowControl, Instruction, Mnemonic, OpKind, Register};
+use iced_x86::{
+    Code, ConditionCode, FlowControl, Instruction, InstructionInfoFactory, InstructionInfoOptions,
+    Mnemonic, OpAccess, OpKind, Register,
+};
 
 /// Largest table accepted.
 pub(crate) const MAX_ENTRIES: u64 = 4096;
@@ -66,8 +69,14 @@ pub(crate) struct Bound {
 
 /// `cmp op, imm` directly followed by an unsigned conditional branch: the
 /// address of the block the branch admits only in-range indices to, and the
-/// bound.
-pub(crate) fn bound(cmp: &Instruction, jcc: &Instruction) -> Option<(u64, Bound)> {
+/// bounds. `before` is the instruction just before the `cmp`: a register
+/// copy of the compared register (`mov r8d, edx; cmp edx, 9`) is bounded
+/// too.
+pub(crate) fn bound(
+    before: Option<&Instruction>,
+    cmp: &Instruction,
+    jcc: &Instruction,
+) -> Option<(u64, Vec<Bound>)> {
     if cmp.mnemonic() != Mnemonic::Cmp
         || cmp.op_count() != 2
         || jcc.ip() != cmp.next_ip()
@@ -104,9 +113,25 @@ pub(crate) fn bound(cmp: &Instruction, jcc: &Instruction) -> Option<(u64, Bound)
         ConditionCode::b => (taken, imm),
         _ => return None,
     };
-    (1..=MAX_ENTRIES)
-        .contains(&count)
-        .then_some((block, Bound { operand, count }))
+    if !(1..=MAX_ENTRIES).contains(&count) {
+        return None;
+    }
+    let mut bounds = vec![Bound { operand, count }];
+    if let Some(b) = before
+        && b.next_ip() == cmp.ip()
+        && matches!(
+            b.code(),
+            Code::Mov_r32_rm32 | Code::Mov_rm32_r32 | Code::Mov_r64_rm64 | Code::Mov_rm64_r64
+        )
+        && let (Some(dst), Some(src)) = (reg(b, 0), reg(b, 1))
+        && Operand::Reg(src.full_register()) == operand
+    {
+        bounds.push(Bound {
+            operand: Operand::Reg(dst.full_register()),
+            count,
+        });
+    }
+    Some((block, bounds))
 }
 
 /// A table block that matched the pattern.
@@ -118,6 +143,16 @@ pub(crate) struct Candidate {
     pub table: u64,
     /// What the index was loaded from: the operand a bound must check.
     pub index_source: Operand,
+}
+
+/// `insn` may write (part of) the 64-bit register `full`.
+fn writes(insn: &Instruction, full: Register) -> bool {
+    let mut factory = InstructionInfoFactory::new();
+    let info = factory.info_options(insn, InstructionInfoOptions::NO_MEMORY_USAGE);
+    info.used_registers().iter().any(|u| {
+        u.register().full_register() == full
+            && !matches!(u.access(), OpAccess::Read | OpAccess::CondRead)
+    })
 }
 
 fn reg(insn: &Instruction, i: u32) -> Option<Register> {
@@ -178,6 +213,10 @@ pub(crate) fn match_block(insns: &[Instruction]) -> Option<Candidate> {
             Some(r) if extends && r.full_register() == index => {
                 index_source = operand(insn, 1)?;
             }
+            // Anything else must leave the base and the index alone.
+            _ if insn.flow_control() == FlowControl::Next
+                && !writes(insn, base)
+                && !writes(insn, index) => {}
             _ => return None,
         }
     }
