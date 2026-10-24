@@ -10,11 +10,11 @@ use std::collections::HashMap;
 
 use iced_x86::code_asm::*;
 use iced_x86::{Code, Decoder, DecoderOptions, Formatter, Instruction, IntelFormatter, Register};
+use testkit::host::Module;
 use testkit::host::{Host, Machine};
 use testkit::spike::native::{
     SANDBOX_DATA, SANDBOX_DATA_SIZE, SANDBOX_MEMORY_BYTES, SANDBOX_SNIPPET, with_sandbox,
 };
-use wasmtime::Module;
 use x64wasm::abi::{self, CpuState, flags};
 use x64wasm::{CodeRegion, Options};
 
