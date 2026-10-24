@@ -302,3 +302,60 @@ fn host_function_stops_execution() {
         "the return address stays pushed"
     );
 }
+
+#[test]
+fn run_time_translation_links_with_the_image() {
+    // AOT: `main` calls X indirectly; X isn't an entry, so it isn't
+    // translated ahead of time. X calls the AOT function `g`.
+    const X: u64 = A + 0x200;
+    let host = Host::new().unwrap();
+    let bytes = code(
+        A,
+        &[
+            (A, &|a| {
+                a.mov(eax, 1).unwrap();
+                a.mov(rcx, X).unwrap();
+                a.call(rcx).unwrap();
+                a.add(rax, 1).unwrap();
+                a.ret().unwrap();
+            }),
+            (A_G, &|a| {
+                a.add(rax, 100).unwrap();
+                a.ret().unwrap();
+            }),
+            (X, &|a| {
+                a.add(rax, 5).unwrap();
+                a.call(A_G).unwrap();
+                a.ret().unwrap();
+            }),
+        ],
+    );
+    let region = CodeRegion {
+        base: A,
+        bytes: &bytes,
+    };
+    let aot = x64wasm::translate(region, &[A, A_G], &Options::default()).unwrap();
+    assert!(!aot.blocks.contains(&X));
+    let aot_module = host.compile(&aot.wasm).unwrap();
+    let (mut m, state) = machine(&host, &[(A, &bytes)], A);
+    m.link(&aot_module).unwrap();
+    let out = enter(&mut m, &aot_module, &state);
+    assert_eq!((out.exit, out.rip), (abi::EXIT_LEFT_CODE, X));
+
+    // Translate from X with the linked blocks as `known`, as the runtime does.
+    let known = aot.blocks.clone();
+    let rt = x64wasm::translate_regions(&[region], &[X], &known, &Options::default()).unwrap();
+    assert!(
+        rt.blocks.iter().all(|b| !known.contains(b)),
+        "nothing twice"
+    );
+    assert!(rt.blocks.contains(&X));
+    m.link(&host.compile(&rt.wasm).unwrap()).unwrap();
+    let out = enter(&mut m, &aot_module, &CpuState { exit: 0, ..out });
+    assert_eq!(
+        (out.exit, out.rip),
+        (abi::EXIT_LEFT_CODE, abi::SENTINEL_RET)
+    );
+    assert_eq!(out.gpr[RAX], 107);
+    assert_eq!(out.gpr[RSP], STACK_TOP);
+}

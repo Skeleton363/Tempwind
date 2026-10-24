@@ -1222,8 +1222,16 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "serde_json",
  "wasmparser 0.262.0",
  "wasmprinter 0.262.0",
+ "x64wasm",
+]
+
+[[package]]
+name = "x64wasm-rt"
+version = "0.0.0"
+dependencies = [
  "x64wasm",
 ]
 

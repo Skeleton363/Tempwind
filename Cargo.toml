@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/x64wasm", "crates/x64wasm-cli", "crates/testkit"]
+members = ["crates/x64wasm", "crates/x64wasm-cli", "crates/x64wasm-rt", "crates/testkit"]
 
 [workspace.package]
 version = "0.0.0"
@@ -33,3 +33,9 @@ todo = "warn"
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# The run-time translator (x64wasm_rt.wasm) is downloaded by the browser:
+# small over fast. Overrides apply to the wasm32 build and the native rlib.
+[profile.release.package.x64wasm-rt]
+opt-level = "s"
+strip = true
