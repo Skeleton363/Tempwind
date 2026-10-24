@@ -209,7 +209,8 @@ Every translated block appears exactly once.
 
 **Semantics:**
 - It translates, with `Options::default()`, what is reachable from `entry` inside `[code_base, code_base + code_len)`.
-- An address in `known` counts as outside the code: a transfer to it is a lookup transfer, and nothing is translated twice.
+- An address in `known` counts as outside the code: a transfer to it, or a fall-through into it, is a lookup transfer, and nothing is translated twice.
+- Status 1 (error) when `entry` is itself in `known`, `flags` is not 0, `known` isn't sorted, the code range wraps past the end of the address space, or translation fails.
 
 ## Test hosts
 

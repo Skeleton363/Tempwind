@@ -70,7 +70,9 @@ u64 values are `"0x…"` hex strings, as in the spike manifest; addresses are vi
 }
 ```
 
-- `tls`, when the image has a TLS directory: `{ "startOfRawData", "endOfRawData", "addressOfIndex", "sizeOfZeroFill", "callbacks": [VA, …] }`.
+- `tls`, when the image has a TLS directory: `{ "startOfRawData", "endOfRawData", "addressOfIndex", "sizeOfZeroFill", "callbacks": [VA, …] }`, all `"0x…"` strings.
+- A section's `virtualSize` is its header's VirtualSize, or SizeOfRawData when that is 0; `fileSize` is SizeOfRawData.
+- `hasRelocations` is true when the relocation directory is non-empty and the image isn't marked `IMAGE_FILE_RELOCS_STRIPPED`.
 - An import by ordinal has `"name": null` and the ordinal as a number.
 - `sha256` is the SHA-256 of the PE file. The runtime refuses a plan whose `sha256` doesn't match the file it was given.
 
