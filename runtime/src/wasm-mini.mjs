@@ -56,6 +56,71 @@ export function buildModule({ memory, funcs }) {
   return new Uint8Array(bytes);
 }
 
+// ABI v3 module shape (docs/design/abi.md): imports env.memory, env.table,
+// env.table_base, env.lookup, env.depth; exports run; chunk i at table_base + i;
+// an `x64wasm.blocks` section. Chunk bodies are raw instruction bytes.
+
+/** The bytes of an `x64wasm.blocks` section payload. */
+export function blocksPayload(chunks, blocks, { version = 1, reserved = 0 } = {}) {
+  const out = new Uint8Array(16 + 16 * blocks.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, version, true);
+  dv.setUint32(4, chunks, true);
+  dv.setUint32(8, blocks.length, true);
+  dv.setUint32(12, reserved, true);
+  blocks.forEach((b, i) => {
+    dv.setBigUint64(16 + 16 * i, BigInt(b.addr), true);
+    dv.setUint32(24 + 16 * i, b.chunk, true);
+    dv.setUint32(28 + 16 * i, b.entry, true);
+  });
+  return out;
+}
+
+/**
+ * A module importing env.memory/table/table_base/lookup/depth, exporting
+ * run, with `chunks` chunk functions (params: state i64, entry i32, ret i64;
+ * result i32) placed at table_base + i.
+ * @param {{run: number[], chunks: number[][], blocks: {addr, chunk, entry}[],
+ *   locals?: {run?: number[], chunk?: number[]}, blocksSections?: number,
+ *   memory?: {min: number, max?: number, shared?: boolean}}} m
+ */
+export function v3Module({ run, chunks, blocks, locals = {}, blocksSections = 1, memory = { min: 1 } }) {
+  const types = [
+    [0x60, 1, 0x7e, 1, 0x7f],
+    [0x60, 3, 0x7e, 0x7f, 0x7e, 1, 0x7f],
+  ];
+  const imports = [
+    [...str('env'), ...str('memory'), 0x02, ...limits64(memory)],
+    [...str('env'), ...str('table'), 0x01, 0x70, 0x00, 0],
+    [...str('env'), ...str('table_base'), 0x03, 0x7f, 0],
+    [...str('env'), ...str('lookup'), 0x03, 0x7e, 0],
+    [...str('env'), ...str('depth'), 0x03, 0x7f, 1],
+  ];
+  const funcs = [0, ...chunks.map(() => 1)];
+  const elem = chunks.length
+    ? [section(9, vec([[0x00, 0x23, 0x00, 0x0b, ...vec(chunks.map((_, i) => uleb(1 + i)))]]))]
+    : [];
+  const body = (code, loc = []) => {
+    const b = [...vec(loc.map((t) => [1, t])), ...code, 0x0b];
+    return [...uleb(b.length), ...b];
+  };
+  const custom = [];
+  for (let i = 0; i < blocksSections; i++) {
+    const payload = [...str('x64wasm.blocks'), ...blocksPayload(chunks.length, blocks)];
+    custom.push(section(0, payload));
+  }
+  return new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ...section(1, vec(types)),
+    ...section(2, vec(imports)),
+    ...section(3, vec(funcs.map((t) => uleb(t)))),
+    ...section(7, vec([[...str('run'), 0x00, 0]])),
+    ...elem.flat(),
+    ...section(10, vec([body(run, locals.run), ...chunks.map((c) => body(c, locals.chunk))])),
+    ...custom.flat(),
+  ]);
+}
+
 // Opcodes (memory ops take an i64 address under memory64).
 export const op = {
   localGet: (i) => [0x20, ...uleb(i)],
@@ -70,8 +135,8 @@ export const op = {
 };
 
 /**
- * Self-test module following the ABI: run(state) sets RAX=0x1234_5678_9abc_def0,
- * stores rip=SENTINEL, stores exit=1 and returns 1.
+ * Self-test module with the ABI v3 shape (no chunks, no blocks): run(state)
+ * sets RAX=0x1234_5678_9abc_def0, stores rip=SENTINEL, stores exit=1 and returns 1.
  */
 export function selfTestModule({ shared = false } = {}) {
   const body = [
@@ -80,9 +145,9 @@ export function selfTestModule({ shared = false } = {}) {
     ...op.localGet(0), ...op.i32Const(1), ...op.i32Store(0x090),
     ...op.i32Const(1),
   ];
-  return buildModule({
+  return v3Module({
     memory: shared ? { min: 1, max: 262144, shared: true } : { min: 1 },
-    funcs: [{ name: 'run', params: [T.i64], results: [T.i32], body }],
+    run: body, chunks: [], blocks: [],
   });
 }
 

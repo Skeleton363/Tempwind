@@ -1,11 +1,14 @@
-// runCase: run one spike-manifest case (docs/design/abi.md). Works in Node,
-// a browser page and a worker: it uses only standard WebAssembly APIs.
+// runCase: run one spike-manifest case (docs/design/abi.md, "Test hosts").
+// Works in Node, a browser page and a worker: it uses only standard
+// WebAssembly APIs. Each case is one ABI v3 module linked on its own: the
+// lookup header and slots sit in pages added after the case's memoryBytes.
 
 import {
-  GPR_NAMES, STATE_GPR, STATE_RIP, STATE_RFLAGS, STATE_EXIT, STATE_SIZE,
-  MEMORY_MODULE, MEMORY_NAME, RUN_EXPORT,
+  GPR_NAMES, STATE_GPR, STATE_RIP, STATE_RFLAGS, STATE_EXIT, PAGE_SIZE,
+  MEMORY_MODULE, TABLE_NAME, LOOKUP_HEADER_SIZE, LOOKUP_SLOT_SIZE,
 } from './abi.mjs';
 import { createMemory64, pagesFor } from './memory.mjs';
+import { Linker, moduleBlocks } from './link.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, v).toString(16);
 const big = (s) => BigInt(s);
@@ -22,6 +25,42 @@ export function bytesToHex(b) {
   return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
+const MIN_CASE_SLOTS = 16;
+
+/**
+ * Where a test host puts the lookup table of a module with `blocks` blocks:
+ * the header at the first page boundary at or after `memoryBytes`, then the
+ * slots (a power of two, at least twice the blocks), and the pages needed.
+ */
+export function caseLookupLayout(memoryBytes, blocks) {
+  const page = BigInt(PAGE_SIZE);
+  const header = (BigInt(memoryBytes) + page - 1n) / page * page;
+  const slotsAddr = header + BigInt(LOOKUP_HEADER_SIZE) * 2n;
+  let slots = MIN_CASE_SLOTS;
+  while (slots < 2 * blocks) slots *= 2;
+  const end = slotsAddr + BigInt(slots * LOOKUP_SLOT_SIZE);
+  return { header, slotsAddr, slots, pages: Math.max(1, pagesFor(end)) };
+}
+
+/** Requires the v3 import shape, so a stale v2 module fails with a clear message. */
+export function assertV3(module) {
+  const imports = WebAssembly.Module.imports(module);
+  if (!imports.some((i) => i.module === MEMORY_MODULE && i.name === TABLE_NAME && i.kind === 'table')) {
+    throw new Error('module does not import env.table: not an ABI v3 module (regenerate it, e.g. cargo run -p testkit --release -- spike --out target/spike)');
+  }
+}
+
+/**
+ * Links one case's module alone (abi.md, "Test hosts"): table, globals,
+ * lookup table after the case memory. Table slot 0 (host functions) stays empty.
+ * @returns {Promise<{linker: Linker, run: Function}>}
+ */
+export async function linkCase(module, memory, layout) {
+  const linker = new Linker({ memory, header: layout.header, slotsAddr: layout.slotsAddr, slots: layout.slots });
+  const { run } = await linker.link(module);
+  return { linker, run };
+}
+
 /**
  * @param {BufferSource} wasmBytes
  * @param {object} spec a manifest case (name, memoryBytes, state, init, expect)
@@ -30,8 +69,11 @@ export function bytesToHex(b) {
  */
 export async function runCase(wasmBytes, spec, opts = {}) {
   const shared = !!opts.shared;
+  const module = await WebAssembly.compile(wasmBytes);
+  assertV3(module);
+  const layout = caseLookupLayout(big(spec.memoryBytes), moduleBlocks(module).blocks.length);
   const { memory, form } = createMemory64({
-    initialPages: Math.max(1, pagesFor(big(spec.memoryBytes))),
+    initialPages: layout.pages,
     maximumPages: shared ? opts.maximumPages ?? 262144 : opts.maximumPages,
     shared,
   });
@@ -53,12 +95,7 @@ export async function runCase(wasmBytes, spec, opts = {}) {
   if (init.rip !== undefined) dv.setBigUint64(stateAddr + STATE_RIP, big(init.rip), true);
   if (init.rflags !== undefined) dv.setBigUint64(stateAddr + STATE_RFLAGS, big(init.rflags), true);
 
-  const module = await WebAssembly.compile(wasmBytes);
-  const instance = await WebAssembly.instantiate(module, {
-    [MEMORY_MODULE]: { [MEMORY_NAME]: memory },
-  });
-  const run = instance.exports[RUN_EXPORT];
-  if (typeof run !== 'function') throw new Error(`module lacks export "${RUN_EXPORT}"`);
+  const { run } = await linkCase(module, memory, layout);
   const exit = run(BigInt(stateAddr));
 
   // Read back from the (possibly regrown) buffer.
