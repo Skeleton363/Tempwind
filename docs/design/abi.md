@@ -144,7 +144,7 @@ All fields are little-endian. Size: `0x400` bytes. It must be 16-byte aligned; 6
 | `0x206` | 2 | x87 FSW | TOP in bits 11-13. `fninit` resets it from M3; M4 uses it. |
 | `0x208` | 2 | x87 tag word (full, 2 bits per register) | `fninit` sets it to empty (0xFFFF) from M3; M4 uses it. |
 | `0x20a` | 6 | reserved, zero | |
-| `0x210` | 8 × 16 | x87 physical registers R0-R7, 80 bits each in a 16-byte slot | Reserved. Physical order, not ST(i) order: ST(i) = R[(TOP + i) mod 8]. |
+| `0x210` | 8 × 16 | x87 physical registers R0-R7, 80 bits each in a 16-byte slot | Physical order, not ST(i) order: ST(i) = R[(TOP + i) mod 8]. From M3, translated code preserves them (`fninit` leaves their contents; replay compares them); M4 uses them. |
 | `0x290` | 0x170 | reserved, zero | Room for YMM upper halves and other state later. |
 
 Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
