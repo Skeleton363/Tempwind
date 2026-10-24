@@ -2,9 +2,10 @@
 // cases of `testkit spike --bench` (target/bench/translator/manifest.json,
 // the spike manifest format plus `options` and `nativeMs`). Plain ES module;
 // only standard WebAssembly APIs.
-import { GPR_NAMES, STATE_GPR, STATE_RIP, STATE_RFLAGS, MEMORY_MODULE, MEMORY_NAME, RUN_EXPORT } from '../../../runtime/src/abi.mjs';
-import { createMemory64, pagesFor } from '../../../runtime/src/memory.mjs';
-import { hexToBytes } from '../../../runtime/src/run.mjs';
+import { GPR_NAMES, STATE_GPR, STATE_RIP, STATE_RFLAGS } from '../../../runtime/src/abi.mjs';
+import { createMemory64 } from '../../../runtime/src/memory.mjs';
+import { moduleBlockCount } from '../../../runtime/src/link.mjs';
+import { hexToBytes, caseLookupLayout, assertV3, linkCase } from '../../../runtime/src/run.mjs';
 
 const now = () => performance.now();
 let uniq = 0;
@@ -23,18 +24,23 @@ export function freshBytes(bytes) {
   return out;
 }
 
-/** A guest machine for one case: memory, initial image, `run`. */
+/**
+ * A guest machine for one case: memory (with the lookup table in pages after
+ * memoryBytes, as run.mjs places it), initial image, `run`. ABI v3 modules only.
+ */
 export class Machine {
-  constructor(spec, memory) {
+  constructor(spec, module) {
+    assertV3(module);
     this.spec = spec;
-    this.memory = memory ?? createMemory64({ initialPages: Math.max(1, pagesFor(BigInt(spec.memoryBytes))) }).memory;
+    this.layout = caseLookupLayout(BigInt(spec.memoryBytes), moduleBlockCount(module));
+    this.memory = createMemory64({ initialPages: this.layout.pages }).memory;
     this.state = Number(BigInt(spec.state));
     this.image = (spec.init.mem ?? []).map((m) => [Number(BigInt(m.addr)), hexToBytes(m.hex)]);
   }
 
+  /** Links the module (table, globals, lookup slots) and takes its `run`. */
   async instantiate(module) {
-    const instance = await WebAssembly.instantiate(module, { [MEMORY_MODULE]: { [MEMORY_NAME]: this.memory } });
-    this.run = instance.exports[RUN_EXPORT];
+    ({ run: this.run } = await linkCase(module, this.memory, this.layout));
   }
 
   /** Writes the initial memory and state; `regs` overrides registers. */
@@ -81,11 +87,12 @@ export class Machine {
  * here is below Chromium's 8 MB limit for synchronous compiles.
  */
 export async function timeCase(spec, bytes, runs) {
-  const m = new Machine(spec);
   const t0 = now();
   const module = new WebAssembly.Module(freshBytes(bytes));
   const t1 = now();
-  await m.instantiate(module);
+  const m = new Machine(spec, module); // memory creation is not timed
+  const t1b = now();
+  await m.instantiate(module); // linking: table, globals, lookup insertion
   const t2 = now();
   m.reset();
   const first = m.go();
@@ -97,7 +104,7 @@ export async function timeCase(spec, bytes, runs) {
     m.check(r);
     best = Math.min(best, r.ms);
   }
-  return { compileMs: t1 - t0, instantiateMs: t2 - t1, firstRunMs: first.ms, bestRunMs: best };
+  return { compileMs: t1 - t0, instantiateMs: t2 - t1b, firstRunMs: first.ms, bestRunMs: best };
 }
 
 /**
@@ -107,7 +114,7 @@ export async function timeCase(spec, bytes, runs) {
  */
 export async function deepest(spec, bytes, hi = 1 << 20) {
   const module = new WebAssembly.Module(bytes);
-  const m = new Machine(spec);
+  const m = new Machine(spec, module);
   await m.instantiate(module);
   const ok = (n) => {
     m.reset({ rcx: '0x' + n.toString(16) });

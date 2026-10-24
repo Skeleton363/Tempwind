@@ -6,9 +6,12 @@
 pub mod abi;
 pub mod emit;
 pub mod func;
+pub mod image;
 pub mod ir;
 pub mod lift;
+pub mod link;
 pub mod pe;
+mod switch;
 
 use std::fmt;
 
@@ -98,6 +101,13 @@ pub struct Translation {
     pub ir: String,
     /// Number of guest instructions translated.
     pub guest_instructions: usize,
+    /// Jump tables recovered while decoding.
+    pub jump_tables: Vec<ir::JumpTable>,
+    /// Indirect jumps seen ([`ir::Program::indirect_jumps`]).
+    pub indirect_jumps: usize,
+    /// Addresses of the instructions that translate to
+    /// [`abi::EXIT_UNSUPPORTED`] exits, sorted.
+    pub unsupported: Vec<u64>,
 }
 
 /// Translation errors.
@@ -109,6 +119,8 @@ pub enum Error {
     Unimplemented(&'static str),
     /// No entry points were given.
     NoEntries,
+    /// An entry point is in the `known` set (it already has a block).
+    EntryKnown(u64),
 }
 
 impl fmt::Display for Error {
@@ -119,6 +131,7 @@ impl fmt::Display for Error {
             }
             Error::Unimplemented(what) => write!(f, "not implemented: {what}"),
             Error::NoEntries => write!(f, "no entry points"),
+            Error::EntryKnown(addr) => write!(f, "entry {addr:#x} already has a block"),
         }
     }
 }
@@ -146,6 +159,37 @@ pub fn translate_without_dump(
     translate_impl(region, entries, opts, false)
 }
 
+/// Translates the code reachable from `entries` inside several regions (an
+/// image's executable sections), skipping the IR dump. Addresses in `known`
+/// (sorted ascending) are treated as outside the code: they are never
+/// decoded, and transfers to them probe the lookup table.
+pub fn translate_regions(
+    regions: &[CodeRegion<'_>],
+    entries: &[u64],
+    known: &[u64],
+    opts: &Options,
+) -> Result<Translation, Error> {
+    if entries.is_empty() {
+        return Err(Error::NoEntries);
+    }
+    let prog = lift::lift_regions(regions, known, entries, false)?;
+    Ok(finish(prog, entries, opts, false))
+}
+
+/// Like [`translate_regions`], over a [`lift::Source`], whose `data` regions
+/// jump tables are read from (an image's sections).
+pub fn translate_source(
+    src: &lift::Source<'_>,
+    entries: &[u64],
+    opts: &Options,
+) -> Result<Translation, Error> {
+    if entries.is_empty() {
+        return Err(Error::NoEntries);
+    }
+    let prog = lift::lift_source(src, entries, false)?;
+    Ok(finish(prog, entries, opts, false))
+}
+
 /// Decodes and lowers into the IR, with flag liveness applied.
 pub fn lift(region: CodeRegion<'_>, entries: &[u64]) -> Result<ir::Program, Error> {
     let mut prog = lift::lift(region, entries, true)?;
@@ -162,7 +206,11 @@ fn translate_impl(
     if entries.is_empty() {
         return Err(Error::NoEntries);
     }
-    let mut prog = lift::lift(region, entries, dump)?;
+    let prog = lift::lift(region, entries, dump)?;
+    Ok(finish(prog, entries, opts, dump))
+}
+
+fn finish(mut prog: ir::Program, entries: &[u64], opts: &Options, dump: bool) -> Translation {
     prog.analyze_flags();
     let part = func::partition(&prog, entries, opts);
     let wasm = emit::emit(&prog, &part, opts);
@@ -185,7 +233,7 @@ fn translate_impl(
                 .collect(),
         })
         .collect();
-    Ok(Translation {
+    Translation {
         wasm,
         blocks: prog.blocks.iter().map(|b| b.addr).collect(),
         functions,
@@ -195,7 +243,20 @@ fn translate_impl(
             String::new()
         },
         guest_instructions: prog.insn_count(),
-    })
+        unsupported: prog
+            .blocks
+            .iter()
+            .filter_map(|b| match b.term {
+                ir::Term::Exit {
+                    reason: abi::EXIT_UNSUPPORTED,
+                    rip,
+                } => Some(rip),
+                _ => None,
+            })
+            .collect(),
+        indirect_jumps: prog.indirect_jumps,
+        jump_tables: prog.jump_tables,
+    }
 }
 
 #[cfg(test)]

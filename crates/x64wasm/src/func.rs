@@ -18,7 +18,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt::Write as _;
 
 use crate::Options;
-use crate::ir::{CallTarget, Program, Term};
+use crate::ir::{Block, CallTarget, Program, Term};
 
 /// A guest function: an entry and the chunks holding its blocks.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,15 +95,16 @@ impl Partition {
 }
 
 /// Blocks a block continues to inside its function: jump and branch
-/// targets and a call's return site (never a call target).
-fn local_successors(term: &Term) -> impl Iterator<Item = u64> {
-    let (a, b) = match *term {
+/// targets, a call's return site (never a call target), and the code after
+/// an unsupported instruction.
+fn local_successors(block: &Block) -> impl Iterator<Item = u64> {
+    let (a, b) = match block.term {
         Term::Jump(t) => (Some(t), None),
         Term::Branch {
             taken, fallthrough, ..
         } => (Some(taken), Some(fallthrough)),
         Term::Call { ret, .. } => (Some(ret), None),
-        Term::Indirect(_) | Term::Ret(_) | Term::Exit { .. } => (None, None),
+        Term::Indirect(_) | Term::Ret(_) | Term::Exit { .. } => (block.after_exit, None),
     };
     a.into_iter().chain(b)
 }
@@ -140,7 +141,7 @@ pub fn partition(prog: &Program, entries: &[u64], opts: &Options) -> Partition {
         owner[start] = Some(f);
         let mut queue = VecDeque::from([start]);
         while let Some(b) = queue.pop_front() {
-            for t in local_successors(&prog.blocks[b].term) {
+            for t in local_successors(&prog.blocks[b]) {
                 if let Some(&j) = index.get(&t)
                     && owner[j].is_none()
                     && !starts.contains(&j)
@@ -257,7 +258,7 @@ fn sccs(prog: &Program, index: &HashMap<u64, usize>, blocks: &[usize]) -> Vec<Ve
     let succ: Vec<Vec<usize>> = blocks
         .iter()
         .map(|&b| {
-            local_successors(&prog.blocks[b].term)
+            local_successors(&prog.blocks[b])
                 .filter_map(|t| index.get(&t).and_then(|j| local.get(j)).copied())
                 .collect()
         })
@@ -321,7 +322,7 @@ fn sccs(prog: &Program, index: &HashMap<u64, usize>, blocks: &[usize]) -> Vec<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Block, Cond, Insn, Value};
+    use crate::ir::{Cond, Insn, Value};
 
     /// A program of blocks with `insns` placeholder instructions each.
     fn prog(blocks: &[(u64, usize, Term)]) -> Program {
@@ -339,9 +340,13 @@ mod tests {
                     })
                     .collect(),
                 term: term.clone(),
+                after_exit: None,
             })
             .collect();
-        Program { blocks }
+        Program {
+            blocks,
+            ..Program::default()
+        }
     }
 
     fn opts(max_function_insns: usize, max_chunk_insns: usize) -> Options {

@@ -28,3 +28,8 @@ node tests/bench/translator/bench.mjs --browser [PATH]
 It compiles with the synchronous `WebAssembly.Module` constructor: under `--no-wasm-lazy-compilation`, Node doesn't keep its event loop alive for an asynchronous compile, so `await WebAssembly.compile` never settles. A fresh custom section in every copy keeps V8 from reusing a cached module.
 
 `--browser` runs the recursion-depth probes in headless Chromium, in the page and in a module Worker. V8 flags given to Chromium with `--js-flags` did not take effect in Playwright's headless shell, so the browser numbers are for the default configuration only.
+
+## Linking and whole images
+
+- `node tests/bench/translator/link.mjs [--runs N]`: linking speed on the bench regions (`target/bench/translator`): validating `x64wasm.blocks`, the per-key `insert()` API, and a whole `link` (instantiate + insert every block), with blocks/s.
+- `node tests/bench/translator/images.mjs [--runs N] [--configs default,eager,turbofan] [--no-translate] [EXE ...]`: runs `translate-pe --entries all` on each image (default `target/targets/7zz.exe` and `coremark.exe`, fetched with `scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets`) into `target/bench/images`, then per V8 configuration (child process): wasm bytes, chunks, blocks, synchronous compile time, and the link phase of `Process.load` (linker, thunks, instantiate, block insertion). Prints a Markdown table of medians. `--no-translate` reuses the existing translations.

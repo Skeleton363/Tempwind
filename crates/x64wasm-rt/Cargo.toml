@@ -1,0 +1,19 @@
+[package]
+name = "x64wasm-rt"
+description = "The x64wasm translator built for wasm32 (x64wasm_rt.wasm): run-time translation inside the JS runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "x64wasm_rt"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+x64wasm.workspace = true
+
+[lints]
+workspace = true

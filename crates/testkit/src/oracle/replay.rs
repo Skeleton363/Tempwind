@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
 
+use crate::host::Module;
 use anyhow::{Context, Result};
-use wasmtime::Module;
 use x64wasm::abi::{CpuState, EXIT_LEFT_CODE, EXIT_UNSUPPORTED, GPR_NAMES, flags};
 use x64wasm::{CodeRegion, Options};
 

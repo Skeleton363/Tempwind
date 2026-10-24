@@ -3,7 +3,7 @@
 //! Execution tests live in `crates/testkit/tests/spike*.rs` (x64wasm can't
 //! dev-depend on testkit without a cycle).
 
-use wasmparser::{Payload, TypeRef, Validator, WasmFeatures};
+use wasmparser::{Payload, TypeRef, ValType, Validator, WasmFeatures};
 use x64wasm::ir::{Op, Term};
 use x64wasm::{CodeRegion, Options, abi};
 
@@ -34,7 +34,7 @@ fn translate(bytes: &[u8], base: u64, opts: &Options) -> x64wasm::Translation {
 fn module_shape_follows_the_abi() {
     for shared in [false, true] {
         let t = translate(
-            &hex(SUM_LOOP),
+            &hex(CALL_LEA),
             0x1_4000_1000,
             &Options {
                 shared_memory: shared,
@@ -42,25 +42,41 @@ fn module_shape_follows_the_abi() {
             },
         );
         validate(&t.wasm);
-        let mut saw_memory = false;
+        let mut imports = Vec::new();
         let mut saw_run = false;
+        let mut saw_elements = false;
+        let mut blocks = None;
         for payload in wasmparser::Parser::new(0).parse_all(&t.wasm) {
             match payload.unwrap() {
-                Payload::ImportSection(imports) => {
-                    for import in imports.into_imports() {
+                Payload::ImportSection(section) => {
+                    for import in section.into_imports() {
                         let import = import.unwrap();
-                        assert_eq!(
-                            (import.module, import.name),
-                            (abi::MEMORY_MODULE, abi::MEMORY_NAME)
-                        );
-                        let TypeRef::Memory(m) = import.ty else {
-                            panic!("only the memory is imported");
-                        };
-                        assert!(m.memory64);
-                        assert_eq!(m.shared, shared);
-                        assert_eq!(m.initial, 1);
-                        assert_eq!(m.maximum, shared.then_some(abi::MAX_MEMORY_PAGES));
-                        saw_memory = true;
+                        assert_eq!(import.module, "env");
+                        imports.push(import.name.to_string());
+                        match (import.name, import.ty) {
+                            ("memory", TypeRef::Memory(m)) => {
+                                assert!(m.memory64);
+                                assert_eq!(m.shared, shared);
+                                assert_eq!(m.initial, 1);
+                                assert_eq!(m.maximum, shared.then_some(abi::MAX_MEMORY_PAGES));
+                            }
+                            ("table", TypeRef::Table(tt)) => {
+                                assert_eq!(tt.element_type, wasmparser::RefType::FUNCREF);
+                                assert!(!tt.table64);
+                                assert_eq!(tt.initial, 0);
+                                assert_eq!(tt.maximum, None);
+                            }
+                            ("table_base", TypeRef::Global(g)) => {
+                                assert_eq!((g.content_type, g.mutable), (ValType::I32, false));
+                            }
+                            ("lookup", TypeRef::Global(g)) => {
+                                assert_eq!((g.content_type, g.mutable), (ValType::I64, false));
+                            }
+                            ("depth", TypeRef::Global(g)) => {
+                                assert_eq!((g.content_type, g.mutable), (ValType::I32, true));
+                            }
+                            other => panic!("unexpected import {other:?}"),
+                        }
                     }
                 }
                 Payload::ExportSection(exports) => {
@@ -68,10 +84,65 @@ fn module_shape_follows_the_abi() {
                     assert_eq!(names, [abi::RUN_EXPORT]);
                     saw_run = true;
                 }
+                Payload::TableSection(_) | Payload::GlobalSection(_) => {
+                    panic!("v3 modules define no tables or globals")
+                }
+                Payload::ElementSection(section) => {
+                    for element in section {
+                        let element = element.unwrap();
+                        let wasmparser::ElementKind::Active {
+                            table_index,
+                            offset_expr,
+                        } = element.kind
+                        else {
+                            panic!("active segment");
+                        };
+                        assert!(matches!(table_index, None | Some(0)));
+                        let ops: Vec<_> = offset_expr
+                            .get_operators_reader()
+                            .into_iter()
+                            .map(|o| o.unwrap())
+                            .collect();
+                        assert!(matches!(
+                            ops[..],
+                            [
+                                wasmparser::Operator::GlobalGet { global_index: 0 },
+                                wasmparser::Operator::End
+                            ]
+                        ));
+                        let wasmparser::ElementItems::Functions(funcs) = element.items else {
+                            panic!("function indices");
+                        };
+                        let funcs: Vec<u32> = funcs.into_iter().map(|f| f.unwrap()).collect();
+                        assert_eq!(funcs, [3, 4], "chunk i is function 3 + i");
+                        saw_elements = true;
+                    }
+                }
+                Payload::CustomSection(c) if c.name() == abi::BLOCKS_SECTION => {
+                    blocks = Some(x64wasm::link::decode_blocks(c.data()).unwrap());
+                }
                 _ => {}
             }
         }
-        assert!(saw_memory && saw_run);
+        assert_eq!(
+            imports,
+            ["memory", "table", "table_base", "lookup", "depth"]
+        );
+        assert!(saw_run && saw_elements);
+        // Two functions (the entry and f), one chunk each; every block once.
+        let blocks = blocks.expect("x64wasm.blocks section");
+        assert_eq!(blocks, x64wasm::link::read_blocks(&t.wasm).unwrap());
+        assert_eq!(blocks.chunks, 2);
+        let addrs: Vec<u64> = blocks.blocks.iter().map(|b| b.addr).collect();
+        assert_eq!(addrs, t.blocks);
+        for f in &t.functions {
+            for c in &f.chunks {
+                for (entry, addr) in c.blocks.iter().enumerate() {
+                    let b = blocks.blocks.iter().find(|b| b.addr == *addr).unwrap();
+                    assert_eq!((b.chunk, b.entry), (c.wasm_index - 3, entry as u32));
+                }
+            }
+        }
     }
 }
 
@@ -113,8 +184,10 @@ fn functions_chunks_and_names() {
     let wat = wasmprinter::print_bytes(&t.wasm).unwrap();
     assert!(wat.contains("(func $fn_0x1000 (;3;) (type 2)"));
     assert!(wat.contains("(func $fn_0x100b (;4;) (type 2)"));
-    assert!(wat.contains("(table $chunks (;0;) 2 2 funcref)"));
-    assert!(wat.contains("(global $depth (;0;) (mut i32)"));
+    assert!(wat.contains("(import \"env\" \"table\" (table $table (;0;) 0 funcref))"));
+    assert!(wat.contains("(global $table_base (;0;) i32)"));
+    assert!(wat.contains("(global $lookup (;1;) i64)"));
+    assert!(wat.contains("(global $depth (;2;) (mut i32))"));
     assert!(t.ir.starts_with("function 0x1000: wasm function 3 (fn_0x1000)\n"));
 
     // Without the depth guard, calls don't test `depth` (they still count it).
@@ -258,4 +331,107 @@ fn arbitrary_bytes_translate_to_valid_modules() {
         total_insns > 1000,
         "only {total_insns} instructions translated"
     );
+}
+
+#[test]
+fn several_regions_translate_into_one_module() {
+    // 0x1000: call 0x2000; ret / 0x2000 (another region): ret
+    let a = hex("e8fb0f0000 c3");
+    let b = hex("c3");
+    let regions = [
+        CodeRegion {
+            base: 0x1000,
+            bytes: &a,
+        },
+        CodeRegion {
+            base: 0x2000,
+            bytes: &b,
+        },
+    ];
+    let t = x64wasm::translate_regions(&regions, &[0x1000], &[], &Options::default()).unwrap();
+    validate(&t.wasm);
+    assert_eq!(t.blocks, [0x1000, 0x1005, 0x2000]);
+    assert_eq!(t.functions.len(), 2);
+    // An entry outside every region is an error.
+    assert!(matches!(
+        x64wasm::translate_regions(&regions, &[0x1800], &[], &Options::default()),
+        Err(x64wasm::Error::EntryOutsideRegion(0x1800))
+    ));
+}
+
+#[test]
+fn known_addresses_are_never_decoded() {
+    // 0x1000: call 0x1006; ret; 0x1006: nop; nop; ret
+    let code = hex("e801000000 c3 90 90 c3");
+    let region = [CodeRegion {
+        base: 0x1000,
+        bytes: &code,
+    }];
+    let full = x64wasm::translate_regions(&region, &[0x1000], &[], &Options::default()).unwrap();
+    assert_eq!(full.blocks, [0x1000, 0x1005, 0x1006]);
+
+    // The call target and the return site are known: only the call block.
+    let t = x64wasm::translate_regions(&region, &[0x1000], &[0x1005, 0x1006], &Options::default())
+        .unwrap();
+    validate(&t.wasm);
+    assert_eq!(t.blocks, [0x1000]);
+
+    // A fall-through into a known address becomes a jump to it.
+    let prog = x64wasm::lift::lift_regions(&region, &[0x1007], &[0x1006], false).unwrap();
+    let addrs: Vec<u64> = prog.blocks.iter().map(|b| b.addr).collect();
+    assert_eq!(addrs, [0x1006]);
+    assert_eq!(prog.blocks[0].term, Term::Jump(0x1007));
+    let t = x64wasm::translate_regions(&region, &[0x1006], &[0x1007], &Options::default()).unwrap();
+    validate(&t.wasm);
+
+    // An entry that is known is an error.
+    assert!(matches!(
+        x64wasm::translate_regions(&region, &[0x1006], &[0x1006], &Options::default()),
+        Err(x64wasm::Error::EntryKnown(0x1006))
+    ));
+}
+
+#[test]
+fn discovery_continues_after_unsupported_instructions() {
+    // 0x1000: mov eax, 1; movsxd rax, ecx (unsupported); add eax, 2;
+    // jz 0x100e; nop; ret
+    let code = hex("b801000000 4863c1 83c002 7401 90 c3");
+    let t = translate(&code, 0x1000, &Options::default());
+    validate(&t.wasm);
+    assert_eq!(t.blocks, [0x1000, 0x1008, 0x100d, 0x100e]);
+    assert_eq!(t.unsupported, [0x1005]);
+    // One function owns them all.
+    assert_eq!(t.functions.len(), 1);
+    let owned: Vec<u64> = t.functions[0]
+        .chunks
+        .iter()
+        .flat_map(|c| c.blocks.clone())
+        .collect();
+    assert_eq!(owned, t.blocks);
+    // The first block still ends in the exit.
+    let prog = x64wasm::lift(
+        CodeRegion {
+            base: 0x1000,
+            bytes: &code,
+        },
+        &[0x1000],
+    )
+    .unwrap();
+    assert_eq!(
+        prog.blocks[0].term,
+        Term::Exit {
+            reason: abi::EXIT_UNSUPPORTED,
+            rip: 0x1005
+        }
+    );
+    assert_eq!(prog.blocks[0].after_exit, Some(0x1008));
+
+    // An unsupported instruction that doesn't continue (ud2, int3, an
+    // invalid encoding) ends discovery there.
+    for stop in ["0f0b", "cc", "06"] {
+        let code = hex(&format!("b801000000 {stop} 90 c3"));
+        let t = translate(&code, 0x1000, &Options::default());
+        validate(&t.wasm);
+        assert_eq!(t.blocks, [0x1000], "{stop}");
+    }
 }

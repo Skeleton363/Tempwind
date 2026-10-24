@@ -19,5 +19,11 @@ wasmparser.workspace = true
 wasmprinter.workspace = true
 x64wasm.workspace = true
 
+[dev-dependencies]
+iced-x86.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+testkit = { path = "../testkit" }
+
 [lints]
 workspace = true

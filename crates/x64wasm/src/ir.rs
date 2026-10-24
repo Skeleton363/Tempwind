@@ -301,12 +301,33 @@ pub struct Block {
     pub addr: u64,
     pub insns: Vec<Insn>,
     pub term: Term,
+    /// For a block that ends in an unsupported instruction which would
+    /// continue to the next one: that next address, a block of the same
+    /// function (discovery continues past the exit; execution doesn't).
+    pub after_exit: Option<u64>,
+}
+
+/// A recovered jump table (`docs/design/translator.md`, "Linking and
+/// images").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JumpTable {
+    /// Address of the indirect `jmp` that dispatches through it.
+    pub jmp: u64,
+    /// Address of the table.
+    pub table: u64,
+    /// Its targets in table order (duplicates included).
+    pub targets: Vec<u64>,
 }
 
 /// All translated blocks, sorted by address.
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     pub blocks: Vec<Block>,
+    /// Jump tables recovered while decoding, by `jmp` address.
+    pub jump_tables: Vec<JumpTable>,
+    /// Indirect `jmp`s seen: those that end blocks, and those after an
+    /// unsupported instruction in a block (found by decoding on).
+    pub indirect_jumps: usize,
 }
 
 impl Program {

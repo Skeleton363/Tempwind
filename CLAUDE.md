@@ -4,7 +4,8 @@ Runs unmodified 64-bit Windows programs in the browser: x86-64 to WebAssembly tr
 
 ## Layout
 - crates/x64wasm: translator (decode, IR, WebAssembly)
-- crates/x64wasm-cli: CLI (translate, dump IR and WAT)
+- crates/x64wasm-cli: CLI (translate, translate-pe, dump IR and WAT)
+- crates/x64wasm-rt: the translator built for wasm32, for run-time translation
 - crates/testkit: instruction oracle, fixtures, replay
 - runtime/: JS/TS runtime (Node and browser hosts)
 - native/: Wine's Unix side built with Emscripten (Phase 2+)
@@ -18,11 +19,15 @@ Keep this section current; add each command when it first works.
 - L1 oracle (x86-64 Linux only): `cargo run -p testkit --release -- record` re-records `crates/testkit/fixtures/l1/`; `-- record --check` diffs a fresh recording against them; `-- replay` prints a per-family summary.
 - Spike programs for the JS hosts: `cargo run -p testkit --release -- spike --out target/spike`
 - Translator CLI: `cargo run -p x64wasm-cli -- translate|ir|wat --base 0x140001000 --hex "48 01 d8 c3" [-o out.wasm] [--shared] [--max-function-insns N] [--max-chunk-insns N] [--call-depth-limit N | --no-depth-guard]`
+- Whole PE images: `cargo run -p x64wasm-cli --release -- translate-pe FILE --out-dir DIR [--entries all|entry]` writes `DIR/<stem>.wasm` (ABI v3) and `DIR/<stem>.plan.json` (load plan). Run-time translator: `cargo build -p x64wasm-rt --release --target wasm32-unknown-unknown`.
+- Run a PE program in Node: `node runtime/src/run-pe.mjs --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt target/wasm32-unknown-unknown/release/x64wasm_rt.wasm]`; `TEMPWIND_TRACE=api,translate,exits` traces to stderr.
+- M2 test program: `tests/pe/build.sh` builds `target/pe/basic.exe` (expected: `tests/pe/basic.expected` and `tests/pe/basic.exitcode`); `tests/pe/prepare.sh` writes both AOT variants and the run-time translator, which `npm run test:node` needs.
 - Regenerate IR/WAT snapshots: `UPDATE_SNAPSHOTS=1 cargo test -p x64wasm --test snapshots`
 - Translator measurements: `cargo test -p testkit --release --test spike_bench -- --ignored --nocapture --test-threads=1` (wasmtime); in V8, `cargo run -p testkit --release -- spike --bench --out target/bench/translator`, then `node tests/bench/translator/bench.mjs [--runs N]` (Node, four V8 configurations) and `node tests/bench/translator/bench.mjs --browser` (recursion depth in Chromium page and Worker).
+- Image measurements (needs `7zz.exe`, `coremark.exe` and `census.json` from the targets release in `target/targets/`): wasmtime `cargo test -p x64wasm-cli --release --test images -- --ignored --nocapture`; V8 `node tests/bench/translator/images.mjs [--runs N]`; linking speed `node tests/bench/translator/link.mjs` (after `spike --bench`).
 - Phase 1 targets (7zz.exe, coremark.exe, built in CI by `.github/workflows/targets.yml` from the sources pinned in `tests/targets/sources.json`): `scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe` (also `coremark.exe`, `census.json`, `census.md`, `build-info.json`). Mirrored sources: releases `src-7zip-25.01` and `src-coremark-1f483d5`.
 - Instruction census: `cargo run -p testkit --release -- census FILE... [--json PATH] [--md PATH] [--check]`; `--check` fails while in-scope forms lack L1 fixtures (scope rule: `docs/design/instruction-scope.md`).
-- JS (Node 24): `npm ci`, then `npm run test:node` and `npm run test:browser` (Playwright, headless Chromium). Both need `target/spike`. `CHROME_PATH=/path/to/chrome npm run test:browser` uses another browser. Never run `playwright install` in a session; the image already has Playwright's Chromium.
+- JS (Node 24): `npm ci`, then `npm run test:node` and `npm run test:browser` (Playwright, headless Chromium). Both need `target/spike`; `test:node` also needs the outputs of `tests/pe/prepare.sh`. `CHROME_PATH=/path/to/chrome npm run test:browser` uses another browser. Never run `playwright install` in a session; the image already has Playwright's Chromium.
 - Docker: `tools/start-dockerd.sh` (idempotent; the SessionStart hook runs it).
 - Emscripten probe (wasm64 vs x86_64-linux type sizes, pthreads): `native/spike/run.sh`; report in `native/spike/out/report.md`.
 - Environment setup script: `tools/cloud-setup.sh` (safe to rerun; always exits 0 and prints a per-step summary).
@@ -31,7 +36,8 @@ Keep this section current; add each command when it first works.
 
 ## How we work
 - One phase at a time, in order. Before starting, read docs/plan.md and the latest docs/status/ note.
-- Branch from main. One draft PR per session, titled "[Phase N] <what>".
+- Branch from main. One draft PR per milestone, titled "[Phase N] <what>"; a session covers a phase.
+- Commits: author and committer `Skeleton363 <46569584+Skeleton363@users.noreply.github.com>`, unsigned. The SessionStart hook sets this in cloud sessions; check `git config user.email` before the first commit. Commit messages and PR descriptions carry no `Co-Authored-By`, `Claude-Session` or "Generated with Claude Code" lines. Post PR comments only where required.
 - Done = all CI checks green, the test summary in your final message, and docs/status/phase-N.md updated (what works, measurements, decisions, known issues, next step).
 - Sessions don't share memory: record every decision in docs/status/.
 - Commit and push work in progress at least every 30 minutes; the cloud sandbox can reset.
@@ -59,3 +65,11 @@ Keep this section current; add each command when it first works.
 - Routine work (docs, CI, test plumbing, shell UI, small fixes): builder (Sonnet, medium).
 - Translator core, Wine system-call layer, memory model and threads, graphics backend, hard bugs: deep-worker (Opus, high).
 - If an attempt fails the same tests twice, retry one tier up. Never use max effort unless asked.
+
+## Working efficiently
+Quality first: rework is the most expensive waste. Cut the rest:
+- Contracts and tests before code: design notes and ABI changes are committed before agents start; fixtures or a failing test come before a fix.
+- Read narrowly: Grep, then Read with offset/limit. Never read fixtures, `census.json`, snapshots or CI logs whole; save logs to a file and grep them.
+- Keep command output short (`cargo test -q`, `| tail -n 40`); full output only while diagnosing.
+- Delegate large, self-contained work, not lookups one Grep answers. The brief names the files, the contract and the tests that decide "done"; agents report in about 150 words; the coordinator reviews diffs, not whole files.
+- Verify before pushing, including CI scripts that can run in the session. Wait for PR events instead of polling CI.

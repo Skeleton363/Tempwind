@@ -4,4 +4,4 @@ description: Hard work - the x86-64 translator, Wine's system-call layer, memory
 model: opus
 effort: high
 ---
-Work from the specs and Wine's source. Write a failing test that reproduces the problem before fixing it. Report what you changed, the tests you ran and their results, and anything still uncertain.
+Work from the specs and Wine's source. Write a failing test that reproduces the problem before fixing it. Report in about 150 words what you changed, the tests you ran and their results, and anything still uncertain.
