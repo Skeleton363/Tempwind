@@ -1,6 +1,7 @@
 //! Tests of the PE reader on synthetic images built here, one per directory
 //! the reader parses, plus malformed inputs. No external files are needed.
 
+use x64wasm::image::{self, EntrySet, LoadPlan};
 use x64wasm::pe::{
     EntryKind, Pe, PeError, RELOC_DIR64, RELOC_HIGHLOW, SCN_CNT_CODE, SCN_MEM_EXECUTE,
 };
@@ -591,6 +592,7 @@ fn exercise(data: &[u8]) {
         let _ = pe.read_cstr(0x1000);
         let _ = pe.read_rva(u32::MAX, 16);
         let _ = pe.code_bytes(0, u32::MAX);
+        let _ = LoadPlan::from_pe(&pe, "x.exe");
     }
 }
 
@@ -617,4 +619,131 @@ fn never_panics_on_corruption() {
             exercise(&bad);
         }
     }
+}
+
+#[test]
+fn sha256_vectors() {
+    assert_eq!(
+        image::sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert_eq!(
+        image::sha256_hex(b""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+}
+
+#[test]
+fn load_plan_follows_the_runtime_schema() {
+    let image = build_image();
+    let pe = parse(&image);
+    let plan = LoadPlan::from_pe(&pe, "test \"1\".exe").unwrap();
+    let got: serde_json::Value = serde_json::from_str(&plan.to_json()).unwrap();
+    let want = serde_json::json!({
+        "version": 1,
+        "file": "test \"1\".exe",
+        "sha256": image::sha256_hex(&image),
+        "machine": "0x8664",
+        "imageBase": "0x140000000",
+        "sizeOfImage": "0x6000",
+        "sizeOfHeaders": "0x200",
+        "entryPoint": "0x140001000",
+        "subsystem": 3,
+        "stackReserve": "0x200000",
+        "stackCommit": "0x1000",
+        "sections": [
+            { "name": ".text", "va": "0x140001000", "virtualSize": "0x180",
+              "fileOffset": "0x200", "fileSize": "0x200", "characteristics": "0x60000020" },
+            { "name": ".rdata", "va": "0x140002000", "virtualSize": "0x1000",
+              "fileOffset": "0x400", "fileSize": "0x1000", "characteristics": "0x40000040" },
+            { "name": ".reloc", "va": "0x140003000", "virtualSize": "0x40",
+              "fileOffset": "0x1400", "fileSize": "0x200", "characteristics": "0x42000040" },
+            { "name": ".pdata", "va": "0x140004000", "virtualSize": "0x30",
+              "fileOffset": "0x1600", "fileSize": "0x200", "characteristics": "0x40000040" },
+            { "name": ".debug_info", "va": "0x140005000", "virtualSize": "0x10",
+              "fileOffset": "0x1800", "fileSize": "0x200", "characteristics": "0x42000040" },
+        ],
+        "imports": [
+            { "dll": "KERNEL32.dll", "functions": [
+                { "name": "ExitProcess", "ordinal": null, "iat": "0x140002060" },
+                { "name": null, "ordinal": 5, "iat": "0x140002068" },
+            ] },
+            { "dll": "msvcrt.dll", "functions": [
+                { "name": "puts", "ordinal": null, "iat": "0x1400020c0" },
+            ] },
+        ],
+        "tls": {
+            "startOfRawData": "0x140002800",
+            "endOfRawData": "0x140002810",
+            "addressOfIndex": "0x140002820",
+            "sizeOfZeroFill": "0x20",
+            "callbacks": ["0x140001040", "0x140001050"],
+        },
+        "hasRelocations": true,
+    });
+    assert_eq!(got, want);
+
+    // No TLS, no relocations.
+    let mut bare = build_image();
+    for d in [5, 9] {
+        put32(&mut bare, 0x44 + 20 + 112 + d * 8, 0);
+        put32(&mut bare, 0x44 + 20 + 116 + d * 8, 0);
+    }
+    let plan = LoadPlan::from_pe(&parse(&bare), "bare.exe").unwrap();
+    let got: serde_json::Value = serde_json::from_str(&plan.to_json()).unwrap();
+    assert_eq!(got["tls"], serde_json::Value::Null);
+    assert_eq!(got["hasRelocations"], false);
+}
+
+/// `.text` of the synthetic image with code: `call 0x1010; jmp .rdata`, and
+/// `ret` at 0x1010. The other entries run NOPs off the end of `.text`.
+fn image_with_code() -> Vec<u8> {
+    let mut f = build_image();
+    let text = |rva: u32| 0x200 + (rva - TEXT_RVA) as usize;
+    put(&mut f, text(0x1000), &[0xe8, 0x0b, 0, 0, 0]);
+    put(&mut f, text(0x1005), &[0xe9, 0xf6, 0x0f, 0, 0]);
+    put(&mut f, text(0x1010), &[0xc3]);
+    f
+}
+
+#[test]
+fn translates_only_executable_sections() {
+    let image = image_with_code();
+    let pe = parse(&image);
+    let va = |rva: u32| IMAGE_BASE + rva as u64;
+    let text = va(TEXT_RVA)..va(TEXT_RVA + 0x180);
+
+    let t = image::translate(&pe, EntrySet::EntryPoint, &x64wasm::Options::default()).unwrap();
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&t.wasm)
+        .unwrap();
+    assert_eq!(t.blocks, [va(0x1000), va(0x1005), va(0x1010)]);
+    let fns: Vec<u64> = t.functions.iter().map(|f| f.addr).collect();
+    assert_eq!(fns, [va(0x1000), va(0x1010)]);
+    let blocks = x64wasm::link::read_blocks(&t.wasm).unwrap();
+    let addrs: Vec<u64> = blocks.blocks.iter().map(|b| b.addr).collect();
+    assert_eq!(addrs, t.blocks);
+
+    // Every entry of function_entries; nothing outside .text is decoded,
+    // and the NOPs that run off its end stop there.
+    let all = image::translate(&pe, EntrySet::All, &x64wasm::Options::default()).unwrap();
+    for e in pe.function_entries() {
+        assert!(all.blocks.contains(&va(e.rva)), "{:#x}", e.rva);
+    }
+    assert!(all.blocks.iter().all(|b| text.contains(b)), "{:x?}", all.blocks);
+    assert!(!all.blocks.contains(&va(RDATA_RVA)));
+    assert!(all.functions.len() >= pe.function_entries().len());
+}
+
+#[test]
+fn image_translation_errors() {
+    // Entry point outside every executable section.
+    let mut bad = image_with_code();
+    put32(&mut bad, 0x44 + 20 + 16, RDATA_RVA);
+    let pe = parse(&bad);
+    assert!(image::translate(&pe, EntrySet::EntryPoint, &x64wasm::Options::default()).is_err());
+    // .text raw data past the end of the file.
+    let image = image_with_code();
+    let pe = parse(&image[..0x300]);
+    assert!(image::translate(&pe, EntrySet::All, &x64wasm::Options::default()).is_err());
 }
