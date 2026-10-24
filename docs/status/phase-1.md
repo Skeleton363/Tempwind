@@ -275,6 +275,22 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 
 ## Next step: M3 (integer instructions and CRT startup)
 
+**In progress (paused 2026-10-24).** The plan is in four parts: agent A (oracle and fixtures), agent B (translator lowering), the builder (L2 programs, CI), and agent C (CRT runtime), which starts when A is done.
+- **Committed:**
+  - the M3 contracts (`a4e5674`, `3d56827`, `9cc2f95`, `f6183d9`). M3 also takes every SSE/SSE2 form whose result doesn't depend on floating-point arithmetic; `hello.exe` moves to M4;
+  - the L2 programs `l2_int.c` and `l2_crt.c`, their CI wiring, and a check under Wine 9 (`2d8c2c9`);
+  - fixture format v2 (`docs/design/fixtures.md`, `5b4b7eb`), with replay at 6672/6672;
+  - the lowering split per family (`703bdfd`);
+  - the lazy-flags and lowering design in `translator.md` (`f94c01e`).
+- **Work in progress, as WIP checkpoints that may not build:**
+  - agent A's generic form generator (`b47c153`);
+  - agent B's lowering of the new IR ops, `div128`, SIMD and string ops (`4c75e32`).
+- **Not started:**
+  - the M3 fixture families, recorded family by family;
+  - their lowering;
+  - agent C (nested guest calls, data imports, msvcrt);
+  - integration.
+
 1. **Fixture format v2:** XMM0-15, MXCSR and x87 state, recorded faults, and per-case flag masks, read and written through `PTRACE_GETFPREGS`/`SETFPREGS`. Every family is re-recorded.
 2. **A generic form generator** built on iced's `OpCodeInfo`. Hand-written generators stay for control flow, stack, string, division and x87-stack forms.
 3. **Fixtures first, then lowering, for:**
