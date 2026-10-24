@@ -1,8 +1,12 @@
 # Phase 1 status: Translator
 
-**M1 (function-level translation and target census) is done; next is M2 (PE loading).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**M1 and M2 (PE loading) are done; next is M3 (integer instructions and CRT startup).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
+- **Session 1, continued (2026-10-23/24):**
+  - commits in the owner's name and the working-efficiently rules;
+  - then M2 with three agents: the Rust side and the JS runtime (deep-worker each), and the test program and CI (builder);
+  - paused once and resumed.
 
 ## Lessons for future sessions
 
@@ -19,6 +23,14 @@ Phase 0's lessons still hold. New ones from M1:
   - `--js-flags` given to Playwright's headless shell has no effect.
   - In Node, `await WebAssembly.compile` never settles under `--no-wasm-lazy-compilation`; use the synchronous `WebAssembly.Module`.
 - **wasmtime timings of tight loops depend on code placement on this VM's Xeon.** The same machine code ran 1.9× or 3.0× native depending on the guest base address. Compare at several bases before calling something a regression.
+- **A stopped background agent can be resumed.** Sending it a message continues it from its transcript, so a pause costs no re-reading.
+- **Checkpoint agents' work when a session must stop on a clean tree.** Commit their paths as pathspec-limited `WIP` commits, and have agents checkpoint about every 20 minutes.
+- **Measure on representative code.**
+  - While discovery stopped at the first unsupported instruction, 7zz.exe translated 64k of its 521k instructions.
+  - Its module then looked about 5× smaller and much faster to compile than the real one.
+- **GCC's default PE linker script puts `__CTOR_LIST__`/`__DTOR_LIST__` data into `.text`.** A linear sweep decodes that data as code; `tests/pe/basic.ld` is the default script without it.
+- **V8 compile measurements need one process per configuration.** "Eager TurboFan" is `--no-liftoff --no-wasm-lazy-compilation`. `--no-wasm-lazy-compilation` alone compiles every function with Liftoff.
+- **BigInt arithmetic is slow in hot JS loops.** Linking 41k blocks took 79 ms with BigInt hashing, and 8.5 ms with 32-bit Numbers.
 
 ## Decisions taken when planning (2026-10-22)
 
@@ -76,6 +88,43 @@ Phase 0's lessons still hold. New ones from M1:
 - **CoreMark smoke check:** short runs never print "Correct operation validated" (the under-10 s check counts as an error). The smoke test checks the performance-run seed CRC and the list, matrix and state CRCs instead.
 - **`pause` and multi-byte `nop` are baseline**, since they have no CPUID bit. `xgetbv` is a user-mode instruction (XSAVE, out of profile), not a privileged one.
 
+## Decisions taken in M2
+
+- **Attribution:** commits and PRs carry only the owner's identity, `Skeleton363` with the GitHub no-reply address, unsigned.
+  - `.claude/settings.json` turns Claude Code's attribution off, and the SessionStart hook sets the identity.
+  - Past commits stay as they are (the owner's choice).
+- **Working method:**
+  - one session per phase, one PR per milestone;
+  - agents only where they pay off;
+  - the "Working efficiently" rules in CLAUDE.md.
+- **ABI v3** (`abi.md`):
+  - Modules link through an imported funcref table, `table_base`, a shared `depth`, and a hash-table lookup in guest memory: header at `env.lookup`, multiplicative hash, linear probing, first translation wins.
+  - Transfers out of a module probe that table.
+  - Host functions are table entries that perform the guest's `ret`.
+  - `EXIT_HOST` is a new exit reason.
+  - Each module carries an `x64wasm.blocks` section.
+- **Host calls:** an import's IAT slot points at a 16-byte thunk in the host region. The thunk's lookup slot names the host-call function (table slot 0), with the import id as entry.
+- **Run-time translation:**
+  - A lookup miss in an executable section exits with `EXIT_LEFT_CODE`.
+  - The runtime then translates from that address with `x64wasm_rt.wasm`, passing every known block address, links the new module and resumes.
+- **The load plan comes from the Rust PE reader** (`translate-pe`). JS never parses PE files.
+- **Process layout** (`runtime.md`): offsets checked against Wine 11's `winternl.h`.
+  - Memory is the larger of the image end and 4 GiB.
+  - Images load at their preferred base.
+  - PEB at `0x7FFD_0000`, TEB at `0x7FFD_1000`, stack top at `0x7FF0_0000`.
+  - The host region starts at 2 GiB: lookup header, state block, thunks, runtime heap.
+- **Shim:** strict, as Microsoft documents the APIs. An unhandled case or an unimplemented API stops the program and names the API.
+- **AOT discovery continues past unsupported instructions** (`Block::after_exit`). The instruction still exits at run time, but the rest of its function is translated, so a module's structure doesn't depend on which instructions are supported yet.
+- **Jump tables:**
+  - GCC's relative tables are recovered by pattern: bounds check, `lea`, `movsxd`, `add`, `jmp`.
+  - Every target must lie in executable code, otherwise the whole table is rejected.
+  - Tables that recovery misses are found at run time.
+- **Out-of-profile functions translate like any other code:** their unsupported instructions become exits.
+- **Test program:**
+  - `tests/pe/basic.exe` is written in assembly, so it uses only forms with L1 fixtures; `census --check` gates it in CI.
+  - The `jmp` fixtures were recorded first.
+  - Its exit code lives in `tests/pe/basic.exitcode`.
+
 ## What works
 
 | Item | Evidence |
@@ -87,6 +136,25 @@ Phase 0's lessons still hold. New ones from M1:
 | **Targets in CI** (`.github/workflows/targets.yml`):<br>• source mirror (trust on first use)<br>• MinGW builds of 7zz.exe and coremark.exe<br>• census and `targets-<sha7>` releases<br>• native smoke tests on windows-2025 and under wine64 on Linux | Runs 39983593568 and 39987562814 (PR head `7613c87`): all 4 jobs green; `targets-4b411bf` and `targets-7613c87` published with identical binaries. `tests/targets/targets.lock` names `targets-7613c87`, whose census uses the profile's decoding. The Windows job does `7zz i`, 7z and zip round trips with `diff -r`, and the CoreMark CRC check; the Wine job does the same. |
 | **PE reader** (`x64wasm::pe`): headers, sections, imports, exports, relocations, `.pdata`, TLS, COFF symbols; `function_entries()` for M2 | 14 self-contained tests, including corruption and truncation sweeps. Matches `objdump -p` on 7zz.exe: 186 imports and 8,567 DIR64 relocations. |
 | **Census** (`testkit census`): per-`Code`/mnemonic/feature/class counts, profile and exclusions, imports, out-of-profile functions by name, `--check` against the fixtures | 7 unit tests. Run on the `targets-4b411bf` binaries; tables in `docs/design/instruction-scope.md`. |
+
+| **Linked modules** (ABI v3): shared table, hash lookup in guest memory, calls and jumps between modules, host functions | `crates/testkit/tests/link.rs` has 8 tests: two modules calling each other, a miss then link and resume, host calls that return, unwind or exit, and first translation wins. The Phase 0 and M1 suites also pass on v3 modules: L1 replay, the spike cases in wasmtime, Node, and Chromium page and Worker, and the snapshots. |
+| **Whole-image AOT** (`x64wasm::image`, `translate-pe`):<br>• load plan<br>• entries from `function_entries()`<br>• decoding only inside executable sections<br>• jump tables<br>• discovery past unsupported instructions | 7zz.exe and coremark.exe translate, pass wasmparser validation, and compile in wasmtime and V8 (measurements below). 133 of the 138 GCC jump tables in 7zz.exe are recovered; 6 near-miss tests check what must not count as a table. |
+| **Run-time translator** (`crates/x64wasm-rt`, wasm32) | 445,419 bytes, 147,513 gzipped. Request handling is unit-tested, and `basic.exe` uses it end to end. |
+| **JS runtime** (`runtime/src/`):<br>• linker<br>• load-plan checks and mapping<br>• thunks and IAT<br>• PEB, TEB, stack and TLS<br>• host calls<br>• shim v0 (`GetStdHandle`, `WriteFile`, `ExitProcess`)<br>• run loop and run-time translation<br>• traces and the `run-pe` CLI | 114 Node tests, including `basic.exe` in both AOT variants. |
+| **M2 test program** (`tests/pe/basic.exe`). It exercises:<br>• output<br>• recursion 1000 deep, past the depth guard<br>• fib<br>• a function-pointer table<br>• a jump table<br>• a function that only a computed pointer reaches<br>• exit code 42 | It matches `basic.expected` and exit code 42 natively (under Wine 9 here, on Windows in CI) and translated in Node. That holds from all entries (1 run-time translation) and from the entry point only (8). `census --check`: 25 of 25 forms have fixtures. |
+| **`jmp` fixtures** | 192 cases (rel8, rel32, r64, m64); replay passes 100 %. |
+
+### Test summary (local, M2, Node 24.22.0)
+
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and clippy on `x64wasm-rt` for wasm32: clean.
+- `cargo test --workspace`: 120 passed, 0 failed, 5 ignored (measurements).
+- `record --check`: "11 fixture files match a fresh recording" (6,672 cases).
+- `census target/pe/basic.exe --check`: 25 of 25 forms have fixtures.
+- `tests/pe/build.sh` and `tests/pe/prepare.sh`: OK. The build is reproducible: two builds gave the same sha256.
+- `npm run test:node`: 114/114, with 12/12 spike cases.
+- `npm run test:browser`: 4/4.
+- Census on the targets: fixtures cover 134 of 491 in-scope forms. It fails, as expected until M5.
+- `native/spike/run.sh` was not rerun, since `native/` didn't change; CI runs it.
 
 ### Test summary (local, end of session 1, Node 24.22.0)
 
@@ -155,6 +223,27 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 - Both identical in `targets-0c3a264`.
 - CI times: `sources` about 6 s, `build` about 3¼ min (the 7-Zip build 2 min 21 s), `windows-native` 17 s, `linux-wine` 26 s.
 
+**Whole images (M2).** Translations take all entries and use the targets release. For wasmtime, Cranelift's median of 3 is reported; for V8 (Node 24.22.0), the median of 3, with each configuration in its own process.
+
+| | coremark.exe | 7zz.exe |
+|---|---|---|
+| `translate-pe` wall time / peak RSS | 25 ms / 11 MiB | 1.6-1.7 s / 360 MiB |
+| wasm, raw / gzip -9 | 475,759 / 65,592 B | 29,300,487 / 3,502,880 B (59 B per guest instruction) |
+| functions / chunks / blocks | 175 / 175 / 3,933 | 7,600 / 7,612 / 208,426 |
+| guest instructions (share of the census) | 8,955 (92.6 % of 9,668) | 492,876 (94.6 % of 520,823) |
+| `.pdata` functions translated | 134 of 134 | 6,289 of 6,289 |
+| indirect jumps / recovered tables (targets) | 42 / 2 (17) | 344 / 133 (6,115) |
+| `EXIT_UNSUPPORTED` sites | 1,696: `test` 473, `xor` 286, `movzx` 133 | 81,372: `test` 26,873, `xor` 14,163, `movzx` 7,035, `shl` 4,407, `movups` 4,302 |
+| wasmtime, Cranelift compile | 678 ms | 47.6 s |
+| V8 compile: default (lazy) / eager Liftoff / eager TurboFan | 1.1 / 10.9 / 142 ms | 48.7 / 464 / 9,140 ms |
+| V8 instantiate and link | 1.6 ms | 48.5-51.3 ms |
+
+- **What the sizes contain:** the unsupported sites dominate size and Cranelift time, since each one stores the full state. They shrink as M3 and M4 lower those instructions, and M6 narrows the state syncs. V8's default lazy path compiles 7zz.exe in under 50 ms anyway.
+- **Linking** (`runtime/src/link.mjs`, 41,252 blocks): 8.5 ms (4.9 M blocks/s), down from 79 ms with BigInt hashing.
+- **Run-time translation** (`basic.exe`):
+  - The first translation takes about 24 ms, mostly compiling `x64wasm_rt.wasm`; each later one about 0.6 ms.
+  - The entry-point-only variant needs 8 translations, because AOT already finds 46 of its 53 blocks by following direct calls.
+
 **Census** (details in `docs/design/instruction-scope.md`):
 - Sizes:
   - functions: 6,289 / 134 / 95 in 7zz / coremark / hello;
@@ -162,40 +251,37 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
   - distinct `Code`s: 443.
 - Classes: 97.4 % integer, 1.6 % SSE2, 0.8 % SSE, 74 x87 instructions, no MMX.
 - Out of profile: 56 `Code`s, all in 27 CPUID-dispatched functions of 7zz.exe (AES-NI, SHA-NI, AVX2, SSSE3/SSE4.1 paths and the feature probes).
-- In scope: 491 forms over 383 `Code`s; L1 fixtures cover 130 (26.5 %).
+- In scope: 491 forms over 383 `Code`s; L1 fixtures cover 134 (27.3 %, with M2's `jmp` fixtures).
 - Imports: 189 distinct functions in 5 DLLs (kernel32 113, msvcrt 54, advapi32 14, oleaut32 6, user32 2).
 
 ## Known issues and risks
 
 - **Calls are expensive** (10-20× native) until M6 syncs only live registers at boundaries.
-- **`lookup` is a compiled binary search.** At 41k blocks it is a 1 MB function and 1-3 s of Cranelift time. M2 replaces it with the planned hash table in the host region.
-- **Returns to a non-block address exit with `EXIT_LEFT_CODE`** until run-time translation exists (M2). This covers a return address adjusted past a block start.
-- **Out-of-profile code in 7zz.exe:** 27 CPUID-dispatched functions. M2's whole-image AOT must turn them into trap stubs or leave them out.
 - **22 forms occur only in gap sweeps** (likely data read as code: `std`, `cmc`, `int1`, `loop`, …). The rule as decided counts them; the M5 gate decides whether to drop them.
-- **`testkit census --check` fails** (130 of 491) until the instruction milestones add fixtures. CI doesn't gate on it before M5.
+- **`testkit census --check` fails** (134 of 491) until the instruction milestones add fixtures. CI doesn't gate on it before M5. It does gate `tests/pe/basic.exe`.
+- **7zz.exe's module is large and slow under Cranelift:** 29.3 MB and 47.6 s. Its 81,372 `EXIT_UNSUPPORTED` sites each store the full state. M3 and M4 lower those instructions, and M6 narrows the state syncs.
+- **5 of 138 jump tables in 7zz.exe aren't recovered:** 4 load the table base earlier in the function, and 1 sits in a handler nothing reaches. Run-time translation covers them.
+- **The run-time translator compiles on first use** (about 24 ms). Compiling it while the image loads would hide that.
+- **Runtime limits in Phase 1:**
+  - one thread;
+  - images only at their preferred base (no relocation);
+  - no SEH or exceptions;
+  - KUSER_SHARED_DATA is zeroed;
+  - shim v0 has three functions.
 - **wasmtime loop timings depend on code placement** on this VM. Benchmark baselines in M4/M5 should come from V8 and same-machine native runs.
 - **apt installs in CI were flaky:** the Azure Ubuntu mirror trickled at about 40 KB/s, and 3 targets runs hung or timed out. `scripts/apt-install.sh` now limits each attempt and retries without that mirror; a mock test covered both the stall and the failure path.
 - **One release publish failed with a transient 403.** The `targets` run of `6d4536c` was refused by the GitHub releases API with "Resource not accessible by integration", although its token had `contents: write`. `hello-7613c87` published 38 s later, and the same step published `targets-7613c87` on the next commit. If it recurs, re-run the job once, or retry the publish step.
 - **Phase 0's translator gaps remain until M3:** `lock` and atomics, FS/GS, the 67h prefix, precise faults.
 
-## Next step: M2 (PE loading)
+## Next step: M3 (integer instructions and CRT startup)
 
-**In progress (paused 2026-10-23).**
-- **Committed:**
-  - the M2 contracts: `docs/design/abi.md` v3 (linked modules, the lookup hash table, host functions, the run-time translator interface) and `docs/design/runtime.md` (process, load plan, host calls, run loop, test program), with the constants in `abi.rs`/`abi.mjs`;
-  - L1 fixtures for `jmp` (rel8, rel32, r64, m64: 192 cases), which the M2 test program needs.
-- **Not started:**
-  - Track A (Rust): load plan and `translate-pe`, the v3 emitter, `x64wasm-rt`;
-  - Track B (JS): the linker, process and shim v0, `run-pe`;
-  - the builder's `tests/pe/` program and CI wiring.
+1. **Fixture format v2:** XMM0-15, MXCSR and x87 state, recorded faults, and per-case flag masks, read and written through `PTRACE_GETFPREGS`/`SETFPREGS`. Every family is re-recorded.
+2. **A generic form generator** built on iced's `OpCodeInfo`. Hand-written generators stay for control flow, stack, string, division and x87-stack forms.
+3. **Fixtures first, then lowering, for:**
+   - every in-scope integer form (`census --check` lists the missing ones);
+   - `lock` and atomics, FS/GS bases, the 67h prefix;
+   - the SSE data moves and x87/MXCSR control words that CRT startup needs.
 
-  The plan for these three is the "M2" part of this session's plan; the work items are below.
-
-1. Whole-image AOT translation from `x64wasm::pe`. Function entries from `Pe::function_entries()`: entry point, exports, `.pdata`, TLS callbacks, relocation targets in code. Also jump-table recovery, and trap stubs for out-of-profile functions.
-2. A shared table and a hash-table `lookup` in the host region, so several modules (AOT image, run-time translations) link together.
-3. A JS runtime process:
-   - guest memory, TEB/PEB, stack, static TLS;
-   - import thunks as wasm-import host calls;
-   - run-time translation of missed code with the translator built for wasm32.
-4. Win32 shim v0, and a `-nostdlib` MinGW test PE that runs translated in Node with output equal to native.
-5. Translate all of 7zz.exe and coremark.exe, and measure translation and compile time on real code in V8 and wasmtime.
+   Lowering is split into one module per instruction family.
+4. **CRT startup:** the shim grows to what MinGW CRT startup and the L2 programs import, and `hello.exe` and the L2 programs run translated with output equal to their `.expected` files.
+5. **Replay speed:** keep replay fast as fixtures grow to tens of thousands of cases.
