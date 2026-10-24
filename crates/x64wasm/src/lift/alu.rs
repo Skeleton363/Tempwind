@@ -28,6 +28,7 @@ impl Lower<'_> {
             a,
             b,
             r,
+            when: None,
             live: true,
         });
         if m != Mnemonic::Cmp {

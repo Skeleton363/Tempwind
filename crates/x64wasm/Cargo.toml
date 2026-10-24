@@ -17,6 +17,7 @@ wasm-encoder.workspace = true
 serde_json.workspace = true
 wasmparser.workspace = true
 wasmprinter.workspace = true
+wasmtime.workspace = true
 
 [lints]
 workspace = true

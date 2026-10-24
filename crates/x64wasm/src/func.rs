@@ -102,9 +102,14 @@ fn local_successors(block: &Block) -> impl Iterator<Item = u64> {
         Term::Jump(t) => (Some(t), None),
         Term::Branch {
             taken, fallthrough, ..
+        }
+        | Term::BranchIf {
+            taken, fallthrough, ..
         } => (Some(taken), Some(fallthrough)),
         Term::Call { ret, .. } => (Some(ret), None),
-        Term::Indirect(_) | Term::Ret(_) | Term::Exit { .. } => (block.after_exit, None),
+        Term::Indirect(_) | Term::Ret(_) | Term::Exit { .. } | Term::Fault { .. } => {
+            (block.after_exit, None)
+        }
     };
     a.into_iter().chain(b)
 }
@@ -337,6 +342,7 @@ mod tests {
                         text: String::new(),
                         ops: Vec::new(),
                         temps: 0,
+                        vtemps: 0,
                     })
                     .collect(),
                 term: term.clone(),

@@ -62,6 +62,9 @@ impl Flow {
                 Term::Jump(t) => vec![t],
                 Term::Branch {
                     taken, fallthrough, ..
+                }
+                | Term::BranchIf {
+                    taken, fallthrough, ..
                 } => vec![taken, fallthrough],
                 Term::Call {
                     target: CallTarget::Direct(t),
@@ -71,7 +74,9 @@ impl Flow {
                     target: CallTarget::Indirect(_),
                     ret,
                 } => vec![ret],
-                Term::Indirect(_) | Term::Ret(_) | Term::Exit { .. } => Vec::new(),
+                Term::Indirect(_) | Term::Ret(_) | Term::Exit { .. } | Term::Fault { .. } => {
+                    Vec::new()
+                }
             },
         }
     }
@@ -221,6 +226,7 @@ impl<'a> Lifter<'a> {
             bytes: &region.bytes[offset..offset + insn.len()],
             ops: Vec::new(),
             temps: 0,
+            vtemps: 0,
             ea: None,
         };
         match lower.lower() {
@@ -231,6 +237,7 @@ impl<'a> Lifter<'a> {
                     text,
                     ops: lower.ops,
                     temps: lower.temps,
+                    vtemps: lower.vtemps,
                 },
                 flow,
                 after: None,
@@ -260,6 +267,7 @@ fn unsupported(addr: u64, len: u32, text: String) -> Decoded {
             text,
             ops: Vec::new(),
             temps: 0,
+            vtemps: 0,
         },
         flow: Flow::End(Term::Exit {
             reason: abi::EXIT_UNSUPPORTED,

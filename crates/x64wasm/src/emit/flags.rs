@@ -1,6 +1,7 @@
 //! Lazy status flags: conditions from a statically known record kind,
-//! from the dynamic record (through `flags`), and the shared `flags`
-//! function (function 2) that materializes a record.
+//! from the dynamic record (through `flags`), the shared `flags` function
+//! (function 2) that materializes a record, and the per-kind CF and OF
+//! formulas both use (`docs/design/translator.md`, "Lazy flag record").
 
 use wasm_encoder::{BlockType, Function, InstructionSink, ValType};
 
@@ -8,7 +9,194 @@ use super::{ChunkEmitter, F_FLAGS, L_CC_A, L_CC_B, L_CC_R, L_SCRATCH};
 use crate::abi;
 use crate::ir::{Cond, FlagOp, Width};
 
+/// What is statically known about the current record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Known {
+    Lazy(FlagOp, Width),
+    /// Materialized in `cc_a` (`cc_op` = 0).
+    Eager,
+}
+
+/// Where a record's operands and its width's sign bit are.
+#[derive(Clone, Copy)]
+struct Rec {
+    a: u32,
+    b: u32,
+    r: u32,
+    sign: Sign,
+}
+
+#[derive(Clone, Copy)]
+enum Sign {
+    Const(u64),
+    Local(u32),
+}
+
+impl Rec {
+    fn sign(&self, f: &mut InstructionSink<'_>) {
+        match self.sign {
+            Sign::Const(s) => f.i64_const(s as i64),
+            Sign::Local(l) => f.local_get(l),
+        };
+    }
+
+    /// Replaces the i64 on the stack by its sign bit (i32 0 or 1).
+    fn msb(&self, f: &mut InstructionSink<'_>) {
+        self.sign(f);
+        f.i64_and();
+        f.i64_const(0);
+        f.i64_ne();
+    }
+
+    /// Pushes `b - 1` as the i64 shift count.
+    fn count_minus_one(&self, f: &mut InstructionSink<'_>) {
+        f.local_get(self.b);
+        f.i64_const(1);
+        f.i64_sub();
+    }
+
+    /// Pushes CF of a record of kind `op` (i32 0 or 1).
+    fn cf(&self, f: &mut InstructionSink<'_>, op: FlagOp) {
+        let (a, b, r) = (self.a, self.b, self.r);
+        match op {
+            FlagOp::Add => {
+                f.local_get(r);
+                f.local_get(a);
+                f.i64_lt_u();
+            }
+            FlagOp::Sub => {
+                f.local_get(a);
+                f.local_get(b);
+                f.i64_lt_u();
+            }
+            FlagOp::Logic => {
+                f.i32_const(0);
+            }
+            // msb((a & b) | ((a ^ b) & !r))
+            FlagOp::Adc => {
+                f.local_get(a);
+                f.local_get(b);
+                f.i64_and();
+                f.local_get(a);
+                f.local_get(b);
+                f.i64_xor();
+                f.local_get(r);
+                f.i64_const(-1);
+                f.i64_xor();
+                f.i64_and();
+                f.i64_or();
+                self.msb(f);
+            }
+            // msb((!a & b) | (!(a ^ b) & r))
+            FlagOp::Sbb => {
+                f.local_get(a);
+                f.i64_const(-1);
+                f.i64_xor();
+                f.local_get(b);
+                f.i64_and();
+                f.local_get(a);
+                f.local_get(b);
+                f.i64_xor();
+                f.i64_const(-1);
+                f.i64_xor();
+                f.local_get(r);
+                f.i64_and();
+                f.i64_or();
+                self.msb(f);
+            }
+            FlagOp::Inc | FlagOp::Dec | FlagOp::Mul => {
+                let l = if op == FlagOp::Mul { a } else { b };
+                f.local_get(l);
+                f.i64_eqz();
+                f.i32_eqz();
+            }
+            FlagOp::Shl => {
+                f.local_get(a);
+                self.count_minus_one(f);
+                f.i64_shl();
+                self.msb(f);
+            }
+            FlagOp::Shr | FlagOp::Sar => {
+                f.local_get(a);
+                if op == FlagOp::Sar {
+                    // Sign-extend from the width: (a ^ sign) - sign.
+                    self.sign(f);
+                    f.i64_xor();
+                    self.sign(f);
+                    f.i64_sub();
+                }
+                self.count_minus_one(f);
+                if op == FlagOp::Sar {
+                    f.i64_shr_s();
+                } else {
+                    f.i64_shr_u();
+                }
+                f.i32_wrap_i64();
+                f.i32_const(1);
+                f.i32_and();
+            }
+        }
+    }
+
+    /// Pushes OF of a record of kind `op` (i32 0 or 1).
+    fn of(&self, f: &mut InstructionSink<'_>, op: FlagOp) {
+        let (a, b, r) = (self.a, self.b, self.r);
+        match op {
+            // (a ^ r) & (b ^ r)
+            FlagOp::Add | FlagOp::Adc => {
+                f.local_get(a);
+                f.local_get(r);
+                f.i64_xor();
+                f.local_get(b);
+                f.local_get(r);
+                f.i64_xor();
+                f.i64_and();
+                self.msb(f);
+            }
+            // (a ^ b) & (a ^ r)
+            FlagOp::Sub | FlagOp::Sbb => {
+                f.local_get(a);
+                f.local_get(b);
+                f.i64_xor();
+                f.local_get(a);
+                f.local_get(r);
+                f.i64_xor();
+                f.i64_and();
+                self.msb(f);
+            }
+            FlagOp::Logic => {
+                f.i32_const(0);
+            }
+            FlagOp::Inc | FlagOp::Dec => {
+                f.local_get(if op == FlagOp::Inc { r } else { a });
+                self.sign(f);
+                f.i64_eq();
+            }
+            FlagOp::Shl | FlagOp::Shr | FlagOp::Sar => {
+                f.local_get(a);
+                f.local_get(r);
+                f.i64_xor();
+                self.msb(f);
+            }
+            FlagOp::Mul => {
+                f.local_get(a);
+                f.i64_eqz();
+                f.i32_eqz();
+            }
+        }
+    }
+}
+
 impl ChunkEmitter<'_> {
+    fn rec(w: Width) -> Rec {
+        Rec {
+            a: L_CC_A,
+            b: L_CC_B,
+            r: L_CC_R,
+            sign: Sign::Const(w.sign_bit()),
+        }
+    }
+
     /// Pushes the materialized status flags (i64) of the current record.
     pub(super) fn materialize_flags(&self, f: &mut InstructionSink<'_>) {
         f.local_get(self.l_cc_op);
@@ -18,11 +206,39 @@ impl ChunkEmitter<'_> {
         f.call(F_FLAGS);
     }
 
+    /// Pushes the current flags (i64; bits other than the status flags may
+    /// be set when the record is eager).
+    pub(super) fn current_flags(&self, f: &mut InstructionSink<'_>) {
+        if self.known_cc == Some(Known::Eager) {
+            f.local_get(L_CC_A);
+        } else {
+            self.materialize_flags(f);
+        }
+    }
+
+    /// Pushes the current CF as an i32 (0 or 1).
+    pub(super) fn current_cf(&self, f: &mut InstructionSink<'_>) {
+        match self.known_cc {
+            Some(Known::Lazy(op, w)) => Self::rec(w).cf(f, op),
+            _ => {
+                self.current_flags(f);
+                f.i32_wrap_i64();
+                f.i32_const(abi::flags::CF as i32);
+                f.i32_and();
+            }
+        }
+    }
+
     /// Pushes `cond` as an i32 (0 or 1).
     pub(super) fn cond(&self, f: &mut InstructionSink<'_>, cond: Cond) {
         let base = Cond::from_index(cond as u32 & !1);
         match self.known_cc {
-            Some((op, w)) => self.static_cond(f, op, w, base),
+            Some(Known::Lazy(op, w)) => self.static_cond(f, op, w, base),
+            Some(Known::Eager) => {
+                f.local_get(L_CC_A);
+                f.local_set(L_SCRATCH);
+                dynamic_cond(f, base);
+            }
             None => {
                 self.materialize_flags(f);
                 f.local_set(L_SCRATCH);
@@ -43,48 +259,6 @@ impl ChunkEmitter<'_> {
         f.local_get(L_CC_R);
         f.i64_const(w.sign_bit() as i64);
         f.i64_ge_u();
-    }
-
-    pub(super) fn cf(&self, f: &mut InstructionSink<'_>, op: FlagOp) {
-        match op {
-            FlagOp::Add => {
-                f.local_get(L_CC_R);
-                f.local_get(L_CC_A);
-            }
-            FlagOp::Sub => {
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_B);
-            }
-        }
-        f.i64_lt_u();
-    }
-
-    pub(super) fn of(&self, f: &mut InstructionSink<'_>, op: FlagOp, w: Width) {
-        match op {
-            // (a ^ r) & (b ^ r)
-            FlagOp::Add => {
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_R);
-                f.i64_xor();
-                f.local_get(L_CC_B);
-                f.local_get(L_CC_R);
-                f.i64_xor();
-            }
-            // (a ^ b) & (a ^ r)
-            FlagOp::Sub => {
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_B);
-                f.i64_xor();
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_R);
-                f.i64_xor();
-            }
-        }
-        f.i64_and();
-        f.i64_const(w.sign_bit() as i64);
-        f.i64_and();
-        f.i64_const(0);
-        f.i64_ne();
     }
 
     pub(super) fn pf(&self, f: &mut InstructionSink<'_>) {
@@ -108,24 +282,20 @@ impl ChunkEmitter<'_> {
     }
 
     /// A non-negated condition for a statically known record kind.
-    pub(super) fn static_cond(
-        &self,
-        f: &mut InstructionSink<'_>,
-        op: FlagOp,
-        w: Width,
-        base: Cond,
-    ) {
+    pub(super) fn static_cond(&self, f: &mut InstructionSink<'_>, op: FlagOp, w: Width, base: Cond) {
+        let rec = Self::rec(w);
         match (op, base) {
-            (_, Cond::O) => self.of(f, op, w),
-            (_, Cond::B) => self.cf(f, op),
+            (_, Cond::O) => rec.of(f, op),
+            (_, Cond::B) => rec.cf(f, op),
             (_, Cond::E) => self.zf(f),
             (FlagOp::Sub, Cond::Be) => {
                 f.local_get(L_CC_A);
                 f.local_get(L_CC_B);
                 f.i64_le_u();
             }
+            (FlagOp::Logic, Cond::Be) => self.zf(f),
             (_, Cond::Be) => {
-                self.cf(f, op);
+                rec.cf(f, op);
                 self.zf(f);
                 f.i32_or();
             }
@@ -141,15 +311,21 @@ impl ChunkEmitter<'_> {
                 Self::sext(f, L_CC_B, w);
                 f.i64_le_s();
             }
+            (FlagOp::Logic, Cond::L) => self.sf(f, w),
+            (FlagOp::Logic, Cond::Le) => {
+                self.zf(f);
+                self.sf(f, w);
+                f.i32_or();
+            }
             (_, Cond::L) => {
                 self.sf(f, w);
-                self.of(f, op, w);
+                rec.of(f, op);
                 f.i32_ne();
             }
             (_, Cond::Le) => {
                 self.zf(f);
                 self.sf(f, w);
-                self.of(f, op, w);
+                rec.of(f, op);
                 f.i32_ne();
                 f.i32_or();
             }
@@ -226,60 +402,40 @@ pub(super) fn emit_flags() -> Function {
     f.i64_sub();
     f.i64_shl();
     f.local_set(SIGN);
-    // kind = (op - 1) >> 2: 0 = add, 1 = sub. CF | OF:
+    // CF | OF by kind = (op - 1) >> 2.
+    let rec = Rec {
+        a: A,
+        b: B,
+        r: R,
+        sign: Sign::Local(SIGN),
+    };
+    let n = FlagOp::ALL.len() as u32;
+    f.block(BlockType::Empty); // $end
+    for _ in 0..n {
+        f.block(BlockType::Empty);
+    }
     f.local_get(OP);
     f.i32_const(1);
     f.i32_sub();
     f.i32_const(2);
     f.i32_shr_u();
-    f.if_(BlockType::Result(ValType::I64));
-    {
-        // sub: CF = a < b, OF = (a ^ b) & (a ^ r)
-        f.local_get(A);
-        f.local_get(B);
-        f.i64_lt_u();
+    let targets: Vec<u32> = (0..n).collect();
+    f.br_table(targets, n - 1);
+    for (i, op) in FlagOp::ALL.into_iter().enumerate() {
+        debug_assert_eq!(op.kind(), i as u32);
+        f.end();
+        rec.cf(&mut f, op);
         f.i64_extend_i32_u();
-        f.local_get(A);
-        f.local_get(B);
-        f.i64_xor();
-        f.local_get(A);
-        f.local_get(R);
-        f.i64_xor();
-        f.i64_and();
-        f.local_get(SIGN);
-        f.i64_and();
-        f.i64_eqz();
-        f.i32_eqz();
+        rec.of(&mut f, op);
         f.i64_extend_i32_u();
         f.i64_const(11);
         f.i64_shl();
         f.i64_or();
+        f.local_set(CF_OF);
+        // Inside the blocks of the later kinds and $end.
+        f.br(n - 1 - i as u32);
     }
-    f.else_();
-    {
-        // add: CF = r < a, OF = (a ^ r) & (b ^ r)
-        f.local_get(R);
-        f.local_get(A);
-        f.i64_lt_u();
-        f.i64_extend_i32_u();
-        f.local_get(A);
-        f.local_get(R);
-        f.i64_xor();
-        f.local_get(B);
-        f.local_get(R);
-        f.i64_xor();
-        f.i64_and();
-        f.local_get(SIGN);
-        f.i64_and();
-        f.i64_eqz();
-        f.i32_eqz();
-        f.i64_extend_i32_u();
-        f.i64_const(11);
-        f.i64_shl();
-        f.i64_or();
-    }
-    f.end();
-    f.local_set(CF_OF);
+    f.end(); // $end
     // PF
     f.local_get(R);
     f.i64_const(0xff);

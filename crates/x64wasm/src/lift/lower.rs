@@ -4,7 +4,7 @@
 use iced_x86::{Instruction, Mnemonic};
 
 use super::{Flow, Lowered, Unsupported};
-use crate::ir::{BinOp, Gpr, Op, RSP, Temp, Value, Width};
+use crate::ir::{BinOp, Cond, FlagOp, Gpr, Op, RSP, Temp, UnOp, VTemp, Value, Width};
 
 /// Lowering state for one instruction.
 pub(super) struct Lower<'i> {
@@ -12,6 +12,7 @@ pub(super) struct Lower<'i> {
     pub(super) bytes: &'i [u8],
     pub(super) ops: Vec<Op>,
     pub(super) temps: u32,
+    pub(super) vtemps: u32,
     /// The memory operand's effective address, once computed.
     pub(super) ea: Option<Value>,
 }
@@ -23,25 +24,126 @@ impl Lower<'_> {
         t
     }
 
+    pub(super) fn vtemp(&mut self) -> VTemp {
+        let t = VTemp(self.vtemps);
+        self.vtemps += 1;
+        t
+    }
+
     pub(super) fn push_op(&mut self, op: Op) {
         self.ops.push(op);
     }
 
     pub(super) fn bin(&mut self, op: BinOp, a: Value, b: Value) -> Value {
-        if let (Value::Imm(x), Value::Imm(y)) = (a, b) {
-            return Value::Imm(match op {
-                BinOp::Add => x.wrapping_add(y),
-                BinOp::Sub => x.wrapping_sub(y),
-                BinOp::And => x & y,
-                BinOp::Or => x | y,
-                BinOp::Xor => x ^ y,
-                BinOp::Shl => x.wrapping_shl(y as u32),
-                BinOp::ShrU => x.wrapping_shr(y as u32),
-            });
+        if let (Value::Imm(x), Value::Imm(y)) = (a, b)
+            && let Some(v) = op.eval(x, y)
+        {
+            return Value::Imm(v);
         }
         let dst = self.temp();
         self.push_op(Op::Bin { dst, op, a, b });
         Value::Temp(dst)
+    }
+
+    pub(super) fn un(&mut self, op: UnOp, a: Value) -> Value {
+        if let Value::Imm(x) = a {
+            return Value::Imm(op.eval(x));
+        }
+        let dst = self.temp();
+        self.push_op(Op::Un { dst, op, a });
+        Value::Temp(dst)
+    }
+
+    /// `cond != 0 ? a : b`
+    pub(super) fn select(&mut self, cond: Value, a: Value, b: Value) -> Value {
+        if let Value::Imm(c) = cond {
+            return if c != 0 { a } else { b };
+        }
+        let dst = self.temp();
+        self.push_op(Op::Select { dst, cond, a, b });
+        Value::Temp(dst)
+    }
+
+    /// Sign-extends the low `width` bits of `v` to 64 bits.
+    pub(super) fn sext(&mut self, v: Value, width: Width) -> Value {
+        match UnOp::sext(width) {
+            Some(op) => self.un(op, v),
+            None => v,
+        }
+    }
+
+    /// The condition (0 or 1) of the current flag record.
+    pub(super) fn cond(&mut self, cond: Cond) -> Value {
+        let dst = self.temp();
+        self.push_op(Op::Cond { dst, cond });
+        Value::Temp(dst)
+    }
+
+    pub(super) fn load_state(&mut self, width: Width, offset: u64) -> Value {
+        let dst = self.temp();
+        self.push_op(Op::LoadState {
+            dst,
+            width,
+            offset: offset as u32,
+        });
+        Value::Temp(dst)
+    }
+
+    pub(super) fn store_state(&mut self, width: Width, offset: u64, value: Value) {
+        self.push_op(Op::StoreState {
+            width,
+            offset: offset as u32,
+            value,
+        });
+    }
+
+    /// A full (or, with `when`, conditional) lazy flag record.
+    pub(super) fn flags_when(
+        &mut self,
+        op: FlagOp,
+        width: Width,
+        a: Value,
+        b: Value,
+        r: Value,
+        when: Option<Value>,
+    ) {
+        self.push_op(Op::Flags {
+            op,
+            width,
+            a,
+            b,
+            r,
+            when,
+            live: true,
+        });
+    }
+
+    pub(super) fn flags(&mut self, op: FlagOp, width: Width, a: Value, b: Value, r: Value) {
+        self.flags_when(op, width, a, b, r, None);
+    }
+
+    /// An eager record from the previous one: `((F & !clear) | set) ^ flip`.
+    pub(super) fn flags_update(&mut self, clear: u64, set: Value, flip: u64, when: Option<Value>) {
+        self.push_op(Op::FlagsUpdate {
+            clear,
+            set,
+            flip,
+            when,
+            live: true,
+        });
+    }
+
+    /// Faults with `kind` if `cond != 0`. Must come before the
+    /// instruction's first side effect.
+    pub(super) fn fault_if(&mut self, cond: Value, kind: u32) {
+        debug_assert!(
+            !self.ops.iter().any(Op::has_side_effect),
+            "fault check after a side effect"
+        );
+        if cond == Value::Imm(0) {
+            return;
+        }
+        self.push_op(Op::FaultIf { cond, kind });
     }
 
     pub(super) fn mask(&mut self, v: Value, width: Width) -> Value {
