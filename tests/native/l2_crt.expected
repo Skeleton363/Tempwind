@@ -1,0 +1,45 @@
+ctor a (0)
+ctor b (1)
+ctor c (2)
+main start (ctors=3)
+malloc sum=e8ffd445 calloc zero=0
+realloc grow sum=c94d2409 first100=e8ffd445
+realloc shrink sum=a41d6505
+blocks sum=92598e3c
+aligned16: 1
+qsort ints ok=1 first=15072 mid=2429545 last=6383352 sum=049551cf
+n8:908 n5:805 n2:702 n9:609 n6:506 n3:403 n0:300 n7:207 n4:104 n1:1
+strlen: 0 12
+strcmp: 1 1 1
+strncmp: 0 1
+strchr: 2 17 1
+memmove fwd: 01230123456789ab
+memmove back: 56789abcdef
+memset: 0 qqqqq 0
+strcpy/strcat: abcdef 1
+[-42] [42] [4000000000] [beef] [BEEF] [777]
+[Z] [str] [   42] [42   ] [00042] [+42]
+[   right] [left    ] [tru] [     abc]
+[0xff] [0XFF] [010] [0000beef] [beef    ]
+[-9000000000000000000] [18000000000000000000] [deadbeefcafe] [-9223372036854775808]
+[-123456] [4000000000] [-5] [  007]
+[    12] [12    ] [%] [100%]
+[50%] [abc]
+puts line
+pc
+fputs no newline, !
+snprintf: 12 snp-0077-ABC
+strtol ovf: 2147483647 errno=34 end=0
+strtol hex: -127 errno=0 rest=[ xyz]
+strtoull ovf: 18446744073709551615 errno=34
+atoi: 123 -77 0
+strerror EEXIST: File exists
+strerror EACCES: Permission denied
+strerror ENOENT: No such file or directory
+strerror EINVAL: Invalid argument
+errno=12 abs=9 div=-3,-2
+fopen missing: null=1 errno=2
+main end
+atexit 3 (ctors=3)
+atexit 2
+atexit 1
