@@ -1,0 +1,12 @@
+basic.exe start
+rec(1000) = 500500
+fib(20) = 6765
+indirect: 8
+indirect: 14
+indirect: 21
+jump: 11
+jump: 222
+jump: 3333
+jump: 44444
+hidden: 4242
+done

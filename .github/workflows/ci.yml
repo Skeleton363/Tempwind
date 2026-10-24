@@ -47,6 +47,22 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo run -p testkit --release -- spike --out target/spike
 
+      - name: Install MinGW-w64
+        if: ${{ !cancelled() }}
+        run: scripts/apt-install.sh gcc-mingw-w64-x86-64
+
+      - name: Build basic.exe
+        if: ${{ !cancelled() }}
+        run: tests/pe/build.sh
+
+      - name: basic.exe uses only forms with L1 fixtures
+        if: ${{ !cancelled() }}
+        run: cargo run -p testkit --release -- census target/pe/basic.exe --check
+
+      - name: Translate basic.exe (AOT, run-time translator)
+        if: ${{ !cancelled() }}
+        run: tests/pe/prepare.sh
+
       - uses: actions/setup-node@v7
         if: ${{ !cancelled() }}
         with:
@@ -118,12 +134,21 @@ jobs:
         run: scripts/apt-install.sh gcc-mingw-w64-x86-64
       - name: Build hello.exe
         run: tests/native/build.sh
+      - name: Build basic.exe
+        run: tests/pe/build.sh
       - uses: actions/upload-artifact@v7
         with:
           name: hello-exe
           path: |
             target/native/hello.exe
             target/native/hello.exe.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: basic-exe
+          path: |
+            target/pe/basic.exe
+            target/pe/basic.exe.sha256
           if-no-files-found: error
 
   windows-x64:
@@ -147,3 +172,21 @@ jobs:
             exit 1
           fi
           echo "hello.exe output matches hello.expected"
+      - uses: actions/download-artifact@v8
+        with:
+          name: basic-exe
+          path: basic-exe
+      - name: Run basic.exe natively and compare
+        run: |
+          code=0
+          ./basic-exe/basic.exe > basic.actual || code=$?
+          tr -d '\r' < tests/pe/basic.expected > basic.expected
+          if ! cmp basic.expected basic.actual; then
+            echo "::error::basic.exe output differs from tests/pe/basic.expected"
+            exit 1
+          fi
+          if [ "$code" != 42 ]; then
+            echo "::error::basic.exe exit code is $code, expected 42"
+            exit 1
+          fi
+          echo "basic.exe output and exit code match"
