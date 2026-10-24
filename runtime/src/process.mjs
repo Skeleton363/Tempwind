@@ -76,9 +76,14 @@ export class Process {
   }
 
   async init({ exe, plan, aot }) {
+    /** Milliseconds per load phase: check (plan, sha256), compile, memory (create, map), link. */
+    this.timings = {};
+    let t = now();
+    const lap = (name) => { const t1 = now(); this.timings[name] = t1 - t; t = t1; };
     // 1. The plan against the file.
     this.plan = parsePlan(plan);
     this.map = await checkPlan(this.plan, exe);
+    lap('check');
     let aotModule, aotBlocks;
     try {
       aotModule = aot instanceof WebAssembly.Module ? aot : await WebAssembly.compile(aot);
@@ -86,6 +91,7 @@ export class Process {
     } catch (e) {
       throw new ProcessError(`AOT module: ${e.message}`);
     }
+    lap('compile');
 
     // 2. Memory and the image.
     const { memory } = createMemory64({ initialPages: Number(this.map.memoryBytes / BigInt(PAGE_SIZE)) });
@@ -94,6 +100,7 @@ export class Process {
     this.mapImage(exe);
     this.guestHeap = new Bump('guest heap', this.map.guestHeap.base, this.map.guestHeap.limit);
     this.runtimeHeap = new Bump('runtime heap', this.map.runtimeHeap.base, this.map.runtimeHeap.limit);
+    lap('memory');
 
     // 3. The linker: header, slots for the expected keys, host-call function at slot 0.
     const imports = this.plan.imports.flatMap((d) => d.functions.map((f) => ({ dll: d.dll, ...f })));
@@ -122,6 +129,7 @@ export class Process {
       throw new ProcessError(`linking the AOT module: ${e.message}`);
     }
     this.run = this.aot.run;
+    lap('link');
 
     // 6. PEB, TEB, stack (the state block is fresh, zeroed memory).
     this.state = MAIN_STATE_ADDR;
