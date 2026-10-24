@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 
-use super::fixture::{self, Case, Fixture, Header, MemBlock, Output};
+use super::fixture::{self, Case, Fixture, Header, Output};
 use super::forms::{self, Family, GenCase};
 use super::{SEED, fixtures_dir};
 
@@ -44,7 +44,15 @@ pub fn generated_inputs() -> Result<Vec<Fixture>> {
             let cases = family
                 .cases
                 .iter()
-                .map(|c| to_case(c, c.input.gprs, 0, 0, c.input.mem.clone()))
+                .map(|c| {
+                    let output = Output {
+                        gprs: c.input.gprs,
+                        fp: c.input.fp,
+                        mem: c.input.mem.clone(),
+                        ..Output::empty()
+                    };
+                    to_case(c, output)
+                })
                 .collect();
             Fixture {
                 family: family.name.to_string(),
@@ -56,19 +64,15 @@ pub fn generated_inputs() -> Result<Vec<Fixture>> {
         .collect())
 }
 
-fn to_case(c: &GenCase, gprs: [u64; 16], rip: u64, rflags: u64, mem: Vec<MemBlock>) -> Case {
+fn to_case(c: &GenCase, output: Output) -> Case {
     Case {
         form: c.form.clone(),
         bytes: c.bytes.clone(),
         asm: c.asm.clone(),
         flags_mask: c.flags_mask,
+        undefined: c.undefined,
         input: c.input.clone(),
-        output: Output {
-            gprs,
-            rip,
-            rflags,
-            mem,
-        },
+        output,
     }
 }
 
@@ -83,9 +87,13 @@ fn run_native(_families: &[Family]) -> Result<Vec<Fixture>> {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
+    use super::fixture::MemBlock;
     use super::native::Tracee;
     use super::{DATA_ADDR, DATA_SIZE};
     use x64wasm::abi::flags;
+
+    /// The resume flag.
+    const RF: u64 = 1 << 16;
 
     let mut tracee = Tracee::spawn()?;
     let defaults = forms::default_gprs();
@@ -104,9 +112,14 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
                 let off = (block.addr - DATA_ADDR) as usize;
                 image[off..off + block.bytes.len()].copy_from_slice(&block.bytes);
             }
-            let step = tracee
-                .step(&c.bytes, &image, &c.input.gprs, c.input.rflags)
-                .with_context(at)?;
+            let step = tracee.step(&c.bytes, &image, &c.input).with_context(at)?;
+            ensure!(
+                step.fault.map(|f| f.kind) == c.expect_fault,
+                "{}: the instruction raised {}, the generator expected {}",
+                at(),
+                step.fault.map_or("no fault".into(), |f| f.to_string()),
+                c.expect_fault.map_or("no fault", |k| k.name())
+            );
             ensure!(
                 step.rip == c.expect_rip,
                 "{}: rip after the instruction is {:#x}, the generator expected {:#x}",
@@ -114,10 +127,12 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
                 step.rip,
                 c.expect_rip
             );
-            let kept = !(flags::STATUS | flags::TF);
+            // Only the status flags and DF may change. TF is the kernel's
+            // single-step flag; RF is set in the RFLAGS image of a fault.
+            let kept = !(flags::STATUS | flags::DF | flags::TF | RF);
             ensure!(
                 (step.rflags ^ c.input.rflags) & kept == 0,
-                "{}: rflags {:#x} -> {:#x} changed a non-status bit",
+                "{}: rflags {:#x} -> {:#x} changed a bit other than the status flags and DF",
                 at(),
                 c.input.rflags,
                 step.rflags
@@ -135,6 +150,17 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
                     DATA_ADDR + i as u64
                 );
             }
+            // A fault in the first step leaves the state as it was.
+            if step.fault.is_some() && step.steps == 1 {
+                ensure!(
+                    step.gprs == c.input.gprs
+                        && (step.rflags ^ c.input.rflags) & !(flags::TF | RF) == 0
+                        && step.fp == c.input.fp
+                        && step.data == image,
+                    "{}: the fault changed the state",
+                    at()
+                );
+            }
             let mem = c
                 .input
                 .mem
@@ -147,7 +173,19 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
                     }
                 })
                 .collect();
-            cases.push(to_case(c, step.gprs, step.rip, step.rflags, mem));
+            let mut case = to_case(
+                c,
+                Output {
+                    gprs: step.gprs,
+                    rip: step.rip,
+                    rflags: step.rflags,
+                    fp: step.fp,
+                    fault: step.fault,
+                    mem,
+                },
+            );
+            case.normalize();
+            cases.push(case);
         }
         out.push(Fixture {
             family: family.name.to_string(),
@@ -222,7 +260,12 @@ fn write_all(dir: &Path, fixtures: &[Fixture]) -> Result<()> {
         let text = fixture::to_json(f, &header);
         // Sanity: the file must parse back to exactly what was recorded.
         let (_, back) = fixture::parse(&text).context("re-parsing a fresh fixture")?;
-        ensure!(&back == f, "{}: fixture does not round-trip", f.family);
+        ensure!(
+            &back == f,
+            "{}: fixture does not round-trip: {:?}",
+            f.family,
+            fixture::diff(&back, f).first()
+        );
         let unchanged = std::fs::read_to_string(&path)
             .ok()
             .and_then(|old| fixture::parse(&old).ok())

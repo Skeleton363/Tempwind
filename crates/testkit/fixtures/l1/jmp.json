@@ -2,13 +2,14 @@
   "header": {
     "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz",
     "kernel": "Linux 6.18.44-fc-v153",
-    "recorded": "2026-10-23",
+    "recorded": "2026-10-24",
     "note": "Recorded natively by `testkit record`; never edit by hand. `record --check` ignores this header."
   },
-  "format": 1,
+  "format": 2,
   "family": "jmp",
   "seed": "0x54656d7077696e64",
   "layout": {"code": "0x100000", "data": "0x200000", "data_len": "0x10000", "state": "0x300000", "memory": "0x400000"},
+  "defaults": {"fs_base": "0x0", "gs_base": "0x0", "xmm": "0x0", "mxcsr": "0x1f80", "fcw": "0x37f", "fsw": "0x0", "ftw": "0xffff", "st": "0x0"},
   "default_gprs": {
     "rax": "0xaa088d466c96cc76", "rcx": "0xfa76659edd13cd9b", "rdx": "0xacb12bdbd657460b", "rbx": "0x17112f1605d6e07b",
     "rsp": "0x7a3e794780cb934a", "rbp": "0x4d23f1547dbe94fe", "rsi": "0x1bfef4a7829ebe20", "rdi": "0x3996de3c61dc08e4",

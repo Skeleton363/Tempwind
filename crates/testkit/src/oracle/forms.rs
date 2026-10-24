@@ -9,7 +9,7 @@ use iced_x86::{
 };
 use x64wasm::abi::{SENTINEL_RET, flags};
 
-use super::fixture::{Input, MemBlock};
+use super::fixture::{FaultKind, Input, MemBlock, Undefined};
 use super::rng::Rng;
 use super::{CODE_ADDR, DATA_ADDR, DATA_SIZE, SEED};
 
@@ -39,9 +39,13 @@ pub struct GenCase {
     pub bytes: Vec<u8>,
     pub asm: String,
     pub flags_mask: u64,
+    /// Register bits the SDM leaves undefined for this case.
+    pub undefined: Undefined,
     pub input: Input,
     /// RIP the generator predicts after the instruction; the recorder checks it.
     pub expect_rip: u64,
+    /// The exception the generator predicts; the recorder checks it.
+    pub expect_fault: Option<FaultKind>,
 }
 
 pub struct Family {
@@ -397,11 +401,7 @@ impl Builder {
                 bytes: self.image[start..i].to_vec(),
             });
         }
-        Input {
-            gprs: self.gprs,
-            rflags: self.rflags,
-            mem,
-        }
+        Input::new(self.gprs, self.rflags, mem)
     }
 }
 
@@ -1266,8 +1266,10 @@ fn finish(f: Finish<'_>) -> Result<Option<GenCase>> {
         form: f.form.id.clone(),
         asm,
         flags_mask: FLAGS_MASK,
+        undefined: Undefined::NONE,
         input: f.b.input(),
         expect_rip: f.target.unwrap_or(next),
+        expect_fault: None,
         bytes,
     }))
 }
