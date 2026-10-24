@@ -8,6 +8,7 @@ use std::fmt::{self, Write as _};
 use sha2::{Digest, Sha256};
 
 use crate::pe::{self, Pe, PeError};
+use crate::lift::Source;
 use crate::{CodeRegion, Error, Options, Translation};
 
 /// `IMAGE_FILE_RELOCS_STRIPPED`.
@@ -283,8 +284,20 @@ impl From<Error> for ImageError {
 /// The executable sections as mapped: `(va, bytes)`, the file data followed
 /// by zeros up to the section's size in memory.
 pub fn executable_sections(pe: &Pe<'_>) -> Result<Vec<(u64, Vec<u8>)>, PeError> {
+    mapped(pe, pe.executable_sections())
+}
+
+/// Every section as mapped, like [`executable_sections`].
+pub fn all_sections(pe: &Pe<'_>) -> Result<Vec<(u64, Vec<u8>)>, PeError> {
+    mapped(pe, pe.sections.iter())
+}
+
+fn mapped<'s>(
+    pe: &Pe<'_>,
+    sections: impl Iterator<Item = &'s pe::Section>,
+) -> Result<Vec<(u64, Vec<u8>)>, PeError> {
     let mut out = Vec::new();
-    for s in pe.executable_sections() {
+    for s in sections {
         let mut bytes = vec![0u8; s.mapped_size() as usize];
         let n = s.file_size() as usize;
         if n > 0 {
@@ -300,18 +313,24 @@ pub fn executable_sections(pe: &Pe<'_>) -> Result<Vec<(u64, Vec<u8>)>, PeError> 
     Ok(out)
 }
 
+fn regions(sections: &[(u64, Vec<u8>)]) -> Vec<CodeRegion<'_>> {
+    sections
+        .iter()
+        .map(|(base, bytes)| CodeRegion { base: *base, bytes })
+        .collect()
+}
+
 /// Translates an image into one v3 module. Only executable sections are
-/// decoded: a transfer anywhere else is a transfer outside the module.
+/// decoded: a transfer anywhere else is a transfer outside the module. Jump
+/// tables are read from any section.
 pub fn translate(
     pe: &Pe<'_>,
     entries: EntrySet,
     opts: &Options,
 ) -> Result<Translation, ImageError> {
-    let sections = executable_sections(pe)?;
-    let regions: Vec<CodeRegion<'_>> = sections
-        .iter()
-        .map(|(base, bytes)| CodeRegion { base: *base, bytes })
-        .collect();
+    let code = executable_sections(pe)?;
+    let data = all_sections(pe)?;
+    let (code, data) = (regions(&code), regions(&data));
     let entries: Vec<u64> = match entries {
         EntrySet::All => pe
             .function_entries()
@@ -320,5 +339,10 @@ pub fn translate(
             .collect(),
         EntrySet::EntryPoint => vec![pe.rva_to_va(pe.entry_rva)],
     };
-    Ok(crate::translate_regions(&regions, &entries, &[], opts)?)
+    let src = Source {
+        code: &code,
+        data: &data,
+        known: &[],
+    };
+    Ok(crate::translate_source(&src, &entries, opts)?)
 }
