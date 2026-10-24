@@ -1209,6 +1209,8 @@ name = "x64wasm"
 version = "0.0.0"
 dependencies = [
  "iced-x86",
+ "serde_json",
+ "sha2",
  "wasm-encoder 0.262.0",
  "wasmparser 0.262.0",
  "wasmprinter 0.262.0",

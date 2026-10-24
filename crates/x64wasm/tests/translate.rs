@@ -97,7 +97,7 @@ fn module_shape_follows_the_abi() {
                         else {
                             panic!("active segment");
                         };
-                        assert_eq!(table_index, None);
+                        assert!(matches!(table_index, None | Some(0)));
                         let ops: Vec<_> = offset_expr
                             .get_operators_reader()
                             .into_iter()
@@ -124,7 +124,10 @@ fn module_shape_follows_the_abi() {
                 _ => {}
             }
         }
-        assert_eq!(imports, ["memory", "table", "table_base", "lookup", "depth"]);
+        assert_eq!(
+            imports,
+            ["memory", "table", "table_base", "lookup", "depth"]
+        );
         assert!(saw_run && saw_elements);
         // Two functions (the entry and f), one chunk each; every block once.
         let blocks = blocks.expect("x64wasm.blocks section");
@@ -181,8 +184,10 @@ fn functions_chunks_and_names() {
     let wat = wasmprinter::print_bytes(&t.wasm).unwrap();
     assert!(wat.contains("(func $fn_0x1000 (;3;) (type 2)"));
     assert!(wat.contains("(func $fn_0x100b (;4;) (type 2)"));
-    assert!(wat.contains("(table $chunks (;0;) 2 2 funcref)"));
-    assert!(wat.contains("(global $depth (;0;) (mut i32)"));
+    assert!(wat.contains("(import \"env\" \"table\" (table $table (;0;) 0 funcref))"));
+    assert!(wat.contains("(global $table_base (;0;) i32)"));
+    assert!(wat.contains("(global $lookup (;1;) i64)"));
+    assert!(wat.contains("(global $depth (;2;) (mut i32))"));
     assert!(t.ir.starts_with("function 0x1000: wasm function 3 (fn_0x1000)\n"));
 
     // Without the depth guard, calls don't test `depth` (they still count it).
@@ -326,4 +331,62 @@ fn arbitrary_bytes_translate_to_valid_modules() {
         total_insns > 1000,
         "only {total_insns} instructions translated"
     );
+}
+
+#[test]
+fn several_regions_translate_into_one_module() {
+    // 0x1000: call 0x2000; ret / 0x2000 (another region): ret
+    let a = hex("e8fb0f0000 c3");
+    let b = hex("c3");
+    let regions = [
+        CodeRegion {
+            base: 0x1000,
+            bytes: &a,
+        },
+        CodeRegion {
+            base: 0x2000,
+            bytes: &b,
+        },
+    ];
+    let t = x64wasm::translate_regions(&regions, &[0x1000], &[], &Options::default()).unwrap();
+    validate(&t.wasm);
+    assert_eq!(t.blocks, [0x1000, 0x1005, 0x2000]);
+    assert_eq!(t.functions.len(), 2);
+    // An entry outside every region is an error.
+    assert!(matches!(
+        x64wasm::translate_regions(&regions, &[0x1800], &[], &Options::default()),
+        Err(x64wasm::Error::EntryOutsideRegion(0x1800))
+    ));
+}
+
+#[test]
+fn known_addresses_are_never_decoded() {
+    // 0x1000: call 0x1006; ret; 0x1006: nop; nop; ret
+    let code = hex("e801000000 c3 90 90 c3");
+    let region = [CodeRegion {
+        base: 0x1000,
+        bytes: &code,
+    }];
+    let full = x64wasm::translate_regions(&region, &[0x1000], &[], &Options::default()).unwrap();
+    assert_eq!(full.blocks, [0x1000, 0x1005, 0x1006]);
+
+    // The call target and the return site are known: only the call block.
+    let t = x64wasm::translate_regions(&region, &[0x1000], &[0x1005, 0x1006], &Options::default())
+        .unwrap();
+    validate(&t.wasm);
+    assert_eq!(t.blocks, [0x1000]);
+
+    // A fall-through into a known address becomes a jump to it.
+    let prog = x64wasm::lift::lift_regions(&region, &[0x1007], &[0x1006], false).unwrap();
+    let addrs: Vec<u64> = prog.blocks.iter().map(|b| b.addr).collect();
+    assert_eq!(addrs, [0x1006]);
+    assert_eq!(prog.blocks[0].term, Term::Jump(0x1007));
+    let t = x64wasm::translate_regions(&region, &[0x1006], &[0x1007], &Options::default()).unwrap();
+    validate(&t.wasm);
+
+    // An entry that is known is an error.
+    assert!(matches!(
+        x64wasm::translate_regions(&region, &[0x1006], &[0x1006], &Options::default()),
+        Err(x64wasm::Error::EntryKnown(0x1006))
+    ));
 }

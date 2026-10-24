@@ -61,11 +61,11 @@ use wasm_encoder::{
 use crate::Options;
 use crate::abi;
 use crate::func::Partition;
-use crate::link::{BlockEntry, encode_blocks};
 use crate::ir::{
     BinOp, Block, CC_EAGER, CallTarget, Cond, FlagOp, Op, Program, Temp, Term, Value, Width,
     reg_name,
 };
+use crate::link::{BlockEntry, encode_blocks};
 
 // Parameters and locals of a chunk function.
 const P_STATE: u32 = 0;
@@ -1310,7 +1310,10 @@ fn names(prog: &Program, part: &Partition, temps: &[u32]) -> NameSection {
     }
     locals.append(F_RUN, &run);
     let mut lookup = NameMap::new();
-    for (i, n) in ["rip", "slots", "mask", "i", "at", "key"].iter().enumerate() {
+    for (i, n) in ["rip", "slots", "mask", "i", "at", "key"]
+        .iter()
+        .enumerate()
+    {
         lookup.append(i as u32, n);
     }
     locals.append(F_LOOKUP, &lookup);

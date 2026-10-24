@@ -660,8 +660,10 @@ fn load_plan_follows_the_runtime_schema() {
               "fileOffset": "0x1400", "fileSize": "0x200", "characteristics": "0x42000040" },
             { "name": ".pdata", "va": "0x140004000", "virtualSize": "0x30",
               "fileOffset": "0x1600", "fileSize": "0x200", "characteristics": "0x40000040" },
+            // The builder's .text fill (file offset 0x200) overlaps this
+            // header's last field.
             { "name": ".debug_info", "va": "0x140005000", "virtualSize": "0x10",
-              "fileOffset": "0x1800", "fileSize": "0x200", "characteristics": "0x42000040" },
+              "fileOffset": "0x1800", "fileSize": "0x200", "characteristics": "0x90909090" },
         ],
         "imports": [
             { "dll": "KERNEL32.dll", "functions": [
@@ -730,7 +732,11 @@ fn translates_only_executable_sections() {
     for e in pe.function_entries() {
         assert!(all.blocks.contains(&va(e.rva)), "{:#x}", e.rva);
     }
-    assert!(all.blocks.iter().all(|b| text.contains(b)), "{:x?}", all.blocks);
+    assert!(
+        all.blocks.iter().all(|b| text.contains(b)),
+        "{:x?}",
+        all.blocks
+    );
     assert!(!all.blocks.contains(&va(RDATA_RVA)));
     assert!(all.functions.len() >= pe.function_entries().len());
 }
