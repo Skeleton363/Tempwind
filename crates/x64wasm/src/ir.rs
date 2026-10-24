@@ -301,6 +301,10 @@ pub struct Block {
     pub addr: u64,
     pub insns: Vec<Insn>,
     pub term: Term,
+    /// For a block that ends in an unsupported instruction which would
+    /// continue to the next one: that next address, a block of the same
+    /// function (discovery continues past the exit; execution doesn't).
+    pub after_exit: Option<u64>,
 }
 
 /// A recovered jump table (`docs/design/translator.md`, "Linking and

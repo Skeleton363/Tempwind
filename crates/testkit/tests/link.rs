@@ -359,3 +359,28 @@ fn run_time_translation_links_with_the_image() {
     assert_eq!(out.gpr[RAX], 107);
     assert_eq!(out.gpr[RSP], STACK_TOP);
 }
+
+#[test]
+fn unsupported_instructions_still_exit_with_later_code_translated() {
+    // mov eax, 1; movsxd rax, ecx (unsupported); add eax, 2; ret
+    let host = Host::new().unwrap();
+    let bytes = vec![0xb8, 1, 0, 0, 0, 0x48, 0x63, 0xc1, 0x83, 0xc0, 0x02, 0xc3];
+    let t = x64wasm::translate(
+        CodeRegion {
+            base: A,
+            bytes: &bytes,
+        },
+        &[A],
+        &Options::default(),
+    )
+    .unwrap();
+    assert!(
+        t.blocks.contains(&(A + 8)),
+        "the code after it is translated"
+    );
+    let module = host.compile(&t.wasm).unwrap();
+    let (mut m, state) = machine(&host, &[(A, &bytes)], A);
+    let out = m.run_state(&module, STATE, &state).unwrap();
+    assert_eq!((out.exit, out.rip), (abi::EXIT_UNSUPPORTED, A + 5));
+    assert_eq!(out.gpr[RAX], 1);
+}

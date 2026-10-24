@@ -2,8 +2,8 @@
 //! GCC's relative tables behind a bounds check, read from the image, their
 //! targets made block leaders; and near misses that must not count as tables.
 
-use iced_x86::{BlockEncoderOptions, Code, Instruction, MemoryOperand, Register};
 use iced_x86::code_asm::*;
+use iced_x86::{BlockEncoderOptions, Code, Instruction, MemoryOperand, Register};
 use x64wasm::ir::{JumpTable, Program};
 use x64wasm::lift::{Source, lift_source};
 use x64wasm::{CodeRegion, Options};
@@ -112,7 +112,13 @@ fn assert_no_table(b: &Built, prog: &Program) {
 
 /// `cmp ecx, 3; ja default; lea rdx, [table]; movsxd rax, [rdx+rcx*4];
 /// add rax, rdx; jmp rax`, with the table after the code.
-fn basic(a: &mut CodeAssembler, t: &mut CodeLabel, c: &mut [CodeLabel], j: &mut CodeLabel, e: &[u32]) {
+fn basic(
+    a: &mut CodeAssembler,
+    t: &mut CodeLabel,
+    c: &mut [CodeLabel],
+    j: &mut CodeLabel,
+    e: &[u32],
+) {
     let mut default = a.create_label();
     a.cmp(ecx, 3).unwrap();
     a.ja(default).unwrap();

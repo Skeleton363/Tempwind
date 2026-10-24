@@ -32,6 +32,10 @@ struct Decoded {
     insn: Insn,
     /// How control continues after the ops.
     flow: Flow,
+    /// For an unsupported instruction that would continue to the next one
+    /// (it isn't a jump, return or trap): the next address. Discovery
+    /// continues there, so the rest of the function is translated.
+    after: Option<u64>,
 }
 
 enum Flow {
@@ -222,8 +226,21 @@ impl<'a> Lifter<'a> {
                     temps: lower.temps,
                 },
                 flow,
+                after: None,
             }),
-            Err(Unsupported) => Some(unsupported(addr, insn.len() as u32, text)),
+            Err(Unsupported) => {
+                let continues = matches!(
+                    insn.flow_control(),
+                    FlowControl::Next
+                        | FlowControl::Call
+                        | FlowControl::IndirectCall
+                        | FlowControl::ConditionalBranch
+                        | FlowControl::XbeginXabortXend
+                );
+                let mut d = unsupported(addr, insn.len() as u32, text);
+                d.after = continues.then(|| insn.next_ip());
+                Some(d)
+            }
         }
     }
 }
@@ -241,6 +258,7 @@ fn unsupported(addr: u64, len: u32, text: String) -> Decoded {
             reason: abi::EXIT_UNSUPPORTED,
             rip: addr,
         }),
+        after: None,
     }
 }
 
@@ -316,23 +334,27 @@ fn lift_impl(
                     break;
                 };
                 let next = pc.wrapping_add(decoded.insn.len as u64);
-                match &decoded.flow {
+                let after = decoded.after;
+                let (successors, is_branch) = match &decoded.flow {
                     Flow::Next => {
                         prev = Some(pc);
                         pc = next;
+                        continue;
                     }
-                    flow => {
-                        if let (Flow::End(Term::Branch { .. }), Some(p)) = (flow, prev) {
-                            branches.push((p, pc));
-                        }
-                        for target in flow.successors() {
-                            if lifter.contains(target) && leaders.insert(target) {
-                                work.push(target);
-                            }
-                        }
-                        break;
+                    flow => (
+                        flow.successors(),
+                        matches!(flow, Flow::End(Term::Branch { .. })),
+                    ),
+                };
+                if let (true, Some(p)) = (is_branch, prev) {
+                    branches.push((p, pc));
+                }
+                for target in successors.into_iter().chain(after) {
+                    if lifter.contains(target) && leaders.insert(target) {
+                        work.push(target);
                     }
                 }
+                break;
             }
         }
         // Jump tables behind the bounds found so far; their targets are
@@ -370,6 +392,7 @@ fn lift_impl(
     for &leader in &leaders {
         let mut insns = Vec::new();
         let mut pc = leader;
+        let mut after_exit = None;
         let term = loop {
             let Some(decoded) = lifter.decode(pc) else {
                 // Outside the region or cut off by its end.
@@ -379,6 +402,7 @@ fn lift_impl(
                 };
             };
             insns.push(decoded.insn.clone());
+            after_exit = decoded.after.filter(|&a| leaders.contains(&a));
             let next = pc.wrapping_add(decoded.insn.len as u64);
             match &decoded.flow {
                 Flow::End(term) => break term.clone(),
@@ -413,6 +437,7 @@ fn lift_impl(
             addr: leader,
             insns,
             term,
+            after_exit,
         });
     }
     Ok(Program {

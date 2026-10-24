@@ -193,6 +193,12 @@ fn translate_pe(file: &Path, out_dir: &Path, entries: Entries) -> Result<()> {
         t.guest_instructions,
         t.wasm.len()
     );
+    eprintln!(
+        "  {} indirect jumps, {} jump tables, {} unsupported sites",
+        t.indirect_jumps,
+        t.jump_tables.len(),
+        t.unsupported.len()
+    );
     Ok(())
 }
 

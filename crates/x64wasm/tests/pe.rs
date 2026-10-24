@@ -791,7 +791,11 @@ fn image_jump_tables_are_read_from_rdata() {
     let mut image = build_image();
     put(&mut image, 0x200, &r.inner.code_buffer);
     for (i, &t) in targets.iter().enumerate() {
-        put32(&mut image, 0x400 + 0xa00 + 4 * i, t.wrapping_sub(table) as u32);
+        put32(
+            &mut image,
+            0x400 + 0xa00 + 4 * i,
+            t.wrapping_sub(table) as u32,
+        );
     }
     let pe = parse(&image);
     let t = image::translate(&pe, EntrySet::EntryPoint, &x64wasm::Options::default()).unwrap();

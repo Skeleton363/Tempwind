@@ -390,3 +390,48 @@ fn known_addresses_are_never_decoded() {
         Err(x64wasm::Error::EntryKnown(0x1006))
     ));
 }
+
+#[test]
+fn discovery_continues_after_unsupported_instructions() {
+    // 0x1000: mov eax, 1; movsxd rax, ecx (unsupported); add eax, 2;
+    // jz 0x100e; nop; ret
+    let code = hex("b801000000 4863c1 83c002 7401 90 c3");
+    let t = translate(&code, 0x1000, &Options::default());
+    validate(&t.wasm);
+    assert_eq!(t.blocks, [0x1000, 0x1008, 0x100d, 0x100e]);
+    assert_eq!(t.unsupported, [0x1005]);
+    // One function owns them all.
+    assert_eq!(t.functions.len(), 1);
+    let owned: Vec<u64> = t.functions[0]
+        .chunks
+        .iter()
+        .flat_map(|c| c.blocks.clone())
+        .collect();
+    assert_eq!(owned, t.blocks);
+    // The first block still ends in the exit.
+    let prog = x64wasm::lift(
+        CodeRegion {
+            base: 0x1000,
+            bytes: &code,
+        },
+        &[0x1000],
+    )
+    .unwrap();
+    assert_eq!(
+        prog.blocks[0].term,
+        Term::Exit {
+            reason: abi::EXIT_UNSUPPORTED,
+            rip: 0x1005
+        }
+    );
+    assert_eq!(prog.blocks[0].after_exit, Some(0x1008));
+
+    // An unsupported instruction that doesn't continue (ud2, int3, an
+    // invalid encoding) ends discovery there.
+    for stop in ["0f0b", "cc", "06"] {
+        let code = hex(&format!("b801000000 {stop} 90 c3"));
+        let t = translate(&code, 0x1000, &Options::default());
+        validate(&t.wasm);
+        assert_eq!(t.blocks, [0x1000], "{stop}");
+    }
+}

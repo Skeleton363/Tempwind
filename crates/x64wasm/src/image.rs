@@ -7,8 +7,8 @@ use std::fmt::{self, Write as _};
 
 use sha2::{Digest, Sha256};
 
-use crate::pe::{self, Pe, PeError};
 use crate::lift::Source;
+use crate::pe::{self, Pe, PeError};
 use crate::{CodeRegion, Error, Options, Translation};
 
 /// `IMAGE_FILE_RELOCS_STRIPPED`.
