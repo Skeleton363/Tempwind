@@ -9,7 +9,7 @@ use iced_x86::{
 };
 use x64wasm::abi::{SENTINEL_RET, flags};
 
-use super::fixture::{FaultKind, Input, MemBlock, Undefined};
+use super::fixture::{FaultKind, FpState, Input, MemBlock, Undefined};
 use super::rng::Rng;
 use super::{CODE_ADDR, DATA_ADDR, DATA_SIZE, SEED};
 
@@ -27,10 +27,8 @@ const STACK_HI: u64 = 0xfe00;
 /// code page, so they never point back into the instruction itself.
 const NO_TARGET_LEN: u64 = 16;
 
-/// The families, in the order their files are written and reported.
-pub const FAMILIES: [&str; 11] = [
-    "mov", "add", "sub", "cmp", "lea", "push", "pop", "jcc", "jmp", "call", "ret",
-];
+mod generic;
+mod special;
 
 /// One generated case, before recording.
 #[derive(Clone, Debug)]
@@ -326,6 +324,9 @@ struct Builder {
     gprs: [u64; 16],
     touched: [bool; 16],
     rflags: u64,
+    fs_base: u64,
+    gs_base: u64,
+    fp: FpState,
     image: Vec<u8>,
     defined: Vec<bool>,
 }
@@ -336,6 +337,9 @@ impl Builder {
             gprs: *defaults,
             touched: [false; 16],
             rflags: random_flags(rng),
+            fs_base: 0,
+            gs_base: 0,
+            fp: FpState::DEFAULT,
             image: vec![0; DATA_SIZE as usize],
             defined: vec![false; DATA_SIZE as usize],
         }
@@ -401,7 +405,14 @@ impl Builder {
                 bytes: self.image[start..i].to_vec(),
             });
         }
-        Input::new(self.gprs, self.rflags, mem)
+        Input {
+            gprs: self.gprs,
+            rflags: self.rflags,
+            fs_base: self.fs_base,
+            gs_base: self.gs_base,
+            fp: self.fp,
+            mem,
+        }
     }
 }
 
@@ -735,6 +746,10 @@ enum Kind {
     CallMem,
     Ret,
     RetImm,
+    /// The generic generator (`generic.rs`).
+    Generic(generic::Spec),
+    /// The hand-written generators (`special.rs`).
+    Special(special::Special),
 }
 
 struct Form {
@@ -1171,6 +1186,9 @@ fn forms() -> Vec<Form> {
     out.push(stack("call_m64", "call", Kind::CallMem));
     out.push(stack("ret", "ret", Kind::Ret));
     out.push(stack("ret_imm16", "ret", Kind::RetImm));
+
+    // M3: the generic forms, with the special ones at their place.
+    generic::forms(&mut out, &mut special::after);
     out
 }
 
@@ -1457,6 +1475,12 @@ fn gen_case(
         })
     };
     match &form.kind {
+        Kind::Generic(spec) => return generic::case(rng, form, idx, defaults, *spec),
+        Kind::Special(s) => return special::case(rng, form, idx, defaults, *s),
+        _ => {}
+    }
+    match &form.kind {
+        Kind::Generic(_) | Kind::Special(_) => unreachable!(),
         Kind::Alu { codes, dst, src } => gen_alu(rng, form, idx, defaults, codes, *dst, *src),
         Kind::Lea { bits, mode } => gen_lea(rng, form, defaults, *bits, *mode),
         Kind::PushReg | Kind::PopReg => {
@@ -1599,21 +1623,22 @@ fn gen_case(
     }
 }
 
-/// Generates every case of every family, in file order.
+/// Generates every case of every family, in file order: families in the
+/// order their first form appears (the Phase 0 families first).
 pub fn generate() -> Result<Vec<Family>> {
     let defaults = default_gprs();
-    let mut families: Vec<Family> = FAMILIES
-        .iter()
-        .map(|&name| Family {
-            name,
-            cases: Vec::new(),
-        })
-        .collect();
+    let mut families: Vec<Family> = Vec::new();
     for form in forms() {
+        if !families.iter().any(|f| f.name == form.family) {
+            families.push(Family {
+                name: form.family,
+                cases: Vec::new(),
+            });
+        }
         let family = families
             .iter_mut()
             .find(|f| f.name == form.family)
-            .with_context(|| format!("unknown family {}", form.family))?;
+            .expect("family just added");
         let mut rng = Rng::for_stream(SEED, &form.id);
         for idx in 0..form.count {
             let mut attempts = 0;
