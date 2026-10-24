@@ -101,8 +101,8 @@ Each milestone ends with CI green, a draft PR "[Phase 1] <milestone>", and `docs
 |---|---|---|
 | M1 | Function-level translation and target census | One wasm function per guest function (`docs/design/translator.md`, ABI v2 in `docs/design/abi.md`), with guest call/ret mapped to wasm call/return. Phase 0's 201k-instruction region compiles in seconds. CI builds 7zz.exe and coremark.exe with MinGW and publishes them. `testkit census` defines the instruction scope (`docs/design/instruction-scope.md`). |
 | M2 | PE loading | AOT translation of whole PE images; JS runtime with import thunks as host calls and run-time translation of missed code. A small MinGW test PE runs translated == native. 7zz.exe and coremark.exe translate and compile in V8 and wasmtime. |
-| M3 | Integer instructions and CRT startup | Fixture format v2 and every in-scope integer form. MinGW CRT startup and the L2 C programs run translated == native. |
-| M4 | SSE, x87 and CoreMark | In-scope SSE/SSE2 and x87 forms. CoreMark validates translated and is tracked in CI. |
+| M3 | Integer instructions and CRT startup | Fixture format v2 and every in-scope integer form, plus the SSE data moves, bitwise ops and `fninit` that integer code uses. MinGW CRT startup and the integer L2 programs run translated == native. |
+| M4 | SSE, x87 and CoreMark | In-scope SSE/SSE2 and x87 forms. hello.exe and a float L2 program run translated == native. CoreMark validates translated and is tracked in CI. |
 | M5 | 7-Zip exactly like native | The command matrix (formats, methods, `t`, `l`, `x`, `h`) matches native Windows byte for byte. Every in-scope form has fixtures and replay is 100 %. `7z b` is tracked. |
 | M6 | Speed and close-out | Register-sync and flag liveness, loop structuring, call fast path. The cost of the guest-memory checks is measured on real code. |
 
