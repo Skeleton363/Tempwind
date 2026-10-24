@@ -26,6 +26,7 @@ A translated module imports, in this order:
 - Functions:
   - function 0 is `run`, 1 `lookup`, 2 `flags`;
   - 3 + i is chunk i, at table index `table_base + i`, which an active element segment with offset `global.get $table_base` writes;
+  - helper functions such as `div128` (128-by-64-bit division) follow the chunks; they are emitted only when used and are not in the table;
   - guest functions (chunks) have the type `(state: i64, entry: i32, ret: i64) -> i32`. `entry` is the index of the block to start at, and every block is a valid entry. `ret` is the return address the caller expects: a `ret` that pops exactly this value returns to the wasm caller.
 - Globals 0-2 are the imported `table_base`, `lookup` and `depth`. Only `run` is exported.
 - The name section names every function, local, the table and the globals. A chunk is named after its guest function's entry: `fn_0x140001000`, or `fn_0x140001000_c1` and so on for the chunks of a large function that don't hold the entry.
@@ -163,7 +164,7 @@ Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
 |---|---|---|
 | 1 | `EXIT_LEFT_CODE` | Control reached a guest address with no block in the lookup table: a fall-through past the code, a target nothing translated yet, or a `ret` to an unknown address. `rip` holds that address. Hosts translate more code (run-time translation) or stop. |
 | 2 | `EXIT_UNSUPPORTED` | The instruction at `rip` is not supported yet. Registers hold the state before it. |
-| 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. RIP is the faulting instruction, and every register holds its value from before it. Translated code emits it from M3 for #DE (`div`, `idiv`), #UD (`ud2`) and #GP, with fault address 0. M2's runtime raises it for execution outside executable sections. NULL and store checks come with M6. |
+| 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. RIP is the faulting instruction, and every register holds its value from before it. Translated code emits it from M3 for #DE (`div`, `idiv`), #UD (`ud2` and bytes that don't decode) and #GP, with fault address 0. An instruction that decodes but is outside the CPUID profile stays `EXIT_UNSUPPORTED`. M2's runtime raises it for execution outside executable sections. NULL and store checks come with M6. |
 | 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API, a shim error. The host knows why. |
 
 A test function returns to the host by `ret`ing to a sentinel return address that the host pushed (`SENTINEL_RET = 0x0000_7FFF_FFFF_0000`). The host then expects exit 1 with `rip == SENTINEL_RET`.
