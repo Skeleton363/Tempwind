@@ -77,8 +77,13 @@ export class Process {
     // 1. The plan against the file.
     this.plan = parsePlan(plan);
     this.map = await checkPlan(this.plan, exe);
-    const aotModule = aot instanceof WebAssembly.Module ? aot : await WebAssembly.compile(aot);
-    const aotBlocks = moduleBlocks(aotModule).blocks.length;
+    let aotModule, aotBlocks;
+    try {
+      aotModule = aot instanceof WebAssembly.Module ? aot : await WebAssembly.compile(aot);
+      aotBlocks = moduleBlocks(aotModule).blocks.length;
+    } catch (e) {
+      throw new ProcessError(`AOT module: ${e.message}`);
+    }
 
     // 2. Memory and the image.
     const { memory } = createMemory64({ initialPages: Number(this.map.memoryBytes / BigInt(PAGE_SIZE)) });
@@ -109,7 +114,11 @@ export class Process {
     this.writeImports();
 
     // 5. The AOT module.
-    this.aot = await this.linker.link(aotModule);
+    try {
+      this.aot = await this.linker.link(aotModule);
+    } catch (e) {
+      throw new ProcessError(`linking the AOT module: ${e.message}`);
+    }
     this.run = this.aot.run;
 
     // 6. PEB, TEB, stack (the state block is fresh, zeroed memory).

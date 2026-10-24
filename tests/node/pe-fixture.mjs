@@ -9,11 +9,14 @@ export const TEXT = BASE + 0x1000n;
 export const DATA = BASE + 0x2000n;
 export const IDATA = BASE + 0x3000n;
 export const TLSSEC = BASE + 0x4000n;
+/** Text at the start of .data (DATA). */
+export const GREETING = 'hello from the guest\n';
 const h = (v) => '0x' + BigInt(v).toString(16);
 
 export function fakeExe() {
   const exe = new Uint8Array(0xc00);
   for (let i = 0; i < exe.length; i++) exe[i] = (i * 7 + 1) & 0xff;
+  exe.set(new TextEncoder().encode(GREETING), 0x600);
   return exe;
 }
 
@@ -73,15 +76,18 @@ const i64Const = (v) => {
 };
 
 /**
- * An AOT-shaped module whose `run` sets RCX = rcx, calls the host function
- * (table slot 0) for import `id` with ret = NO_RET, then returns the exit
- * reason on STATUS_EXIT, else stores and returns EXIT_LEFT_CODE (rip is
- * whatever the host call left, e.g. the popped return address).
- * Its one block sits at the entry point.
+ * An AOT-shaped module whose `run` sets registers (`regs`: {rcx, rdx, r8,
+ * r9}, or a BigInt for RCX alone), calls the host function (table slot 0)
+ * for import `id` with ret = NO_RET, then returns the exit reason on
+ * STATUS_EXIT, else stores and returns EXIT_LEFT_CODE (rip is whatever the
+ * host call left, e.g. the popped return address). Its one block sits at
+ * the entry point.
  */
-export function hostCallAot(id, rcx) {
+export function hostCallAot(id, regs) {
+  if (typeof regs === 'bigint') regs = { rcx: regs };
+  const offsets = { rcx: 8, rdx: 16, r8: 64, r9: 72 };
   const run = [
-    0x20, 0, ...i64Const(rcx), 0x37, 3, 8, // state.rcx = rcx
+    ...Object.entries(regs).flatMap(([r, v]) => [0x20, 0, ...i64Const(v), 0x37, 3, offsets[r]]),
     0x20, 0, 0x41, id, ...i64Const(-1n), 0x41, 0, 0x11, 1, 0, // call_indirect (type 1) table[0](state, id, NO_RET)
     0x41, 2, 0x46, // status == STATUS_EXIT
     0x04, 0x7f,
