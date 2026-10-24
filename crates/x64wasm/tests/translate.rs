@@ -3,7 +3,7 @@
 //! Execution tests live in `crates/testkit/tests/spike*.rs` (x64wasm can't
 //! dev-depend on testkit without a cycle).
 
-use wasmparser::{Payload, TypeRef, Validator, WasmFeatures};
+use wasmparser::{Payload, TypeRef, ValType, Validator, WasmFeatures};
 use x64wasm::ir::{Op, Term};
 use x64wasm::{CodeRegion, Options, abi};
 
@@ -34,7 +34,7 @@ fn translate(bytes: &[u8], base: u64, opts: &Options) -> x64wasm::Translation {
 fn module_shape_follows_the_abi() {
     for shared in [false, true] {
         let t = translate(
-            &hex(SUM_LOOP),
+            &hex(CALL_LEA),
             0x1_4000_1000,
             &Options {
                 shared_memory: shared,
@@ -42,25 +42,41 @@ fn module_shape_follows_the_abi() {
             },
         );
         validate(&t.wasm);
-        let mut saw_memory = false;
+        let mut imports = Vec::new();
         let mut saw_run = false;
+        let mut saw_elements = false;
+        let mut blocks = None;
         for payload in wasmparser::Parser::new(0).parse_all(&t.wasm) {
             match payload.unwrap() {
-                Payload::ImportSection(imports) => {
-                    for import in imports.into_imports() {
+                Payload::ImportSection(section) => {
+                    for import in section.into_imports() {
                         let import = import.unwrap();
-                        assert_eq!(
-                            (import.module, import.name),
-                            (abi::MEMORY_MODULE, abi::MEMORY_NAME)
-                        );
-                        let TypeRef::Memory(m) = import.ty else {
-                            panic!("only the memory is imported");
-                        };
-                        assert!(m.memory64);
-                        assert_eq!(m.shared, shared);
-                        assert_eq!(m.initial, 1);
-                        assert_eq!(m.maximum, shared.then_some(abi::MAX_MEMORY_PAGES));
-                        saw_memory = true;
+                        assert_eq!(import.module, "env");
+                        imports.push(import.name.to_string());
+                        match (import.name, import.ty) {
+                            ("memory", TypeRef::Memory(m)) => {
+                                assert!(m.memory64);
+                                assert_eq!(m.shared, shared);
+                                assert_eq!(m.initial, 1);
+                                assert_eq!(m.maximum, shared.then_some(abi::MAX_MEMORY_PAGES));
+                            }
+                            ("table", TypeRef::Table(tt)) => {
+                                assert_eq!(tt.element_type, wasmparser::RefType::FUNCREF);
+                                assert!(!tt.table64);
+                                assert_eq!(tt.initial, 0);
+                                assert_eq!(tt.maximum, None);
+                            }
+                            ("table_base", TypeRef::Global(g)) => {
+                                assert_eq!((g.content_type, g.mutable), (ValType::I32, false));
+                            }
+                            ("lookup", TypeRef::Global(g)) => {
+                                assert_eq!((g.content_type, g.mutable), (ValType::I64, false));
+                            }
+                            ("depth", TypeRef::Global(g)) => {
+                                assert_eq!((g.content_type, g.mutable), (ValType::I32, true));
+                            }
+                            other => panic!("unexpected import {other:?}"),
+                        }
                     }
                 }
                 Payload::ExportSection(exports) => {
@@ -68,10 +84,62 @@ fn module_shape_follows_the_abi() {
                     assert_eq!(names, [abi::RUN_EXPORT]);
                     saw_run = true;
                 }
+                Payload::TableSection(_) | Payload::GlobalSection(_) => {
+                    panic!("v3 modules define no tables or globals")
+                }
+                Payload::ElementSection(section) => {
+                    for element in section {
+                        let element = element.unwrap();
+                        let wasmparser::ElementKind::Active {
+                            table_index,
+                            offset_expr,
+                        } = element.kind
+                        else {
+                            panic!("active segment");
+                        };
+                        assert_eq!(table_index, None);
+                        let ops: Vec<_> = offset_expr
+                            .get_operators_reader()
+                            .into_iter()
+                            .map(|o| o.unwrap())
+                            .collect();
+                        assert!(matches!(
+                            ops[..],
+                            [
+                                wasmparser::Operator::GlobalGet { global_index: 0 },
+                                wasmparser::Operator::End
+                            ]
+                        ));
+                        let wasmparser::ElementItems::Functions(funcs) = element.items else {
+                            panic!("function indices");
+                        };
+                        let funcs: Vec<u32> = funcs.into_iter().map(|f| f.unwrap()).collect();
+                        assert_eq!(funcs, [3, 4], "chunk i is function 3 + i");
+                        saw_elements = true;
+                    }
+                }
+                Payload::CustomSection(c) if c.name() == abi::BLOCKS_SECTION => {
+                    blocks = Some(x64wasm::link::decode_blocks(c.data()).unwrap());
+                }
                 _ => {}
             }
         }
-        assert!(saw_memory && saw_run);
+        assert_eq!(imports, ["memory", "table", "table_base", "lookup", "depth"]);
+        assert!(saw_run && saw_elements);
+        // Two functions (the entry and f), one chunk each; every block once.
+        let blocks = blocks.expect("x64wasm.blocks section");
+        assert_eq!(blocks, x64wasm::link::read_blocks(&t.wasm).unwrap());
+        assert_eq!(blocks.chunks, 2);
+        let addrs: Vec<u64> = blocks.blocks.iter().map(|b| b.addr).collect();
+        assert_eq!(addrs, t.blocks);
+        for f in &t.functions {
+            for c in &f.chunks {
+                for (entry, addr) in c.blocks.iter().enumerate() {
+                    let b = blocks.blocks.iter().find(|b| b.addr == *addr).unwrap();
+                    assert_eq!((b.chunk, b.entry), (c.wasm_index - 3, entry as u32));
+                }
+            }
+        }
     }
 }
 

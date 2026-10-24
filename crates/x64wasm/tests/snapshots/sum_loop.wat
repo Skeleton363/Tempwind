@@ -4,10 +4,12 @@
   (type (;2;) (func (param i64 i32 i64) (result i32)))
   (type (;3;) (func (param i64) (result i32 i32)))
   (import "env" "memory" (memory (;0;) i64 1))
-  (table $chunks (;0;) 1 1 funcref)
-  (global $depth (;0;) (mut i32) i32.const 0)
+  (import "env" "table" (table $table (;0;) 0 funcref))
+  (import "env" "table_base" (global $table_base (;0;) i32))
+  (import "env" "lookup" (global $lookup (;1;) i64))
+  (import "env" "depth" (global $depth (;2;) (mut i32)))
   (export "run" (func $run))
-  (elem (;0;) (table $chunks) (i32.const 0) func $fn_0x100000)
+  (elem (;0;) (table $table) (global.get $table_base) func $fn_0x100000)
   (func $run (;0;) (type 0) (param $state i64) (result i32)
     (local $func i32) (local $entry i32) (local $status i32)
     local.get $state
@@ -81,32 +83,54 @@
     local.get $status
   )
   (func $lookup (;1;) (type 3) (param $rip i64) (result i32 i32)
+    (local $slots i64) (local $mask i64) (local $i i64) (local $at i64) (local $key i64)
+    global.get $lookup
+    i64.load align=1
+    local.set $slots
+    global.get $lookup
+    i64.load offset=8 align=1
+    local.tee $mask
     local.get $rip
-    i64.const 1048576
-    i64.eq
-    if ;; label = @1
-      i32.const 0
-      i32.const 0
-      return
+    i64.const -7046029254386353131
+    i64.mul
+    i64.const 32
+    i64.shr_u
+    i64.and
+    local.set $i
+    loop ;; label = @1
+      local.get $slots
+      local.get $i
+      i64.const 4
+      i64.shl
+      i64.add
+      local.tee $at
+      i64.load align=1
+      local.tee $key
+      i64.eqz
+      if ;; label = @2
+        i32.const -1
+        i32.const 0
+        return
+      end
+      local.get $key
+      local.get $rip
+      i64.eq
+      if ;; label = @2
+        local.get $at
+        i32.load offset=8 align=1
+        local.get $at
+        i32.load offset=12 align=1
+        return
+      end
+      local.get $i
+      i64.const 1
+      i64.add
+      local.get $mask
+      i64.and
+      local.set $i
+      br 0 (;@1;)
     end
-    local.get $rip
-    i64.const 1048587
-    i64.eq
-    if ;; label = @1
-      i32.const 0
-      i32.const 1
-      return
-    end
-    local.get $rip
-    i64.const 1048596
-    i64.eq
-    if ;; label = @1
-      i32.const 0
-      i32.const 2
-      return
-    end
-    i32.const -1
-    i32.const 0
+    unreachable
   )
   (func $flags (;2;) (type 1) (param $op i32) (param $a i64) (param $b i64) (param $r i64) (result i64)
     (local $sign i64) (local $cf_of i64)
@@ -418,5 +442,6 @@
     end
     local.get $status
   )
+  (@custom "x64wasm.blocks" (after code) "\01\00\00\00\01\00\00\00\03\00\00\00\00\00\00\00\00\00\10\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\10\00\00\00\00\00\00\00\00\00\01\00\00\00\14\00\10\00\00\00\00\00\00\00\00\00\02\00\00\00")
 )
 

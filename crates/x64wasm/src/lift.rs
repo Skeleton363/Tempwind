@@ -65,8 +65,11 @@ impl Flow {
 }
 
 struct Lifter<'a> {
-    region: CodeRegion<'a>,
-    decoder: Decoder<'a>,
+    regions: &'a [CodeRegion<'a>],
+    /// One decoder per region.
+    decoders: Vec<Decoder<'a>>,
+    /// Sorted addresses that already have blocks elsewhere: never decoded.
+    known: &'a [u64],
     formatter: IntelFormatter,
     want_text: bool,
     /// Decoded instructions by address; `None` = can't decode there (outside
@@ -75,8 +78,19 @@ struct Lifter<'a> {
 }
 
 impl<'a> Lifter<'a> {
+    fn region_of(&self, addr: u64) -> Option<usize> {
+        self.regions
+            .iter()
+            .position(|r| addr.wrapping_sub(r.base) < r.bytes.len() as u64)
+    }
+
+    fn is_known(&self, addr: u64) -> bool {
+        self.known.binary_search(&addr).is_ok()
+    }
+
+    /// `addr` is code to translate here: inside a region and not known.
     fn contains(&self, addr: u64) -> bool {
-        addr.wrapping_sub(self.region.base) < self.region.bytes.len() as u64
+        self.region_of(addr).is_some() && !self.is_known(addr)
     }
 
     fn decode(&mut self, addr: u64) -> Option<&Decoded> {
@@ -88,13 +102,17 @@ impl<'a> Lifter<'a> {
     }
 
     fn decode_uncached(&mut self, addr: u64) -> Option<Decoded> {
-        if !self.contains(addr) {
+        if self.is_known(addr) {
             return None;
         }
-        let offset = (addr - self.region.base) as usize;
-        self.decoder.set_position(offset).ok()?;
-        self.decoder.set_ip(addr);
-        let insn = self.decoder.decode();
+        let r = self.region_of(addr)?;
+        let region = self.regions[r];
+        let offset = (addr - region.base) as usize;
+        let decoder = &mut self.decoders[r];
+        decoder.set_position(offset).ok()?;
+        decoder.set_ip(addr);
+        let insn = decoder.decode();
+        let error = decoder.last_error();
         let text = if self.want_text {
             let mut text = String::new();
             self.formatter.format(&insn, &mut text);
@@ -102,7 +120,7 @@ impl<'a> Lifter<'a> {
         } else {
             String::new()
         };
-        match self.decoder.last_error() {
+        match error {
             DecoderError::None => {}
             DecoderError::NoMoreBytes => return None,
             _ => {
@@ -112,7 +130,7 @@ impl<'a> Lifter<'a> {
         }
         let mut lower = Lower {
             insn: &insn,
-            bytes: &self.region.bytes[offset..offset + insn.len()],
+            bytes: &region.bytes[offset..offset + insn.len()],
             ops: Vec::new(),
             temps: 0,
             ea: None,
@@ -151,16 +169,36 @@ fn unsupported(addr: u64, len: u32, text: String) -> Decoded {
 
 /// Discovers and lowers all code reachable from `entries`.
 pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<Program, Error> {
+    lift_regions(&[region], &[], entries, want_text)
+}
+
+/// Like [`lift`], over several code regions (an image's executable
+/// sections). Addresses in `known` (sorted) count as outside the code: they
+/// are never decoded, and transfers to them stay transfers to an address
+/// without a block here (lookup transfers in the emitted module).
+pub fn lift_regions(
+    regions: &[CodeRegion<'_>],
+    known: &[u64],
+    entries: &[u64],
+    want_text: bool,
+) -> Result<Program, Error> {
     let mut lifter = Lifter {
-        region,
-        decoder: Decoder::with_ip(64, region.bytes, region.base, crate::DECODER_OPTIONS),
+        regions,
+        decoders: regions
+            .iter()
+            .map(|r| Decoder::with_ip(64, r.bytes, r.base, crate::DECODER_OPTIONS))
+            .collect(),
+        known,
         formatter: IntelFormatter::new(),
         want_text,
         cache: HashMap::new(),
     };
     for &entry in entries {
-        if !lifter.contains(entry) {
+        if lifter.region_of(entry).is_none() {
             return Err(Error::EntryOutsideRegion(entry));
+        }
+        if lifter.is_known(entry) {
+            return Err(Error::EntryKnown(entry));
         }
     }
 
@@ -190,6 +228,7 @@ pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<
     }
 
     // Pass 2: form blocks.
+    let known = lifter.known;
     let mut blocks = Vec::with_capacity(leaders.len());
     for &leader in &leaders {
         let mut insns = Vec::new();
@@ -206,7 +245,9 @@ pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<
             let next = pc.wrapping_add(decoded.insn.len as u64);
             match &decoded.flow {
                 Flow::End(term) => break term.clone(),
-                Flow::Next if leaders.contains(&next) => break Term::Jump(next),
+                Flow::Next if leaders.contains(&next) || known.binary_search(&next).is_ok() => {
+                    break Term::Jump(next);
+                }
                 Flow::Next => pc = next,
             }
         };

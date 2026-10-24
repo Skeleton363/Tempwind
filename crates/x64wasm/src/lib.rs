@@ -6,8 +6,10 @@
 pub mod abi;
 pub mod emit;
 pub mod func;
+pub mod image;
 pub mod ir;
 pub mod lift;
+pub mod link;
 pub mod pe;
 
 use std::fmt;
@@ -109,6 +111,8 @@ pub enum Error {
     Unimplemented(&'static str),
     /// No entry points were given.
     NoEntries,
+    /// An entry point is in the `known` set (it already has a block).
+    EntryKnown(u64),
 }
 
 impl fmt::Display for Error {
@@ -119,6 +123,7 @@ impl fmt::Display for Error {
             }
             Error::Unimplemented(what) => write!(f, "not implemented: {what}"),
             Error::NoEntries => write!(f, "no entry points"),
+            Error::EntryKnown(addr) => write!(f, "entry {addr:#x} already has a block"),
         }
     }
 }
@@ -146,6 +151,23 @@ pub fn translate_without_dump(
     translate_impl(region, entries, opts, false)
 }
 
+/// Translates the code reachable from `entries` inside several regions (an
+/// image's executable sections), skipping the IR dump. Addresses in `known`
+/// (sorted ascending) are treated as outside the code: they are never
+/// decoded, and transfers to them probe the lookup table.
+pub fn translate_regions(
+    regions: &[CodeRegion<'_>],
+    entries: &[u64],
+    known: &[u64],
+    opts: &Options,
+) -> Result<Translation, Error> {
+    if entries.is_empty() {
+        return Err(Error::NoEntries);
+    }
+    let prog = lift::lift_regions(regions, known, entries, false)?;
+    Ok(finish(prog, entries, opts, false))
+}
+
 /// Decodes and lowers into the IR, with flag liveness applied.
 pub fn lift(region: CodeRegion<'_>, entries: &[u64]) -> Result<ir::Program, Error> {
     let mut prog = lift::lift(region, entries, true)?;
@@ -162,7 +184,11 @@ fn translate_impl(
     if entries.is_empty() {
         return Err(Error::NoEntries);
     }
-    let mut prog = lift::lift(region, entries, dump)?;
+    let prog = lift::lift(region, entries, dump)?;
+    Ok(finish(prog, entries, opts, dump))
+}
+
+fn finish(mut prog: ir::Program, entries: &[u64], opts: &Options, dump: bool) -> Translation {
     prog.analyze_flags();
     let part = func::partition(&prog, entries, opts);
     let wasm = emit::emit(&prog, &part, opts);
@@ -185,7 +211,7 @@ fn translate_impl(
                 .collect(),
         })
         .collect();
-    Ok(Translation {
+    Translation {
         wasm,
         blocks: prog.blocks.iter().map(|b| b.addr).collect(),
         functions,
@@ -195,7 +221,7 @@ fn translate_impl(
             String::new()
         },
         guest_instructions: prog.insn_count(),
-    })
+    }
 }
 
 #[cfg(test)]
