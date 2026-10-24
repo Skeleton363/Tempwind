@@ -71,6 +71,8 @@ export class Process {
     this.stop = null;
     this.running = false;
     this.translations = 0;
+    /** Total milliseconds of run-time translation: translate, compile, link. */
+    this.translateMs = 0;
   }
 
   async init({ exe, plan, aot }) {
@@ -287,6 +289,7 @@ export class Process {
       throw new ProcessError(`linking the run-time translation at ${hex(rip)}: ${e.message}`);
     }
     this.translations++;
+    this.translateMs += now() - t0;
     if (this.trace.translate) {
       this.log(`translate ${hex(rip)}: ${linked.blocks} blocks (${linked.inserted} new), ${wasm.length} wasm bytes, ${(now() - t0).toFixed(1)} ms`);
     }

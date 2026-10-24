@@ -57,5 +57,6 @@ for (const variant of ['all', 'entry']) {
     assert.equal(p.captured('stderr').length, 0);
     // `hidden` is reachable only through a computed pointer: AOT cannot find it.
     assert.ok(p.translations >= 1, `${p.translations} run-time translations`);
+    console.log(`basic.exe (${variant}): ${p.translations} run-time translations, ${p.translateMs.toFixed(1)} ms`);
   });
 }
