@@ -11,6 +11,7 @@ pub mod ir;
 pub mod lift;
 pub mod link;
 pub mod pe;
+mod switch;
 
 use std::fmt;
 
@@ -100,6 +101,13 @@ pub struct Translation {
     pub ir: String,
     /// Number of guest instructions translated.
     pub guest_instructions: usize,
+    /// Jump tables recovered while decoding.
+    pub jump_tables: Vec<ir::JumpTable>,
+    /// Indirect jumps seen ([`ir::Program::indirect_jumps`]).
+    pub indirect_jumps: usize,
+    /// Addresses of the instructions that translate to
+    /// [`abi::EXIT_UNSUPPORTED`] exits, sorted.
+    pub unsupported: Vec<u64>,
 }
 
 /// Translation errors.
@@ -168,6 +176,20 @@ pub fn translate_regions(
     Ok(finish(prog, entries, opts, false))
 }
 
+/// Like [`translate_regions`], over a [`lift::Source`], whose `data` regions
+/// jump tables are read from (an image's sections).
+pub fn translate_source(
+    src: &lift::Source<'_>,
+    entries: &[u64],
+    opts: &Options,
+) -> Result<Translation, Error> {
+    if entries.is_empty() {
+        return Err(Error::NoEntries);
+    }
+    let prog = lift::lift_source(src, entries, false)?;
+    Ok(finish(prog, entries, opts, false))
+}
+
 /// Decodes and lowers into the IR, with flag liveness applied.
 pub fn lift(region: CodeRegion<'_>, entries: &[u64]) -> Result<ir::Program, Error> {
     let mut prog = lift::lift(region, entries, true)?;
@@ -221,6 +243,19 @@ fn finish(mut prog: ir::Program, entries: &[u64], opts: &Options, dump: bool) ->
             String::new()
         },
         guest_instructions: prog.insn_count(),
+        unsupported: prog
+            .blocks
+            .iter()
+            .filter_map(|b| match b.term {
+                ir::Term::Exit {
+                    reason: abi::EXIT_UNSUPPORTED,
+                    rip,
+                } => Some(rip),
+                _ => None,
+            })
+            .collect(),
+        indirect_jumps: prog.indirect_jumps,
+        jump_tables: prog.jump_tables,
     }
 }
 

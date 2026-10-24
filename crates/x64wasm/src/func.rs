@@ -341,7 +341,10 @@ mod tests {
                 term: term.clone(),
             })
             .collect();
-        Program { blocks }
+        Program {
+            blocks,
+            ..Program::default()
+        }
     }
 
     fn opts(max_function_insns: usize, max_chunk_insns: usize) -> Options {

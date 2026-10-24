@@ -6,17 +6,19 @@
 //! formed by decoding linearly from every leader until a terminator or the
 //! next leader.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use iced_x86::{
-    Code, ConditionCode, Decoder, DecoderError, Formatter, Instruction, IntelFormatter, Mnemonic,
-    OpKind, Register,
+    Code, ConditionCode, Decoder, DecoderError, FlowControl, Formatter, Instruction,
+    IntelFormatter, Mnemonic, OpKind, Register,
 };
 
 use crate::abi;
 use crate::ir::{
-    BinOp, Block, CallTarget, Cond, FlagOp, Gpr, Insn, Op, Program, RSP, Temp, Term, Value, Width,
+    BinOp, Block, CallTarget, Cond, FlagOp, Gpr, Insn, JumpTable, Op, Program, RSP, Temp, Term,
+    Value, Width,
 };
+use crate::switch;
 use crate::{CodeRegion, Error};
 
 /// The instruction can't be lowered (yet).
@@ -64,8 +66,22 @@ impl Flow {
     }
 }
 
+/// What a lift reads: code regions to decode, memory to read jump tables
+/// from, and addresses that already have blocks elsewhere.
+#[derive(Clone, Copy, Debug)]
+pub struct Source<'a> {
+    /// Executable code; only this is decoded.
+    pub code: &'a [CodeRegion<'a>],
+    /// Readable memory for jump tables (an image's sections; may include
+    /// the code).
+    pub data: &'a [CodeRegion<'a>],
+    /// Sorted addresses that count as outside the code.
+    pub known: &'a [u64],
+}
+
 struct Lifter<'a> {
     regions: &'a [CodeRegion<'a>],
+    data: &'a [CodeRegion<'a>],
     /// One decoder per region.
     decoders: Vec<Decoder<'a>>,
     /// Sorted addresses that already have blocks elsewhere: never decoded.
@@ -91,6 +107,67 @@ impl<'a> Lifter<'a> {
     /// `addr` is code to translate here: inside a region and not known.
     fn contains(&self, addr: u64) -> bool {
         self.region_of(addr).is_some() && !self.is_known(addr)
+    }
+
+    /// The instruction at `addr`, decoded but not lowered.
+    fn raw(&mut self, addr: u64) -> Option<Instruction> {
+        let r = self.region_of(addr)?;
+        let decoder = &mut self.decoders[r];
+        decoder
+            .set_position((addr - self.regions[r].base) as usize)
+            .ok()?;
+        decoder.set_ip(addr);
+        let insn = decoder.decode();
+        (decoder.last_error() == DecoderError::None).then_some(insn)
+    }
+
+    /// Raw instructions from `addr` up to the first control transfer
+    /// (included), at most `max`.
+    fn raw_run(&mut self, addr: u64, max: usize) -> Vec<Instruction> {
+        let mut out = Vec::new();
+        let mut pc = addr;
+        while out.len() < max {
+            let Some(insn) = self.raw(pc) else { break };
+            pc = insn.next_ip();
+            let flow = insn.flow_control();
+            out.push(insn);
+            if flow != FlowControl::Next {
+                break;
+            }
+        }
+        out
+    }
+
+    fn read_data(&self, addr: u64, len: usize) -> Option<&'a [u8]> {
+        self.data.iter().find_map(|r| {
+            let off = usize::try_from(addr.checked_sub(r.base)?).ok()?;
+            r.bytes.get(off..off.checked_add(len)?)
+        })
+    }
+
+    /// The jump table of the block at `leader`, if it matches the pattern,
+    /// one of `bounds` checks its index, and every entry is a code address.
+    fn jump_table(&mut self, leader: u64, bounds: &[switch::Bound]) -> Option<JumpTable> {
+        let insns = self.raw_run(leader, switch::MAX_BLOCK_INSNS);
+        let c = switch::match_block(&insns)?;
+        let count = bounds
+            .iter()
+            .filter(|b| b.operand == c.index_source)
+            .map(|b| b.count)
+            .max()?;
+        let bytes = self.read_data(c.table, count as usize * 4)?;
+        let mut targets = Vec::with_capacity(count as usize);
+        for e in bytes.chunks_exact(4) {
+            let rel = i32::from_le_bytes([e[0], e[1], e[2], e[3]]);
+            let t = c.table.wrapping_add(rel as i64 as u64);
+            self.region_of(t)?;
+            targets.push(t);
+        }
+        Some(JumpTable {
+            jmp: c.jmp,
+            table: c.table,
+            targets,
+        })
     }
 
     fn decode(&mut self, addr: u64) -> Option<&Decoded> {
@@ -172,18 +249,36 @@ pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<
     lift_regions(&[region], &[], entries, want_text)
 }
 
+/// Like [`lift`], over a [`Source`]: several code regions, memory that jump
+/// tables are read from, and known addresses.
+pub fn lift_source(src: &Source<'_>, entries: &[u64], want_text: bool) -> Result<Program, Error> {
+    lift_impl(src.code, src.data, src.known, entries, want_text)
+}
+
 /// Like [`lift`], over several code regions (an image's executable
 /// sections). Addresses in `known` (sorted) count as outside the code: they
 /// are never decoded, and transfers to them stay transfers to an address
 /// without a block here (lookup transfers in the emitted module).
+/// Jump tables are read from the code regions.
 pub fn lift_regions(
     regions: &[CodeRegion<'_>],
     known: &[u64],
     entries: &[u64],
     want_text: bool,
 ) -> Result<Program, Error> {
+    lift_impl(regions, regions, known, entries, want_text)
+}
+
+fn lift_impl(
+    regions: &[CodeRegion<'_>],
+    data: &[CodeRegion<'_>],
+    known: &[u64],
+    entries: &[u64],
+    want_text: bool,
+) -> Result<Program, Error> {
     let mut lifter = Lifter {
         regions,
+        data,
         decoders: regions
             .iter()
             .map(|r| Decoder::with_ip(64, r.bytes, r.base, crate::DECODER_OPTIONS))
@@ -206,30 +301,72 @@ pub fn lift_regions(
     let mut leaders: BTreeSet<u64> = entries.iter().copied().collect();
     let mut work: Vec<u64> = entries.to_vec();
     let mut visited: BTreeSet<u64> = BTreeSet::new();
-    while let Some(start) = work.pop() {
-        let mut pc = start;
-        while visited.insert(pc) {
-            let Some(decoded) = lifter.decode(pc) else {
-                break;
-            };
-            let next = pc.wrapping_add(decoded.insn.len as u64);
-            match &decoded.flow {
-                Flow::Next => pc = next,
-                flow => {
-                    for target in flow.successors() {
-                        if lifter.contains(target) && leaders.insert(target) {
-                            work.push(target);
-                        }
-                    }
+    // (cmp, jcc) address pairs: conditional branches and the instruction
+    // before them, candidates for jump-table bounds.
+    let mut branches: Vec<(u64, u64)> = Vec::new();
+    let mut bounds: HashMap<u64, Vec<switch::Bound>> = HashMap::new();
+    let mut jump_tables: BTreeMap<u64, JumpTable> = BTreeMap::new();
+    let mut checked = 0;
+    loop {
+        while let Some(start) = work.pop() {
+            let mut pc = start;
+            let mut prev = None;
+            while visited.insert(pc) {
+                let Some(decoded) = lifter.decode(pc) else {
                     break;
+                };
+                let next = pc.wrapping_add(decoded.insn.len as u64);
+                match &decoded.flow {
+                    Flow::Next => {
+                        prev = Some(pc);
+                        pc = next;
+                    }
+                    flow => {
+                        if let (Flow::End(Term::Branch { .. }), Some(p)) = (flow, prev) {
+                            branches.push((p, pc));
+                        }
+                        for target in flow.successors() {
+                            if lifter.contains(target) && leaders.insert(target) {
+                                work.push(target);
+                            }
+                        }
+                        break;
+                    }
                 }
             }
+        }
+        // Jump tables behind the bounds found so far; their targets are
+        // more code to discover.
+        let mut dirty = BTreeSet::new();
+        for &(cmp, jcc) in &branches[checked..] {
+            if let (Some(cmp), Some(jcc)) = (lifter.raw(cmp), lifter.raw(jcc))
+                && let Some((block, bound)) = switch::bound(&cmp, &jcc)
+            {
+                bounds.entry(block).or_default().push(bound);
+                dirty.insert(block);
+            }
+        }
+        checked = branches.len();
+        for block in dirty {
+            let Some(table) = lifter.jump_table(block, &bounds[&block]) else {
+                continue;
+            };
+            for &t in &table.targets {
+                if lifter.contains(t) && leaders.insert(t) {
+                    work.push(t);
+                }
+            }
+            jump_tables.entry(table.jmp).or_insert(table);
+        }
+        if work.is_empty() {
+            break;
         }
     }
 
     // Pass 2: form blocks.
     let known = lifter.known;
     let mut blocks = Vec::with_capacity(leaders.len());
+    let mut indirect_jumps: BTreeSet<u64> = jump_tables.keys().copied().collect();
     for &leader in &leaders {
         let mut insns = Vec::new();
         let mut pc = leader;
@@ -251,13 +388,38 @@ pub fn lift_regions(
                 Flow::Next => pc = next,
             }
         };
+        match term {
+            Term::Indirect(_) => {
+                if let Some(last) = insns.last() {
+                    indirect_jumps.insert(last.addr);
+                }
+            }
+            Term::Exit {
+                reason: abi::EXIT_UNSUPPORTED,
+                rip,
+            } => {
+                // Decode on past the unsupported instruction to the block's
+                // real end.
+                let run = lifter.raw_run(rip, 16);
+                if let Some(last) = run.last()
+                    && last.code() == Code::Jmp_rm64
+                {
+                    indirect_jumps.insert(last.ip());
+                }
+            }
+            _ => {}
+        }
         blocks.push(Block {
             addr: leader,
             insns,
             term,
         });
     }
-    Ok(Program { blocks })
+    Ok(Program {
+        blocks,
+        jump_tables: jump_tables.into_values().collect(),
+        indirect_jumps: indirect_jumps.len(),
+    })
 }
 
 /// A general-purpose register operand: which register and which part.

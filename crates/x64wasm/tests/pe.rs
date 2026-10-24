@@ -753,3 +753,51 @@ fn image_translation_errors() {
     let pe = parse(&image[..0x300]);
     assert!(image::translate(&pe, EntrySet::All, &x64wasm::Options::default()).is_err());
 }
+
+#[test]
+fn image_jump_tables_are_read_from_rdata() {
+    use iced_x86::code_asm::*;
+    use iced_x86::{BlockEncoderOptions, Code, Instruction, MemoryOperand, Register};
+    let table = IMAGE_BASE + (RDATA_RVA + 0xa00) as u64;
+    let mut a = CodeAssembler::new(64).unwrap();
+    let mut default = a.create_label();
+    let mut cases: Vec<CodeLabel> = (0..3).map(|_| a.create_label()).collect();
+    a.cmp(ecx, 2).unwrap();
+    a.ja(default).unwrap();
+    a.add_instruction(
+        Instruction::with2(
+            Code::Lea_r64_m,
+            Register::RDX,
+            MemoryOperand::with_base_displ(Register::RIP, table as i64),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    a.movsxd(rax, dword_ptr(rdx + rcx * 4)).unwrap();
+    a.add(rax, rdx).unwrap();
+    a.jmp(rax).unwrap();
+    for (i, c) in cases.iter_mut().enumerate() {
+        a.set_label(c).unwrap();
+        a.mov(eax, i as u32).unwrap();
+        a.ret().unwrap();
+    }
+    a.set_label(&mut default).unwrap();
+    a.ret().unwrap();
+    let text = IMAGE_BASE + TEXT_RVA as u64;
+    let r = a
+        .assemble_options(text, BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS)
+        .unwrap();
+    let targets: Vec<u64> = cases.iter().map(|c| r.label_ip(c).unwrap()).collect();
+    let mut image = build_image();
+    put(&mut image, 0x200, &r.inner.code_buffer);
+    for (i, &t) in targets.iter().enumerate() {
+        put32(&mut image, 0x400 + 0xa00 + 4 * i, t.wrapping_sub(table) as u32);
+    }
+    let pe = parse(&image);
+    let t = image::translate(&pe, EntrySet::EntryPoint, &x64wasm::Options::default()).unwrap();
+    assert_eq!(t.jump_tables.len(), 1);
+    assert_eq!(t.jump_tables[0].table, table);
+    assert_eq!(t.jump_tables[0].targets, targets);
+    assert!(targets.iter().all(|c| t.blocks.contains(c)));
+    assert_eq!(t.indirect_jumps, 1);
+}
