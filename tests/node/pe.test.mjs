@@ -14,8 +14,8 @@ const CLI = `${root}runtime/src/run-pe.mjs`;
 const EXE = `${root}target/pe/basic.exe`;
 const RT = `${root}target/wasm32-unknown-unknown/release/x64wasm_rt.wasm`;
 const expected = readFileSync(`${root}tests/pe/basic.expected`);
-const readme = readFileSync(`${root}tests/pe/README.md`, 'utf8');
-const exitMatch = /^Exit code: \*\*(\d+)\*\*/m.exec(readme);
+const exitText = readFileSync(`${root}tests/pe/basic.exitcode`, 'utf8');
+const EXIT_CODE = /^\d+\n?$/.test(exitText) ? Number(exitText.trim()) : NaN;
 
 const need = (path, how) => assert.ok(existsSync(path), `${path} is missing. Create it with: ${how}`);
 const inputs = (variant) => {
@@ -28,8 +28,8 @@ const inputs = (variant) => {
   return { aot, plan };
 };
 
-test('tests/pe/README.md documents the exit code', () => {
-  assert.ok(exitMatch, 'tests/pe/README.md has no "Exit code: **N**" line');
+test('tests/pe/basic.exitcode holds one decimal exit code', () => {
+  assert.ok(Number.isInteger(EXIT_CODE), `tests/pe/basic.exitcode is ${JSON.stringify(exitText)}`);
 });
 
 for (const variant of ['all', 'entry']) {
@@ -41,7 +41,7 @@ for (const variant of ['all', 'entry']) {
     assert.equal(r.stderr.toString(), '');
     assert.equal(r.stdout.toString(), expected.toString());
     assert.ok(r.stdout.equals(expected), 'stdout matches byte for byte');
-    assert.equal(r.status, Number(exitMatch[1]));
+    assert.equal(r.status, EXIT_CODE);
   });
 
   test(`basic.exe in-process (${variant}): output, exit code, run-time translation taken`, async () => {
@@ -52,7 +52,7 @@ for (const variant of ['all', 'entry']) {
       aot: readFileSync(aot),
       rt: await RuntimeTranslator.load(readFileSync(RT)),
     });
-    assert.equal(await p.start(), Number(exitMatch[1]));
+    assert.equal(await p.start(), EXIT_CODE);
     assert.deepEqual(Buffer.from(p.captured('stdout')), expected);
     assert.equal(p.captured('stderr').length, 0);
     // `hidden` is reachable only through a computed pointer: AOT cannot find it.

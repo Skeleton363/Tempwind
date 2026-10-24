@@ -185,8 +185,9 @@ jobs:
             echo "::error::basic.exe output differs from tests/pe/basic.expected"
             exit 1
           fi
-          if [ "$code" != 42 ]; then
-            echo "::error::basic.exe exit code is $code, expected 42"
+          want=$(tr -d '\r\n' < tests/pe/basic.exitcode)
+          if [ "$code" != "$want" ]; then
+            echo "::error::basic.exe exit code is $code, expected $want (tests/pe/basic.exitcode)"
             exit 1
           fi
           echo "basic.exe output and exit code match"

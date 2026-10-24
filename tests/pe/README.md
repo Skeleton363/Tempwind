@@ -12,9 +12,9 @@ It exercises:
 - decimal printing by repeated subtraction;
 - `ExitProcess(42)`.
 
-Exit code: **42**. Expected stdout: `basic.expected` (LF line ends).
+Exit code: `basic.exitcode` (42), the one source for CI and the Node tests. Expected stdout: `basic.expected` (LF line ends).
 
 - `build.sh` builds `target/pe/basic.exe` (reproducible, with a sha256 file). `basic.ld` is binutils' default PE linker script without the `__CTOR_LIST__`/`__DTOR_LIST__` data it places in `.text`, so `.text` holds only code. The import thunks and nop padding the linker adds are `jmp [rip+x]` and padding.
 - `prepare.sh` runs the AOT translations (all entries, entry only) into `target/pe/` and builds the run-time translator module.
-- CI: the `windows-x64` job runs `basic.exe` natively and compares stdout byte for byte with `basic.expected` and the exit code with 42. The `linux-x64` job builds it, runs the census check and `prepare.sh`, then the Node tests, which compare the translated runs with `basic.expected` and 42.
+- CI: the `windows-x64` job runs `basic.exe` natively and compares stdout byte for byte with `basic.expected` and the exit code with `basic.exitcode`. The `linux-x64` job builds it, runs the census check and `prepare.sh`, then the Node tests, which compare the translated runs with `basic.expected` and `basic.exitcode`.
 - Checked once locally under Wine 9 (`wine64 basic.exe`): same output, exit code 42.
