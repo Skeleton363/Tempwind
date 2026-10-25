@@ -71,6 +71,18 @@ fn conditional_records_keep_the_previous_one() {
 }
 
 #[test]
+fn compare_strings_write_records() {
+    // cmp; cmpsb; ret: cmpsb is a full record.
+    assert_eq!(liveness("4839d8 a6 c3"), [false]);
+    // cmp; repe cmpsb; ret: RCX = 0 keeps cmp's flags.
+    assert_eq!(liveness("4839d8 f3a6 c3"), [true]);
+    // cmp; repne scasb; ret
+    assert_eq!(liveness("4839d8 f2ae c3"), [true]);
+    // cmp; rep movsb; ret: movs writes no flags.
+    assert_eq!(liveness("4839d8 f3a4 c3"), [true]);
+}
+
+#[test]
 fn readers_make_records_live() {
     // cmp; adc rax, rcx (reads CF); add; ret
     assert_eq!(liveness("4839d8 4811c8 4801c0 c3"), [true, false, true]);

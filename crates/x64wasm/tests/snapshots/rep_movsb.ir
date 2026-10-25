@@ -1,0 +1,18 @@
+function 0x1000: wasm function 3 (fn_0x1000)
+
+block 0x1000:
+  0x1000: rep movsb [rdi],[rsi]
+    t0 = load64 state[0x88]
+    t1 = and t0, 0x400
+    t2 = select t1, 0xffffffffffffffff, 0x1
+    rep Movs8 delta t2
+  0x1002: repe cmpsb [rsi],[rdi]
+    t0 = load64 state[0x88]
+    t1 = and t0, 0x400
+    t2 = select t1, 0xffffffffffffffff, 0x1
+    repe Cmps8 delta t2
+  0x1004: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

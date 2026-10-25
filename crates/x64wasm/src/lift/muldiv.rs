@@ -158,14 +158,13 @@ impl Lower<'_> {
         }
         // The dividend in 64 bits: AX, DX:AX or EDX:EAX.
         let (n, hi) = if w == Width::W8 {
-            let ax = self.read_reg(RAX, Width::W16);
-            let ah = self.bin(BinOp::ShrU, ax, Value::Imm(8));
-            (ax, ah)
+            // AH, the high half, is only needed for div.
+            (self.read_reg(RAX, Width::W16), None)
         } else {
             let lo = self.read_reg(RAX, w);
             let hi = self.read_reg(RDX, w);
             let h = self.bin(BinOp::Shl, hi, Value::Imm(bits));
-            (self.bin(BinOp::Or, h, lo), hi)
+            (self.bin(BinOp::Or, h, lo), Some(hi))
         };
         let (q, r) = if signed {
             let nw = match w {
@@ -194,6 +193,10 @@ impl Lower<'_> {
             (self.mask(q, w), self.mask(r, w))
         } else {
             // hi >= d covers d = 0 and a quotient wider than the operand.
+            let hi = match hi {
+                Some(hi) => hi,
+                None => self.bin(BinOp::ShrU, n, Value::Imm(8)),
+            };
             let fits = self.bin(BinOp::LtU, hi, d);
             let fault = self.bin(BinOp::Xor, fits, Value::Imm(1));
             self.fault_if(fault, FAULT_DIVIDE);

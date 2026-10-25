@@ -25,6 +25,7 @@ mod operand;
 mod shift;
 mod stack;
 mod string;
+mod x87;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

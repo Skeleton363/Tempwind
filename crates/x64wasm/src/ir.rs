@@ -477,6 +477,30 @@ pub enum StrOp {
     Movs,
     Stos,
     Lods,
+    /// Compares `[RSI]` with `[RDI]` (a `Sub` record per iteration).
+    Cmps,
+    /// Compares the accumulator with `[RDI]`.
+    Scas,
+}
+
+impl StrOp {
+    /// Writes a `Sub` flag record each iteration.
+    pub fn compares(self) -> bool {
+        matches!(self, StrOp::Cmps | StrOp::Scas)
+    }
+}
+
+/// The repeat prefix of a string instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rep {
+    /// One iteration.
+    Once,
+    /// While RCX != 0.
+    Rep,
+    /// While RCX != 0, and after each iteration while ZF = 1 (cmps, scas).
+    Repe,
+    /// While RCX != 0, and after each iteration while ZF = 0 (cmps, scas).
+    Repne,
 }
 
 /// One IR operation.
@@ -567,11 +591,13 @@ pub enum Op {
         signed: bool,
     },
     /// A string instruction: one iteration, or with `rep` as many as RCX
-    /// says. `delta` is +size or -size (from DF).
+    /// (and for cmps/scas ZF) says. `delta` is +size or -size (from DF).
+    /// cmps and scas write a `Sub` record: a full one without a repeat, a
+    /// partial one with it (RCX = 0 keeps the previous record).
     RepString {
         op: StrOp,
         width: Width,
-        rep: bool,
+        rep: Rep,
         delta: Value,
     },
     /// `dst` = a vector load (narrow loads zero the rest).
@@ -625,13 +651,18 @@ impl Op {
         match self {
             Op::Flags { op, when, .. } => op.is_partial() || when.is_some(),
             Op::FlagsUpdate { .. } => true,
+            Op::RepString { op, rep, .. } => op.compares() && *rep != Rep::Once,
             _ => false,
         }
     }
 
     /// Writes a flag record.
     pub fn writes_flags(&self) -> bool {
-        matches!(self, Op::Flags { .. } | Op::FlagsUpdate { .. })
+        match self {
+            Op::Flags { .. } | Op::FlagsUpdate { .. } => true,
+            Op::RepString { op, .. } => op.compares(),
+            _ => false,
+        }
     }
 
     /// Has an architectural effect (anything a fault must not see).
@@ -1040,7 +1071,12 @@ impl fmt::Display for Op {
             } => write!(
                 f,
                 "{}{:?}{width} delta {delta}",
-                if *rep { "rep " } else { "" },
+                match rep {
+                    Rep::Once => "",
+                    Rep::Rep => "rep ",
+                    Rep::Repe => "repe ",
+                    Rep::Repne => "repne ",
+                },
                 op
             ),
             Op::VLoad { dst, width, loc } => write!(f, "{dst} = vload{width} {loc}"),

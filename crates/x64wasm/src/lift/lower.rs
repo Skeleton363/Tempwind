@@ -251,6 +251,14 @@ impl Lower<'_> {
             | M::Lodsw
             | M::Lodsd
             | M::Lodsq
+            | M::Cmpsb
+            | M::Cmpsw
+            | M::Cmpsd
+            | M::Cmpsq
+            | M::Scasb
+            | M::Scasw
+            | M::Scasd
+            | M::Scasq
                 if is_string(insn) =>
             {
                 self.string(m)
@@ -262,6 +270,7 @@ impl Lower<'_> {
             M::Ret => self.ret(),
             M::Jmp => self.jmp(),
             M::Jrcxz | M::Jecxz | M::Loop | M::Loope | M::Loopne => self.loop_rcx(),
+            M::Fninit | M::Finit | M::Wait => self.x87(m),
             _ if insn.is_jcc_short_or_near() => self.jcc(),
             M::Seto
             | M::Setno

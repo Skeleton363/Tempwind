@@ -1,0 +1,32 @@
+function 0x1000: wasm function 3 (fn_0x1000)
+
+block 0x1000:
+  0x1000: div rcx
+    t0, t1, t2 = div128_u rdx:rax, rcx
+    fault 4 if t2
+    rax = t0
+    rdx = t1
+  0x1003: idiv bl
+    t0 = and rbx, 0xff
+    t1 = and rax, 0xffff
+    t2 = sext16 t1
+    t3 = sext8 t0
+    t4 = eq t3, 0x0
+    fault 4 if t4
+    t5 = div_s t2, t3
+    t6 = sext8 t5
+    t7 = ne t5, t6
+    fault 4 if t7
+    t8 = rem_s t2, t3
+    t9 = and t5, 0xff
+    t10 = and t8, 0xff
+    t11 = shl t10, 0x8
+    t12 = or t11, t9
+    t13 = and rax, 0xffffffffffff0000
+    t14 = or t13, t12
+    rax = t14
+  0x1005: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

@@ -1,10 +1,12 @@
-//! String instructions (`movs`, `stos`, `lods`) with their `rep` loops
+//! String instructions (`movs`, `stos`, `lods`, `cmps`, `scas`) with their
+//! `rep`/`repe`/`repne` loops
 //! (`docs/design/translator.md`, "Integer results").
 
 use wasm_encoder::{BlockType, InstructionSink};
 
-use super::{ChunkEmitter, L_GPR0, L_SCRATCH, Label, load, mem, store};
-use crate::ir::{StrOp, Value, Width};
+use super::flags::Known;
+use super::{ChunkEmitter, L_CC_A, L_CC_B, L_CC_R, L_GPR0, L_SCRATCH, Label, load, mem, store};
+use crate::ir::{FlagOp, Rep, StrOp, Value, Width};
 
 const RAX: u32 = L_GPR0;
 const RCX: u32 = L_GPR0 + 1;
@@ -28,14 +30,21 @@ impl ChunkEmitter<'_> {
         f: &mut InstructionSink<'_>,
         op: StrOp,
         width: Width,
-        rep: bool,
+        rep: Rep,
         delta: Value,
     ) {
         self.value(f, delta);
         f.local_set(L_SCRATCH);
-        if !rep {
-            Self::iteration(f, op, width);
+        if rep == Rep::Once {
+            self.iteration(f, op, width);
+            if op.compares() {
+                self.known_cc = Some(Known::Lazy(FlagOp::Sub, width));
+            }
             return;
+        }
+        if op.compares() {
+            // RCX = 0 keeps the previous record.
+            self.known_cc = None;
         }
         let size = (width.bits() / 8) as i64;
         f.block(BlockType::Empty);
@@ -43,7 +52,7 @@ impl ChunkEmitter<'_> {
         let fast = match op {
             StrOp::Movs => true,
             StrOp::Stos => width == Width::W8,
-            StrOp::Lods => false,
+            StrOp::Lods | StrOp::Cmps | StrOp::Scas => false,
         };
         if fast {
             // DF = 0 and a count whose byte length can't wrap.
@@ -96,11 +105,26 @@ impl ChunkEmitter<'_> {
         f.local_get(RCX);
         f.i64_eqz();
         f.br_if(self.depth(Label::StrDone));
-        Self::iteration(f, op, width);
+        self.iteration(f, op, width);
         f.local_get(RCX);
         f.i64_const(1);
         f.i64_sub();
         f.local_set(RCX);
+        // repe stops when ZF = 0, repne when ZF = 1.
+        match rep {
+            Rep::Repe => {
+                f.local_get(L_CC_R);
+                f.i64_const(0);
+                f.i64_ne();
+                f.br_if(self.depth(Label::StrDone));
+            }
+            Rep::Repne => {
+                f.local_get(L_CC_R);
+                f.i64_eqz();
+                f.br_if(self.depth(Label::StrDone));
+            }
+            Rep::Once | Rep::Rep => {}
+        }
         f.br(self.depth(Label::StrLoop));
         f.end();
         self.labels.pop();
@@ -108,9 +132,40 @@ impl ChunkEmitter<'_> {
         self.labels.pop();
     }
 
-    /// One iteration; the scratch local holds delta.
-    fn iteration(f: &mut InstructionSink<'_>, op: StrOp, width: Width) {
+    /// One iteration; the scratch local holds delta. cmps and scas write a
+    /// `Sub` record.
+    fn iteration(&self, f: &mut InstructionSink<'_>, op: StrOp, width: Width) {
         match op {
+            StrOp::Cmps | StrOp::Scas => {
+                if op == StrOp::Cmps {
+                    f.local_get(RSI);
+                    load(f, width, mem(0));
+                } else {
+                    f.local_get(RAX);
+                    if width != Width::W64 {
+                        f.i64_const(width.mask() as i64);
+                        f.i64_and();
+                    }
+                }
+                f.local_set(L_CC_A);
+                f.local_get(RDI);
+                load(f, width, mem(0));
+                f.local_set(L_CC_B);
+                f.local_get(L_CC_A);
+                f.local_get(L_CC_B);
+                f.i64_sub();
+                if width != Width::W64 {
+                    f.i64_const(width.mask() as i64);
+                    f.i64_and();
+                }
+                f.local_set(L_CC_R);
+                f.i32_const(FlagOp::Sub.cc_op(width) as i32);
+                f.local_set(self.l_cc_op);
+                if op == StrOp::Cmps {
+                    advance(f, RSI);
+                }
+                advance(f, RDI);
+            }
             StrOp::Movs => {
                 f.local_get(RDI);
                 f.local_get(RSI);

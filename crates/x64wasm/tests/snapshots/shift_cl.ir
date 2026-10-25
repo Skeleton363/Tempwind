@@ -1,0 +1,32 @@
+function 0x1000: wasm function 3 (fn_0x1000)
+
+block 0x1000:
+  0x1000: shl rax,cl
+    t0 = and rcx, 0xff
+    t1 = and t0, 0x3f
+    t2 = shl rax, t1
+    flags.shl64 rax, t1, t2 if t1
+    rax = t2
+  0x1003: rcl edx,1
+    t0 = and rdx, 0xffffffff
+    t1 = cond.b
+    t2 = shl t1, 0x20
+    t3 = or t2, t0
+    t4 = shl t3, 0x1
+    t5 = shr_u t3, 0x20
+    t6 = or t4, t5
+    t7 = and t6, 0x1ffffffff
+    t8 = shr_u t7, 0x20
+    t9 = and t7, 0xffffffff
+    t10 = shr_u t9, 0x1f
+    t11 = and t10, 0x1
+    t12 = xor t11, t8
+    t13 = shl t12, 0xb
+    t14 = or t8, t13
+    flags.update clear 0x801, set t14, flip 0x0
+    rdx = t9
+  0x1005: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

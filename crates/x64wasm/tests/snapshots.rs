@@ -101,3 +101,22 @@ fn adc_chain() {
 fn ext_cc() {
     check("ext_cc", 0x1000, "0fbe01 39d0 0f4cc2 0f9fc1 4898 c3");
 }
+
+/// Shifts: `shl rax, cl; rcl edx, 1; ret` (a conditional record, and a
+/// rotate through CF).
+#[test]
+fn shift_cl() {
+    check("shift_cl", 0x1000, "48d3e0 d1d2 c3");
+}
+
+/// `div rcx; idiv bl; ret`: the div128 helper and an 8-bit #DE check.
+#[test]
+fn div() {
+    check("div", 0x1000, "48f7f1 f6fb c3");
+}
+
+/// `rep movsb; repe cmpsb; ret`
+#[test]
+fn rep_movsb() {
+    check("rep_movsb", 0x1000, "f3a4 f3a6 c3");
+}
