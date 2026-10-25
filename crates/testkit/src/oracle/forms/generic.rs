@@ -875,6 +875,16 @@ pub(super) fn case(
     // Values. `role` numbers the operands that take the (a, v) pair.
     let count_op = is_shift(m).then(|| kinds.len() - 1);
     let three_op_imul = m == M::Imul && kinds.len() == 3;
+    // One-operand mul/imul and cbw..cqo: the implicit accumulator (of this
+    // width) takes the first value of the pair, so its edges come first.
+    let implicit_acc = match m {
+        M::Cbw => Some(8),
+        M::Cwde | M::Cwd => Some(16),
+        M::Cdqe | M::Cdq => Some(32),
+        M::Cqo => Some(64),
+        M::Mul | M::Imul if kinds.len() == 1 => Some(width),
+        _ => None,
+    };
     let (pa, pv) = pick_pair(rng, idx, width);
     let (xa, xb) = xmm_pair(rng, idx);
     let mut pair_pos = 0;
@@ -947,7 +957,11 @@ pub(super) fn case(
             let v = if skip {
                 rand_val(rng, int_bits)
             } else {
-                let v = if pair_pos == 0 { pa } else { pv };
+                let v = if pair_pos == 0 && implicit_acc.is_none() {
+                    pa
+                } else {
+                    pv
+                };
                 pair_pos += 1;
                 v
             };
@@ -973,6 +987,14 @@ pub(super) fn case(
             Slot::Xmm(r) => b.fp.xmm[xmm_index(r)] = v,
             _ => {}
         }
+    }
+    if let Some(bits) = implicit_acc {
+        let a = if bits == width {
+            pa
+        } else {
+            pick_pair(rng, idx, bits).0
+        };
+        b.set_operand(rng, acc(bits), a);
     }
     // cmpxchg: the accumulator equals the destination in half the cases.
     if m == M::Cmpxchg && idx.is_multiple_of(2) {
