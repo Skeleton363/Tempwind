@@ -26,7 +26,6 @@ impl Lower<'_> {
         t
     }
 
-    #[allow(dead_code)] // SSE (M3), next
     pub(super) fn vtemp(&mut self) -> VTemp {
         let t = VTemp(self.vtemps);
         self.vtemps += 1;
@@ -304,6 +303,7 @@ impl Lower<'_> {
             | M::Cmovge
             | M::Cmovle
             | M::Cmovg => self.cmovcc(),
+            _ if super::sse::is_sse(m) => self.sse(m),
             _ => self.misc(m),
         }
     }

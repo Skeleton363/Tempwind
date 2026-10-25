@@ -23,6 +23,7 @@ mod misc;
 mod muldiv;
 mod operand;
 mod shift;
+mod sse;
 mod stack;
 mod string;
 mod x87;
