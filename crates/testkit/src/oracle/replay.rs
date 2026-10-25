@@ -123,14 +123,22 @@ pub fn replay_dir(dir: &Path) -> Result<ReplayReport> {
             fixture::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
         fixtures.push(f);
     }
-    let host = if std::env::var_os("AB_DEFAULT").is_some() { Host::new()? } else { Host::fast_compile()? };
+    let host = Host::new()?;
+    // Work items: chunks of `CHUNK` cases, so that big families don't
+    // leave the other workers idle at the end. Results are merged back per
+    // family in case order, so the report doesn't depend on the schedule.
+    let chunks: Vec<(usize, usize)> = fixtures
+        .iter()
+        .enumerate()
+        .flat_map(|(i, f)| (0..f.cases.len().div_ceil(CHUNK).max(1)).map(move |c| (i, c * CHUNK)))
+        .collect();
     let next = Mutex::new(0usize);
-    let results: Mutex<Vec<Option<FamilyResult>>> =
-        Mutex::new((0..fixtures.len()).map(|_| None).collect());
+    let results: Mutex<Vec<Option<Partial>>> =
+        Mutex::new((0..chunks.len()).map(|_| None).collect());
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
-        .min(fixtures.len())
+        .min(chunks.len())
         .max(1);
     std::thread::scope(|scope| {
         for _ in 0..workers {
@@ -142,38 +150,70 @@ pub fn replay_dir(dir: &Path) -> Result<ReplayReport> {
                         *n += 1;
                         i
                     };
-                    let Some(f) = fixtures.get(i) else { break };
-                    let r = replay_fixture(&host, f);
+                    let Some(&(f, start)) = chunks.get(i) else {
+                        break;
+                    };
+                    let r = replay_cases(&host, f, &fixtures[f], start);
                     results.lock().unwrap()[i] = Some(r);
                 }
             });
         }
     });
-    eprintln!("TIMING compile {}ms translate {}ms exec {}ms", T_COMPILE.load(std::sync::atomic::Ordering::Relaxed)/1000, T_TRANSLATE.load(std::sync::atomic::Ordering::Relaxed)/1000, T_EXEC.load(std::sync::atomic::Ordering::Relaxed)/1000);
     let mut report = ReplayReport::default();
-    for r in results.into_inner().unwrap().into_iter().flatten() {
-        report.families.push((r.family, r.stats));
-        report.forms.extend(r.forms);
-        report.details.extend(r.details);
+    let mut partials = results
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .flatten()
+        .peekable();
+    for (i, f) in fixtures.iter().enumerate() {
+        let mut forms: Vec<(String, Stats)> = Vec::new();
+        let mut shown: HashMap<String, usize> = HashMap::new();
+        let mut stats = Stats::default();
+        while let Some(p) = partials.next_if(|p| p.fixture == i) {
+            for (name, s) in p.forms {
+                stats.add(&s);
+                match forms.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, t)) => t.add(&s),
+                    None => forms.push((name, s)),
+                }
+            }
+            for (form, d) in p.details {
+                let count = shown.entry(form).or_default();
+                *count += 1;
+                if *count <= DETAILS_PER_FORM {
+                    report.details.push(d);
+                }
+            }
+        }
+        report.families.push((f.family.clone(), stats));
+        report.forms.extend(forms);
     }
     Ok(report)
 }
 
-struct FamilyResult {
-    family: String,
-    stats: Stats,
+/// Cases per work item.
+const CHUNK: usize = 256;
+
+/// The results of one chunk of a fixture's cases.
+struct Partial {
+    fixture: usize,
+    /// Per form, in the order of first appearance.
     forms: Vec<(String, Stats)>,
-    details: Vec<String>,
+    /// (form, details) of the failing cases, at most `DETAILS_PER_FORM` per
+    /// form.
+    details: Vec<(String, String)>,
 }
 
-fn replay_fixture(host: &Host, f: &Fixture) -> FamilyResult {
+/// Replays cases `start..start + CHUNK` of `f`, fixture number `fixture`.
+fn replay_cases(host: &Host, fixture: usize, f: &Fixture, start: usize) -> Partial {
     let mut cache: HashMap<Vec<u8>, Result<Module, Outcome>> = HashMap::new();
     let mut forms: BTreeMap<String, Stats> = BTreeMap::new();
     let mut order: Vec<String> = Vec::new();
     let mut details = Vec::new();
     let mut shown: HashMap<String, usize> = HashMap::new();
-    let mut stats = Stats::default();
-    for (n, case) in f.cases.iter().enumerate() {
+    let end = (start + CHUNK).min(f.cases.len());
+    for (n, case) in f.cases.iter().enumerate().take(end).skip(start) {
         if !forms.contains_key(&case.form) {
             order.push(case.form.clone());
         }
@@ -197,27 +237,28 @@ fn replay_fixture(host: &Host, f: &Fixture) -> FamilyResult {
         let count = shown.entry(case.form.clone()).or_default();
         *count += 1;
         if *count <= DETAILS_PER_FORM {
-            details.push(format!(
-                "{kind} {}[{n}] {}: {}  [{}]\n{}\n{msg}",
-                f.family,
-                case.form,
-                case.asm,
-                hex_bytes(&case.bytes),
-                describe_input(f, case)
+            details.push((
+                case.form.clone(),
+                format!(
+                    "{kind} {}[{n}] {}: {}  [{}]\n{}\n{msg}",
+                    f.family,
+                    case.form,
+                    case.asm,
+                    hex_bytes(&case.bytes),
+                    describe_input(f, case)
+                ),
             ));
         }
     }
-    let forms: Vec<(String, Stats)> = order
+    let forms = order
         .into_iter()
         .map(|name| {
             let s = forms[&name];
-            stats.add(&s);
             (name, s)
         })
         .collect();
-    FamilyResult {
-        family: f.family.clone(),
-        stats,
+    Partial {
+        fixture,
         forms,
         details,
     }
@@ -288,10 +329,7 @@ fn compile(host: &Host, bytes: &[u8]) -> Result<Module, Outcome> {
         base: CODE_ADDR,
         bytes,
     };
-    let t2 = std::time::Instant::now();
-    let tr = x64wasm::translate(region, &[CODE_ADDR], &Options::default());
-    T_TRANSLATE.fetch_add(t2.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
-    let t = match tr {
+    let t = match x64wasm::translate(region, &[CODE_ADDR], &Options::default()) {
         Ok(t) => t,
         Err(x64wasm::Error::Unimplemented(what)) => {
             return Err(Outcome::Unsupported(format!(
@@ -333,27 +371,19 @@ fn mem_diffs(base: u64, expected: &[u8], got: &[u8], out: &mut Vec<String>) {
     }
 }
 
-pub static T_COMPILE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static T_EXEC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static T_TRANSLATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn run_case(
     host: &Host,
     cache: &mut HashMap<Vec<u8>, Result<Module, Outcome>>,
     case: &Case,
 ) -> Outcome {
-    let t0 = std::time::Instant::now();
     let module = cache
         .entry(case.bytes.clone())
         .or_insert_with(|| compile(host, &case.bytes));
-    T_COMPILE.fetch_add(t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
     let module = match module {
         Ok(m) => m.clone(),
         Err(o) => return clone_outcome(o),
     };
-    let t1 = std::time::Instant::now();
-    let r = execute(host, &module, case);
-    T_EXEC.fetch_add(t1.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
-    match r {
+    match execute(host, &module, case) {
         Ok(o) => o,
         Err(e) => Outcome::Fail(format!("    run failed: {e:#}")),
     }
