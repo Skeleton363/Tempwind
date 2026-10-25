@@ -40,7 +40,21 @@ impl Module {
 
 impl Host {
     pub fn new() -> Result<Self> {
+        Self::with_config(Config::new())
+    }
+
+    /// A host that compiles fast and runs slower: Cranelift without
+    /// optimizations, with its single-pass register allocator. For many
+    /// small modules each run once, such as the L1 replay's. The semantics
+    /// are the same (WebAssembly execution is deterministic).
+    pub fn fast_compile() -> Result<Self> {
         let mut config = Config::new();
+        config.cranelift_opt_level(wasmtime::OptLevel::None);
+        config.cranelift_regalloc_algorithm(wasmtime::RegallocAlgorithm::SinglePass);
+        Self::with_config(config)
+    }
+
+    fn with_config(mut config: Config) -> Result<Self> {
         config.wasm_memory64(true);
         config.wasm_threads(true);
         // Transfers between translated functions use `return_call` and

@@ -123,7 +123,7 @@ pub fn replay_dir(dir: &Path) -> Result<ReplayReport> {
             fixture::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
         fixtures.push(f);
     }
-    let host = Host::new()?;
+    let host = if std::env::var_os("AB_DEFAULT").is_some() { Host::new()? } else { Host::fast_compile()? };
     let next = Mutex::new(0usize);
     let results: Mutex<Vec<Option<FamilyResult>>> =
         Mutex::new((0..fixtures.len()).map(|_| None).collect());
@@ -149,6 +149,7 @@ pub fn replay_dir(dir: &Path) -> Result<ReplayReport> {
             });
         }
     });
+    eprintln!("TIMING compile {}ms translate {}ms exec {}ms", T_COMPILE.load(std::sync::atomic::Ordering::Relaxed)/1000, T_TRANSLATE.load(std::sync::atomic::Ordering::Relaxed)/1000, T_EXEC.load(std::sync::atomic::Ordering::Relaxed)/1000);
     let mut report = ReplayReport::default();
     for r in results.into_inner().unwrap().into_iter().flatten() {
         report.families.push((r.family, r.stats));
@@ -287,7 +288,10 @@ fn compile(host: &Host, bytes: &[u8]) -> Result<Module, Outcome> {
         base: CODE_ADDR,
         bytes,
     };
-    let t = match x64wasm::translate(region, &[CODE_ADDR], &Options::default()) {
+    let t2 = std::time::Instant::now();
+    let tr = x64wasm::translate(region, &[CODE_ADDR], &Options::default());
+    T_TRANSLATE.fetch_add(t2.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+    let t = match tr {
         Ok(t) => t,
         Err(x64wasm::Error::Unimplemented(what)) => {
             return Err(Outcome::Unsupported(format!(
@@ -329,19 +333,27 @@ fn mem_diffs(base: u64, expected: &[u8], got: &[u8], out: &mut Vec<String>) {
     }
 }
 
+pub static T_COMPILE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static T_EXEC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static T_TRANSLATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn run_case(
     host: &Host,
     cache: &mut HashMap<Vec<u8>, Result<Module, Outcome>>,
     case: &Case,
 ) -> Outcome {
+    let t0 = std::time::Instant::now();
     let module = cache
         .entry(case.bytes.clone())
         .or_insert_with(|| compile(host, &case.bytes));
+    T_COMPILE.fetch_add(t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
     let module = match module {
         Ok(m) => m.clone(),
         Err(o) => return clone_outcome(o),
     };
-    match execute(host, &module, case) {
+    let t1 = std::time::Instant::now();
+    let r = execute(host, &module, case);
+    T_EXEC.fetch_add(t1.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+    match r {
         Ok(o) => o,
         Err(e) => Outcome::Fail(format!("    run failed: {e:#}")),
     }
