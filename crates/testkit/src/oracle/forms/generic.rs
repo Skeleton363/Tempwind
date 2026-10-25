@@ -1116,6 +1116,15 @@ pub(super) fn case(
         }
     }
 
+    // A count in CL: an address register in RCX changes it.
+    if let Some(Slot::Gpr(Register::CL)) = count_op.map(|i| slots[i]) {
+        let c = b.gprs[1] & 0xff;
+        if matches!(m, M::Shld | M::Shrd) && width == 16 && c & 31 > 16 {
+            return Ok(None);
+        }
+        count = Some(c);
+    }
+
     let mut instr = Instruction::default();
     instr.set_code(code);
     for (i, op) in ops.iter().enumerate() {
