@@ -692,9 +692,7 @@ pub(super) fn sdm_undefined(m: Mnemonic, f: FlagFacts) -> u64 {
 pub(super) fn check_iced(instr: &Instruction, sdm: u64, f: FlagFacts) -> Result<()> {
     let iced = to_rflags(instr.rflags_undefined());
     let m = instr.mnemonic();
-    let masked = f
-        .count
-        .map(|c| c & if f.width == 64 { 63 } else { 31 });
+    let masked = f.count.map(|c| c & if f.width == 64 { 63 } else { 31 });
     let ok = match masked {
         // Count-dependent forms.
         Some(0) => sdm == 0,
@@ -706,7 +704,18 @@ pub(super) fn check_iced(instr: &Instruction, sdm: u64, f: FlagFacts) -> Result<
             } else {
                 0
             };
-            sdm & !cf == iced & !cf
+            // 8- and 16-bit rcl/rcr: iced reduces the count modulo w + 1
+            // first and sees a rotate by 0 (no flag changes) or by 1 (OF
+            // defined). The SDM tests the masked count instead: "If the
+            // masked count is 0, the flags are not affected. If the masked
+            // count is 1, then the OF flag is affected, otherwise [...] the
+            // OF flag is undefined." Same for rol/ror by a multiple of w.
+            let rotate = matches!(m, M::Rol | M::Ror | M::Rcl | M::Rcr);
+            if rotate && f.width < 32 {
+                sdm == flags::OF && (iced == 0 || iced == sdm)
+            } else {
+                sdm & !cf == iced & !cf
+            }
         }
         None => sdm == iced,
     };
@@ -899,7 +908,9 @@ pub(super) fn case(
                 // A count in xmm/m128: edges in the low 64 bits.
                 let c = match rng.below(4) {
                     0 => u128::from(pick_count(rng, idx, 64)),
-                    1 => u128::from(rng.pick(&[0u64, 1, 15, 16, 31, 32, 63, 64, 1 << 32, u64::MAX])),
+                    1 => {
+                        u128::from(rng.pick(&[0u64, 1, 15, 16, 31, 32, 63, 64, 1 << 32, u64::MAX]))
+                    }
                     _ => u128::from(rng.below(70)),
                 };
                 c | (x & !(u128::from(u64::MAX)))
@@ -1000,7 +1011,7 @@ pub(super) fn case(
     for (i, slot) in slots.iter().enumerate() {
         ops.push(match *slot {
             Slot::Gpr(r) | Slot::Xmm(r) => Op::Reg(r),
-            Slot::Imm(k) if k == K::imm8_const_1 => Op::Imm(1),
+            Slot::Imm(K::imm8_const_1) => Op::Imm(1),
             Slot::Imm(_) => Op::Imm(values[i] as u64 as i64),
             Slot::Mem(size) => {
                 let mode = ALL_MODES[idx % ALL_MODES.len()];
@@ -1070,6 +1081,19 @@ pub(super) fn case(
         });
     }
 
+    // The offset register may also be an address register, which then
+    // holds an address: draw again unless the offset stays near.
+    if bt_mem {
+        let Slot::Gpr(r) = slots[1] else {
+            unreachable!()
+        };
+        let (i, shift, bits) = slot(r);
+        let off = sext((b.gprs[i] >> shift) & mask(bits), bits) as i64;
+        if !(-256..256).contains(&off) {
+            return Ok(None);
+        }
+    }
+
     let mut instr = Instruction::default();
     instr.set_code(code);
     for (i, op) in ops.iter().enumerate() {
@@ -1107,11 +1131,12 @@ pub(super) fn case(
         .map(|u| u.register())
         .collect();
     for r in used {
-        if let Some(i) = GPR64.iter().position(|&x| x == r.full_register()) {
-            if !b.touched[i] && i != RSP_INDEX {
-                let v = rand_val(rng, 64);
-                b.set_full(i, v);
-            }
+        if let Some(i) = GPR64.iter().position(|&x| x == r.full_register())
+            && !b.touched[i]
+            && i != RSP_INDEX
+        {
+            let v = rand_val(rng, 64);
+            b.set_full(i, v);
         }
     }
 
@@ -1194,7 +1219,11 @@ pub(super) fn case(
         flags_mask,
         undefined,
         input: b.input(),
-        expect_rip: if expect_fault.is_some() { CODE_ADDR } else { next },
+        expect_rip: if expect_fault.is_some() {
+            CODE_ADDR
+        } else {
+            next
+        },
         expect_fault,
         bytes,
     }))
@@ -1221,18 +1250,4 @@ const XMM: [Register; 16] = [
 
 fn xmm_index(r: Register) -> usize {
     XMM.iter().position(|&x| x == r).expect("an XMM register")
-}
-
-#[cfg(test)]
-mod probe {
-    use super::*;
-    #[test]
-    fn print_iced_undefined() {
-        for m in [M::Shl, M::Sal, M::Shr, M::Sar, M::Rol, M::Ror, M::Rcl, M::Rcr, M::Shld, M::Shrd, M::Bsf, M::Bsr, M::Bt, M::Mul, M::Imul, M::And, M::Div] {
-            for c in codes_of(&[m], false) {
-                let i = bare(c);
-                eprintln!("{c:?} undef={:#x} mod={:#x}", to_rflags(i.rflags_undefined()), to_rflags(i.rflags_modified()));
-            }
-        }
-    }
 }

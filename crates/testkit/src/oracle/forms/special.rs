@@ -11,9 +11,15 @@ use crate::oracle::fixture::{abridged_tag, full_tag_word};
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Special {
     /// div/idiv r/m (reg or memory divisor).
-    Div { code: Code, mem: bool },
+    Div {
+        code: Code,
+        mem: bool,
+    },
     /// A string instruction with its repeat prefix.
-    Str { code: Code, rep: RepPrefixKind },
+    Str {
+        code: Code,
+        rep: RepPrefixKind,
+    },
     /// jrcxz, loop, loope, loopne.
     LoopBr(Code),
     /// push r/m64 with a register operand.
@@ -42,7 +48,12 @@ pub(super) fn after(after: &str, out: &mut Vec<Form>) {
             for (family, codes) in [
                 (
                     "div",
-                    [Code::Div_rm8, Code::Div_rm16, Code::Div_rm32, Code::Div_rm64],
+                    [
+                        Code::Div_rm8,
+                        Code::Div_rm16,
+                        Code::Div_rm32,
+                        Code::Div_rm64,
+                    ],
                 ),
                 (
                     "idiv",
