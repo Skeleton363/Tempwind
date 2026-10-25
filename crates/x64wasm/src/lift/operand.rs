@@ -5,6 +5,7 @@ use iced_x86::{OpKind, Register};
 
 use super::lower::Lower;
 use super::{Lowered, Unsupported};
+use crate::abi;
 use crate::ir::{BinOp, Gpr, Value, Width};
 
 /// A general-purpose register operand: which register and which part.
@@ -39,16 +40,9 @@ pub(super) fn gpr(reg: Register) -> Lowered<(Gpr, Part)> {
     Ok((index as Gpr, part))
 }
 
-pub(super) fn gpr64(reg: Register) -> Lowered<Gpr> {
-    match gpr(reg)? {
-        (g, Part::Q) => Ok(g),
-        _ => Err(Unsupported),
-    }
-}
-
 impl Lower<'_> {
     /// True if a 67h (address-size) legacy prefix is present.
-    fn has_addr32_prefix(&self) -> bool {
+    pub(super) fn has_addr32_prefix(&self) -> bool {
         for &b in self.bytes {
             match b {
                 0x67 => return true,
@@ -59,31 +53,37 @@ impl Lower<'_> {
         false
     }
 
-    /// Effective address of the memory operand (no segment base).
+    /// Effective address of the memory operand without the segment base
+    /// (what `lea` computes). With 67h the sum of the full registers is
+    /// masked to 32 bits: its low half depends only on the low halves.
     pub(super) fn ea_offset(&mut self) -> Lowered<Value> {
         if let Some(v) = self.ea {
             return Ok(v);
         }
-        if self.has_addr32_prefix() {
-            return Err(Unsupported);
-        }
+        let addr32 = self.has_addr32_prefix();
         let insn = self.insn;
         let base = insn.memory_base();
         let index = insn.memory_index();
         let disp = insn.memory_displacement64();
-        let v = if base == Register::RIP {
+        let v = if base == Register::RIP || base == Register::EIP {
             // iced already resolved RIP-relative operands to an absolute address.
             if index != Register::None {
                 return Err(Unsupported);
             }
-            Value::Imm(disp)
+            Value::Imm(if addr32 { disp & 0xffff_ffff } else { disp })
         } else {
+            let full = |r: Register| -> Lowered<Value> {
+                match (gpr(r)?, addr32) {
+                    ((g, Part::Q), false) | ((g, Part::D), true) => Ok(Value::Reg(g)),
+                    _ => Err(Unsupported),
+                }
+            };
             let mut acc: Option<Value> = None;
             if base != Register::None {
-                acc = Some(Value::Reg(gpr64(base)?));
+                acc = Some(full(base)?);
             }
             if index != Register::None {
-                let mut x = Value::Reg(gpr64(index)?);
+                let mut x = full(index)?;
                 let shift = match insn.memory_index_scale() {
                     1 => 0,
                     2 => 1,
@@ -99,22 +99,64 @@ impl Lower<'_> {
                     None => x,
                 });
             }
-            match acc {
+            let sum = match acc {
                 None => Value::Imm(disp),
                 Some(a) if disp == 0 => a,
                 Some(a) => self.bin(BinOp::Add, a, Value::Imm(disp)),
+            };
+            if addr32 {
+                self.mask(sum, Width::W32)
+            } else {
+                sum
             }
         };
         self.ea = Some(v);
         Ok(v)
     }
 
-    /// Guest address of the memory operand. FS/GS-relative accesses are not
-    /// supported yet; other segments have base 0 in 64-bit mode.
+    /// Guest address of the memory operand: the offset plus the FS or GS
+    /// base from the state block; other segments have base 0 in 64-bit mode.
     pub(super) fn ea(&mut self) -> Lowered<Value> {
-        match self.insn.memory_segment() {
-            Register::FS | Register::GS => Err(Unsupported),
-            _ => self.ea_offset(),
+        if let Some(v) = self.seg_ea {
+            return Ok(v);
+        }
+        let offset = self.ea_offset()?;
+        let base = match self.insn.memory_segment() {
+            Register::FS => Some(abi::STATE_FS_BASE),
+            Register::GS => Some(abi::STATE_GS_BASE),
+            _ => None,
+        };
+        let v = match base {
+            Some(b) => {
+                let base = self.load_state(Width::W64, b);
+                self.bin(BinOp::Add, offset, base)
+            }
+            None => offset,
+        };
+        self.seg_ea = Some(v);
+        Ok(v)
+    }
+
+    /// The low `width` bits of a register, zero-extended.
+    pub(super) fn read_reg(&mut self, g: Gpr, width: Width) -> Value {
+        self.mask(Value::Reg(g), width)
+    }
+
+    /// Writes the low `width` bits of a register: 32-bit writes zero-extend,
+    /// 8- and 16-bit writes merge. `value` is zero-extended from `width`.
+    pub(super) fn write_reg(&mut self, g: Gpr, width: Width, value: Value) {
+        let merged = self.merge(g, width, value);
+        self.set_reg(g, merged);
+    }
+
+    /// The full register `g` after a write of `value` to its low `width` bits.
+    pub(super) fn merge(&mut self, g: Gpr, width: Width, value: Value) -> Value {
+        match width {
+            Width::W64 | Width::W32 => value,
+            Width::W16 | Width::W8 => {
+                let kept = self.bin(BinOp::And, Value::Reg(g), Value::Imm(!width.mask()));
+                self.bin(BinOp::Or, kept, value)
+            }
         }
     }
 
@@ -163,26 +205,39 @@ impl Lower<'_> {
         }
     }
 
+    /// The full register a register operand names, and its value after a
+    /// write of `value` (zero-extended from `width`) with x86
+    /// partial-register semantics, without writing it.
+    pub(super) fn merged(
+        &mut self,
+        operand: u32,
+        width: Width,
+        value: Value,
+    ) -> Lowered<(Gpr, Value)> {
+        let (g, part) = gpr(self.insn.op_register(operand))?;
+        let r = Value::Reg(g);
+        let merged = match part {
+            // 32-bit writes zero-extend; `value` is already zero-extended.
+            Part::Q | Part::D => value,
+            Part::W | Part::Lo => {
+                let kept = self.bin(BinOp::And, r, Value::Imm(!width.mask()));
+                self.bin(BinOp::Or, kept, value)
+            }
+            Part::Hi => {
+                let kept = self.bin(BinOp::And, r, Value::Imm(!0xff00));
+                let shifted = self.bin(BinOp::Shl, value, Value::Imm(8));
+                self.bin(BinOp::Or, kept, shifted)
+            }
+        };
+        Ok((g, merged))
+    }
+
     /// Writes `value` (zero-extended from `width`) to an operand with x86
     /// partial-register semantics.
     pub(super) fn write(&mut self, operand: u32, width: Width, value: Value) -> Lowered<()> {
         match self.insn.op_kind(operand) {
             OpKind::Register => {
-                let (g, part) = gpr(self.insn.op_register(operand))?;
-                let r = Value::Reg(g);
-                let merged = match part {
-                    // 32-bit writes zero-extend; `value` is already zero-extended.
-                    Part::Q | Part::D => value,
-                    Part::W | Part::Lo => {
-                        let kept = self.bin(BinOp::And, r, Value::Imm(!width.mask()));
-                        self.bin(BinOp::Or, kept, value)
-                    }
-                    Part::Hi => {
-                        let kept = self.bin(BinOp::And, r, Value::Imm(!0xff00));
-                        let shifted = self.bin(BinOp::Shl, value, Value::Imm(8));
-                        self.bin(BinOp::Or, kept, shifted)
-                    }
-                };
+                let (g, merged) = self.merged(operand, width, value)?;
                 self.set_reg(g, merged);
                 Ok(())
             }

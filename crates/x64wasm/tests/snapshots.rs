@@ -87,3 +87,17 @@ fn call_ret_tail() {
         "e806000000 e807000000 c3 4883c001 eb00 4883c002 c3",
     );
 }
+
+/// ALU: `add rax, rbx; adc rdx, rcx; adc esi, 0; inc rdi; ret` (a carry
+/// chain, and inc keeping CF).
+#[test]
+fn adc_chain() {
+    check("adc_chain", 0x1000, "4801d8 4811ca 83d600 48ffc7 c3");
+}
+
+/// Extensions and conditions: `movsx eax, byte [rcx]; cmp eax, edx;
+/// cmovl eax, edx; setg cl; cdqe; ret`.
+#[test]
+fn ext_cc() {
+    check("ext_cc", 0x1000, "0fbe01 39d0 0f4cc2 0f9fc1 4898 c3");
+}

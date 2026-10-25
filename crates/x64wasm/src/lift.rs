@@ -12,11 +12,19 @@
 //! writes, and each other submodule one family.
 
 mod alu;
+mod atomic;
+mod bit;
 mod branch;
+mod cc;
 mod data;
+mod ext;
 mod lower;
+mod misc;
+mod muldiv;
 mod operand;
+mod shift;
 mod stack;
+mod string;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -217,8 +225,13 @@ impl<'a> Lifter<'a> {
             DecoderError::None => {}
             DecoderError::NoMoreBytes => return None,
             _ => {
-                // Invalid encoding: exit with UNSUPPORTED at it (it would #UD).
-                return Some(unsupported(addr, insn.len() as u32, "(bad)".into()));
+                // Invalid encoding: the CPU raises #UD there.
+                let mut d = unsupported(addr, insn.len() as u32, "(bad)".into());
+                d.flow = Flow::End(Term::Fault {
+                    kind: abi::FAULT_INVALID_OPCODE,
+                    rip: addr,
+                });
+                return Some(d);
             }
         }
         let mut lower = Lower {
@@ -228,6 +241,7 @@ impl<'a> Lifter<'a> {
             temps: 0,
             vtemps: 0,
             ea: None,
+            seg_ea: None,
         };
         match lower.lower() {
             Ok(flow) => Some(Decoded {

@@ -29,8 +29,14 @@ use crate::abi;
 /// A general-purpose register in x86 encoding order (0 = RAX ... 15 = R15).
 pub type Gpr = u8;
 
+/// Indexes of the registers that instructions use implicitly.
+pub const RAX: Gpr = 0;
+pub const RCX: Gpr = 1;
+pub const RDX: Gpr = 2;
 /// Index of RSP.
 pub const RSP: Gpr = 4;
+pub const RSI: Gpr = 6;
+pub const RDI: Gpr = 7;
 
 /// Operand width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -327,10 +333,16 @@ impl FlagOp {
             FlagOp::Inc => (b & 1 != 0, r == sign),
             FlagOp::Dec => (b & 1 != 0, a == sign),
             FlagOp::Shl => (msb(a.wrapping_shl(b.wrapping_sub(1) as u32)), msb(a ^ r)),
-            FlagOp::Shr => (a.wrapping_shr(b.wrapping_sub(1) as u32) & 1 != 0, msb(a ^ r)),
+            FlagOp::Shr => (
+                a.wrapping_shr(b.wrapping_sub(1) as u32) & 1 != 0,
+                msb(a ^ r),
+            ),
             FlagOp::Sar => {
                 let s = (a ^ sign).wrapping_sub(sign) as i64;
-                (s.wrapping_shr(b.wrapping_sub(1) as u32) & 1 != 0, msb(a ^ r))
+                (
+                    s.wrapping_shr(b.wrapping_sub(1) as u32) & 1 != 0,
+                    msb(a ^ r),
+                )
             }
             FlagOp::Mul => (a != 0, a != 0),
         };
@@ -341,7 +353,7 @@ impl FlagOp {
         if of {
             f |= OF;
         }
-        if (r & 0xff).count_ones() % 2 == 0 {
+        if (r & 0xff).count_ones().is_multiple_of(2) {
             f |= PF;
         }
         if r == 0 {
@@ -832,7 +844,8 @@ impl Program {
     pub fn analyze_flags(&mut self) {
         let index = self.index_map();
         let mut live_in = vec![false; self.blocks.len()];
-        let live_at = |target: &u64, live_in: &[bool]| index.get(target).is_none_or(|&i| live_in[i]);
+        let live_at =
+            |target: &u64, live_in: &[bool]| index.get(target).is_none_or(|&i| live_in[i]);
         let live_after_term = |term: &Term, live_in: &[bool]| match term {
             Term::Jump(target) => live_at(target, live_in),
             Term::BranchIf {
@@ -996,7 +1009,10 @@ impl fmt::Display for Op {
                 when,
                 live,
             } => {
-                write!(f, "flags.update clear {clear:#x}, set {set}, flip {flip:#x}")?;
+                write!(
+                    f,
+                    "flags.update clear {clear:#x}, set {set}, flip {flip:#x}"
+                )?;
                 when_suffix(f, when, *live)
             }
             Op::FaultIf { cond, kind } => write!(f, "fault {kind} if {cond}"),

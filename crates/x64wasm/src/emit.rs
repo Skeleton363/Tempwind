@@ -237,14 +237,12 @@ impl ChunkEmitter<'_> {
         }
         for (i, op) in ops.iter().enumerate() {
             // Dead flag records emit nothing, so look past them.
-            let next = ops[i + 1..]
-                .iter()
-                .find(|o| {
-                    !matches!(
-                        o,
-                        Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. }
-                    )
-                });
+            let next = ops[i + 1..].iter().find(|o| {
+                !matches!(
+                    o,
+                    Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. }
+                )
+            });
             let next_first = match next {
                 Some(next) => first_operand(next),
                 None => term_value,
@@ -1135,9 +1133,14 @@ fn emit_run() -> Function {
     func
 }
 
-/// A module that exports the `flags` function and the `div128` helper
-/// alone (no imports), for testing them against reference models.
+/// A module that exports, for testing them against reference models, the
+/// `flags` function, the `div128` helper, and every condition through the
+/// static path (`s_{kind}_{width}_{cond}(a, b, r) -> i32`, kind and width as
+/// in `cc_op`, cond its encoding) and from materialized flags
+/// (`d_{cond}(flags) -> i32`). It has no imports.
 pub fn helpers_test_module() -> Vec<u8> {
+    use crate::ir::{Cond, FlagOp};
+    const WIDTHS: [Width; 4] = [Width::W8, Width::W16, Width::W32, Width::W64];
     let mut module = Module::new();
     let mut types = TypeSection::new();
     types.ty().function(
@@ -1148,18 +1151,40 @@ pub fn helpers_test_module() -> Vec<u8> {
         [ValType::I64, ValType::I64, ValType::I64, ValType::I32],
         [ValType::I64, ValType::I64, ValType::I32],
     );
+    types
+        .ty()
+        .function([ValType::I64, ValType::I64, ValType::I64], [ValType::I32]);
+    types.ty().function([ValType::I64], [ValType::I32]);
     module.section(&types);
     let mut funcs = FunctionSection::new();
-    funcs.function(0);
-    funcs.function(1);
-    module.section(&funcs);
     let mut exports = ExportSection::new();
-    exports.export("flags", ExportKind::Func, 0);
-    exports.export("div128", ExportKind::Func, 1);
-    module.section(&exports);
     let mut code = CodeSection::new();
+    funcs.function(0);
+    exports.export("flags", ExportKind::Func, 0);
     code.function(&emit_flags());
+    funcs.function(1);
+    exports.export("div128", ExportKind::Func, 1);
     code.function(&helpers::emit_div128());
+    let mut n = 2;
+    for op in FlagOp::ALL {
+        for w in WIDTHS {
+            for c in 0..16 {
+                funcs.function(2);
+                let name = format!("s_{}_{}_{c}", op.kind(), w.index());
+                exports.export(&name, ExportKind::Func, n);
+                code.function(&flags::static_cond_function(op, w, Cond::from_index(c)));
+                n += 1;
+            }
+        }
+    }
+    for c in 0..16 {
+        funcs.function(3);
+        exports.export(&format!("d_{c}"), ExportKind::Func, n);
+        code.function(&flags::dynamic_cond_function(Cond::from_index(c)));
+        n += 1;
+    }
+    module.section(&funcs);
+    module.section(&exports);
     module.section(&code);
     module.finish()
 }

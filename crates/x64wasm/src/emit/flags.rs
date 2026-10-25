@@ -233,7 +233,7 @@ impl ChunkEmitter<'_> {
     pub(super) fn cond(&self, f: &mut InstructionSink<'_>, cond: Cond) {
         let base = Cond::from_index(cond as u32 & !1);
         match self.known_cc {
-            Some(Known::Lazy(op, w)) => self.static_cond(f, op, w, base),
+            Some(Known::Lazy(op, w)) => Self::static_cond(f, op, w, base),
             Some(Known::Eager) => {
                 f.local_get(L_CC_A);
                 f.local_set(L_SCRATCH);
@@ -250,18 +250,18 @@ impl ChunkEmitter<'_> {
         }
     }
 
-    pub(super) fn zf(&self, f: &mut InstructionSink<'_>) {
+    pub(super) fn zf(f: &mut InstructionSink<'_>) {
         f.local_get(L_CC_R);
         f.i64_eqz();
     }
 
-    pub(super) fn sf(&self, f: &mut InstructionSink<'_>, w: Width) {
+    pub(super) fn sf(f: &mut InstructionSink<'_>, w: Width) {
         f.local_get(L_CC_R);
         f.i64_const(w.sign_bit() as i64);
         f.i64_ge_u();
     }
 
-    pub(super) fn pf(&self, f: &mut InstructionSink<'_>) {
+    pub(super) fn pf(f: &mut InstructionSink<'_>) {
         f.local_get(L_CC_R);
         f.i64_const(0xff);
         f.i64_and();
@@ -282,25 +282,25 @@ impl ChunkEmitter<'_> {
     }
 
     /// A non-negated condition for a statically known record kind.
-    pub(super) fn static_cond(&self, f: &mut InstructionSink<'_>, op: FlagOp, w: Width, base: Cond) {
+    pub(super) fn static_cond(f: &mut InstructionSink<'_>, op: FlagOp, w: Width, base: Cond) {
         let rec = Self::rec(w);
         match (op, base) {
             (_, Cond::O) => rec.of(f, op),
             (_, Cond::B) => rec.cf(f, op),
-            (_, Cond::E) => self.zf(f),
+            (_, Cond::E) => Self::zf(f),
             (FlagOp::Sub, Cond::Be) => {
                 f.local_get(L_CC_A);
                 f.local_get(L_CC_B);
                 f.i64_le_u();
             }
-            (FlagOp::Logic, Cond::Be) => self.zf(f),
+            (FlagOp::Logic, Cond::Be) => Self::zf(f),
             (_, Cond::Be) => {
                 rec.cf(f, op);
-                self.zf(f);
+                Self::zf(f);
                 f.i32_or();
             }
-            (_, Cond::S) => self.sf(f, w),
-            (_, Cond::P) => self.pf(f),
+            (_, Cond::S) => Self::sf(f, w),
+            (_, Cond::P) => Self::pf(f),
             (FlagOp::Sub, Cond::L) => {
                 Self::sext(f, L_CC_A, w);
                 Self::sext(f, L_CC_B, w);
@@ -311,20 +311,20 @@ impl ChunkEmitter<'_> {
                 Self::sext(f, L_CC_B, w);
                 f.i64_le_s();
             }
-            (FlagOp::Logic, Cond::L) => self.sf(f, w),
+            (FlagOp::Logic, Cond::L) => Self::sf(f, w),
             (FlagOp::Logic, Cond::Le) => {
-                self.zf(f);
-                self.sf(f, w);
+                Self::zf(f);
+                Self::sf(f, w);
                 f.i32_or();
             }
             (_, Cond::L) => {
-                self.sf(f, w);
+                Self::sf(f, w);
                 rec.of(f, op);
                 f.i32_ne();
             }
             (_, Cond::Le) => {
-                self.zf(f);
-                self.sf(f, w);
+                Self::zf(f);
+                Self::sf(f, w);
                 rec.of(f, op);
                 f.i32_ne();
                 f.i32_or();
@@ -475,6 +475,38 @@ pub(super) fn emit_flags() -> Function {
     f.i64_or();
     f.local_get(CF_OF);
     f.i64_or();
+    f.end();
+    func
+}
+
+/// `(a, b, r) -> i32`: `cond` of a record of kind `op` and width `w`
+/// through the static path (for tests).
+pub(super) fn static_cond_function(op: FlagOp, w: Width, cond: Cond) -> Function {
+    // The record's locals sit where a chunk has them.
+    let mut func = Function::new([(L_SCRATCH + 1 - 3, ValType::I64)]);
+    let mut f = func.instructions();
+    for (param, local) in [(0, L_CC_A), (1, L_CC_B), (2, L_CC_R)] {
+        f.local_get(param);
+        f.local_set(local);
+    }
+    ChunkEmitter::static_cond(&mut f, op, w, Cond::from_index(cond as u32 & !1));
+    if cond.is_negated() {
+        f.i32_eqz();
+    }
+    f.end();
+    func
+}
+
+/// `(flags) -> i32`: `cond` of materialized flags (for tests).
+pub(super) fn dynamic_cond_function(cond: Cond) -> Function {
+    let mut func = Function::new([(L_SCRATCH, ValType::I64)]);
+    let mut f = func.instructions();
+    f.local_get(0);
+    f.local_set(L_SCRATCH);
+    dynamic_cond(&mut f, Cond::from_index(cond as u32 & !1));
+    if cond.is_negated() {
+        f.i32_eqz();
+    }
     f.end();
     func
 }

@@ -155,53 +155,265 @@
     i64.sub
     i64.shl
     local.set $sign
-    local.get $op
-    i32.const 1
-    i32.sub
-    i32.const 2
-    i32.shr_u
-    if (result i64) ;; label = @1
+    block ;; label = @1
+      block ;; label = @2
+        block ;; label = @3
+          block ;; label = @4
+            block ;; label = @5
+              block ;; label = @6
+                block ;; label = @7
+                  block ;; label = @8
+                    block ;; label = @9
+                      block ;; label = @10
+                        block ;; label = @11
+                          block ;; label = @12
+                            local.get $op
+                            i32.const 1
+                            i32.sub
+                            i32.const 2
+                            i32.shr_u
+                            br_table 0 (;@12;) 1 (;@11;) 2 (;@10;) 3 (;@9;) 4 (;@8;) 5 (;@7;) 6 (;@6;) 7 (;@5;) 8 (;@4;) 9 (;@3;) 10 (;@2;) 10 (;@2;)
+                          end
+                          local.get $r
+                          local.get $a
+                          i64.lt_u
+                          i64.extend_i32_u
+                          local.get $a
+                          local.get $r
+                          i64.xor
+                          local.get $b
+                          local.get $r
+                          i64.xor
+                          i64.and
+                          local.get $sign
+                          i64.and
+                          i64.const 0
+                          i64.ne
+                          i64.extend_i32_u
+                          i64.const 11
+                          i64.shl
+                          i64.or
+                          local.set $cf_of
+                          br 10 (;@1;)
+                        end
+                        local.get $a
+                        local.get $b
+                        i64.lt_u
+                        i64.extend_i32_u
+                        local.get $a
+                        local.get $b
+                        i64.xor
+                        local.get $a
+                        local.get $r
+                        i64.xor
+                        i64.and
+                        local.get $sign
+                        i64.and
+                        i64.const 0
+                        i64.ne
+                        i64.extend_i32_u
+                        i64.const 11
+                        i64.shl
+                        i64.or
+                        local.set $cf_of
+                        br 9 (;@1;)
+                      end
+                      i32.const 0
+                      i64.extend_i32_u
+                      i32.const 0
+                      i64.extend_i32_u
+                      i64.const 11
+                      i64.shl
+                      i64.or
+                      local.set $cf_of
+                      br 8 (;@1;)
+                    end
+                    local.get $a
+                    local.get $b
+                    i64.and
+                    local.get $a
+                    local.get $b
+                    i64.xor
+                    local.get $r
+                    i64.const -1
+                    i64.xor
+                    i64.and
+                    i64.or
+                    local.get $sign
+                    i64.and
+                    i64.const 0
+                    i64.ne
+                    i64.extend_i32_u
+                    local.get $a
+                    local.get $r
+                    i64.xor
+                    local.get $b
+                    local.get $r
+                    i64.xor
+                    i64.and
+                    local.get $sign
+                    i64.and
+                    i64.const 0
+                    i64.ne
+                    i64.extend_i32_u
+                    i64.const 11
+                    i64.shl
+                    i64.or
+                    local.set $cf_of
+                    br 7 (;@1;)
+                  end
+                  local.get $a
+                  i64.const -1
+                  i64.xor
+                  local.get $b
+                  i64.and
+                  local.get $a
+                  local.get $b
+                  i64.xor
+                  i64.const -1
+                  i64.xor
+                  local.get $r
+                  i64.and
+                  i64.or
+                  local.get $sign
+                  i64.and
+                  i64.const 0
+                  i64.ne
+                  i64.extend_i32_u
+                  local.get $a
+                  local.get $b
+                  i64.xor
+                  local.get $a
+                  local.get $r
+                  i64.xor
+                  i64.and
+                  local.get $sign
+                  i64.and
+                  i64.const 0
+                  i64.ne
+                  i64.extend_i32_u
+                  i64.const 11
+                  i64.shl
+                  i64.or
+                  local.set $cf_of
+                  br 6 (;@1;)
+                end
+                local.get $b
+                i64.eqz
+                i32.eqz
+                i64.extend_i32_u
+                local.get $r
+                local.get $sign
+                i64.eq
+                i64.extend_i32_u
+                i64.const 11
+                i64.shl
+                i64.or
+                local.set $cf_of
+                br 5 (;@1;)
+              end
+              local.get $b
+              i64.eqz
+              i32.eqz
+              i64.extend_i32_u
+              local.get $a
+              local.get $sign
+              i64.eq
+              i64.extend_i32_u
+              i64.const 11
+              i64.shl
+              i64.or
+              local.set $cf_of
+              br 4 (;@1;)
+            end
+            local.get $a
+            local.get $b
+            i64.const 1
+            i64.sub
+            i64.shl
+            local.get $sign
+            i64.and
+            i64.const 0
+            i64.ne
+            i64.extend_i32_u
+            local.get $a
+            local.get $r
+            i64.xor
+            local.get $sign
+            i64.and
+            i64.const 0
+            i64.ne
+            i64.extend_i32_u
+            i64.const 11
+            i64.shl
+            i64.or
+            local.set $cf_of
+            br 3 (;@1;)
+          end
+          local.get $a
+          local.get $b
+          i64.const 1
+          i64.sub
+          i64.shr_u
+          i32.wrap_i64
+          i32.const 1
+          i32.and
+          i64.extend_i32_u
+          local.get $a
+          local.get $r
+          i64.xor
+          local.get $sign
+          i64.and
+          i64.const 0
+          i64.ne
+          i64.extend_i32_u
+          i64.const 11
+          i64.shl
+          i64.or
+          local.set $cf_of
+          br 2 (;@1;)
+        end
+        local.get $a
+        local.get $sign
+        i64.xor
+        local.get $sign
+        i64.sub
+        local.get $b
+        i64.const 1
+        i64.sub
+        i64.shr_s
+        i32.wrap_i64
+        i32.const 1
+        i32.and
+        i64.extend_i32_u
+        local.get $a
+        local.get $r
+        i64.xor
+        local.get $sign
+        i64.and
+        i64.const 0
+        i64.ne
+        i64.extend_i32_u
+        i64.const 11
+        i64.shl
+        i64.or
+        local.set $cf_of
+        br 1 (;@1;)
+      end
       local.get $a
-      local.get $b
-      i64.lt_u
+      i64.eqz
+      i32.eqz
       i64.extend_i32_u
       local.get $a
-      local.get $b
-      i64.xor
-      local.get $a
-      local.get $r
-      i64.xor
-      i64.and
-      local.get $sign
-      i64.and
       i64.eqz
       i32.eqz
       i64.extend_i32_u
       i64.const 11
       i64.shl
       i64.or
-    else
-      local.get $r
-      local.get $a
-      i64.lt_u
-      i64.extend_i32_u
-      local.get $a
-      local.get $r
-      i64.xor
-      local.get $b
-      local.get $r
-      i64.xor
-      i64.and
-      local.get $sign
-      i64.and
-      i64.eqz
-      i32.eqz
-      i64.extend_i32_u
-      i64.const 11
-      i64.shl
-      i64.or
+      local.set $cf_of
+      br 0 (;@1;)
     end
-    local.set $cf_of
     local.get $r
     i64.const 255
     i64.and

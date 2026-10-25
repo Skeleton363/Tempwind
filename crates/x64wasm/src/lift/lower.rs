@@ -1,7 +1,7 @@
 //! Lowering state for one instruction, the op builders every family uses,
 //! and the dispatch by mnemonic to the family modules.
 
-use iced_x86::{Instruction, Mnemonic};
+use iced_x86::{Instruction, Mnemonic, OpKind};
 
 use super::{Flow, Lowered, Unsupported};
 use crate::ir::{BinOp, Cond, FlagOp, Gpr, Op, RSP, Temp, UnOp, VTemp, Value, Width};
@@ -15,6 +15,8 @@ pub(super) struct Lower<'i> {
     pub(super) vtemps: u32,
     /// The memory operand's effective address, once computed.
     pub(super) ea: Option<Value>,
+    /// The memory operand's guest address (with the FS/GS base), once computed.
+    pub(super) seg_ea: Option<Value>,
 }
 
 impl Lower<'_> {
@@ -24,6 +26,7 @@ impl Lower<'_> {
         t
     }
 
+    #[allow(dead_code)] // SSE (M3), next
     pub(super) fn vtemp(&mut self) -> VTemp {
         let t = VTemp(self.vtemps);
         self.vtemps += 1;
@@ -186,22 +189,124 @@ impl Lower<'_> {
     }
 
     pub(super) fn lower(&mut self) -> Lowered<Flow> {
+        use Mnemonic as M;
         let insn = self.insn;
+        let m = insn.mnemonic();
         if insn.has_lock_prefix() {
-            return Err(Unsupported);
+            // iced rejects `lock` where it would #UD; this is the SDM's list.
+            let lockable = matches!(
+                m,
+                M::Add
+                    | M::Adc
+                    | M::And
+                    | M::Btc
+                    | M::Btr
+                    | M::Bts
+                    | M::Cmpxchg
+                    | M::Dec
+                    | M::Inc
+                    | M::Neg
+                    | M::Not
+                    | M::Or
+                    | M::Sbb
+                    | M::Sub
+                    | M::Xadd
+                    | M::Xchg
+                    | M::Xor
+            );
+            if !lockable || insn.op_kind(0) != OpKind::Memory {
+                return Err(Unsupported);
+            }
         }
-        match insn.mnemonic() {
-            Mnemonic::Nop => Ok(Flow::Next),
-            Mnemonic::Mov => self.mov(),
-            m @ (Mnemonic::Add | Mnemonic::Sub | Mnemonic::Cmp) => self.add_sub(m),
-            Mnemonic::Lea => self.lea(),
-            Mnemonic::Push => self.push(),
-            Mnemonic::Pop => self.pop(),
-            Mnemonic::Call => self.call(),
-            Mnemonic::Ret => self.ret(),
-            Mnemonic::Jmp => self.jmp(),
+        match m {
+            M::Mov => self.mov(),
+            M::Add | M::Sub | M::Cmp | M::Adc | M::Sbb => self.add_sub(m),
+            M::And | M::Or | M::Xor | M::Test => self.logic(m),
+            M::Inc | M::Dec | M::Neg | M::Not => self.unary(m),
+            M::Movzx | M::Movsx | M::Movsxd => self.extend(m),
+            M::Cbw | M::Cwde | M::Cdqe => self.widen_acc(),
+            M::Cwd | M::Cdq | M::Cqo => self.sign_acc(),
+            M::Bswap => self.bswap(),
+            M::Shl | M::Sal | M::Shr | M::Sar => self.shift(m),
+            M::Rol | M::Ror => self.rotate(m),
+            M::Rcl | M::Rcr => self.rotate_carry(m),
+            M::Shld | M::Shrd => self.shift_double(m),
+            M::Mul => self.mul_acc(false),
+            M::Imul => self.imul(),
+            M::Div | M::Idiv => self.div(m),
+            M::Bt | M::Bts | M::Btr | M::Btc => self.bit_test(m),
+            M::Bsf | M::Bsr => self.bit_scan(m),
+            M::Xchg => self.xchg(),
+            M::Xadd => self.xadd(),
+            M::Cmpxchg => self.cmpxchg(),
+            M::Movsb
+            | M::Movsw
+            | M::Movsd
+            | M::Movsq
+            | M::Stosb
+            | M::Stosw
+            | M::Stosd
+            | M::Stosq
+            | M::Lodsb
+            | M::Lodsw
+            | M::Lodsd
+            | M::Lodsq
+                if is_string(insn) =>
+            {
+                self.string(m)
+            }
+            M::Lea => self.lea(),
+            M::Push => self.push(),
+            M::Pop => self.pop(),
+            M::Call => self.call(),
+            M::Ret => self.ret(),
+            M::Jmp => self.jmp(),
+            M::Jrcxz | M::Jecxz | M::Loop | M::Loope | M::Loopne => self.loop_rcx(),
             _ if insn.is_jcc_short_or_near() => self.jcc(),
-            _ => Err(Unsupported),
+            M::Seto
+            | M::Setno
+            | M::Setb
+            | M::Setae
+            | M::Sete
+            | M::Setne
+            | M::Setbe
+            | M::Seta
+            | M::Sets
+            | M::Setns
+            | M::Setp
+            | M::Setnp
+            | M::Setl
+            | M::Setge
+            | M::Setle
+            | M::Setg => self.setcc(),
+            M::Cmovo
+            | M::Cmovno
+            | M::Cmovb
+            | M::Cmovae
+            | M::Cmove
+            | M::Cmovne
+            | M::Cmovbe
+            | M::Cmova
+            | M::Cmovs
+            | M::Cmovns
+            | M::Cmovp
+            | M::Cmovnp
+            | M::Cmovl
+            | M::Cmovge
+            | M::Cmovle
+            | M::Cmovg => self.cmovcc(),
+            _ => self.misc(m),
         }
     }
+}
+
+/// A string instruction (as opposed to SSE `movsd`, which shares the
+/// mnemonic): it has an implicit RSI/RDI (or ESI/EDI) memory operand.
+fn is_string(insn: &Instruction) -> bool {
+    (0..insn.op_count()).any(|i| {
+        matches!(
+            insn.op_kind(i),
+            OpKind::MemorySegRSI | OpKind::MemorySegESI | OpKind::MemoryESRDI | OpKind::MemoryESEDI
+        )
+    })
 }

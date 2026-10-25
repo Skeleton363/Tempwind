@@ -1,10 +1,11 @@
-//! Control transfers: `call`, `ret`, `jmp`, `jcc`.
+//! Control transfers: `call`, `ret`, `jmp`, `jcc`, `jrcxz`, `loop`,
+//! `loope`, `loopne`.
 
 use iced_x86::{Code, ConditionCode, OpKind};
 
 use super::lower::Lower;
 use super::{Flow, Lowered, Unsupported};
-use crate::ir::{BinOp, CallTarget, Cond, RSP, Term, Value, Width};
+use crate::ir::{BinOp, CallTarget, Cond, RCX, RSP, Term, Value, Width};
 
 pub(super) fn cond(cc: ConditionCode) -> Lowered<Cond> {
     Ok(match cc {
@@ -87,6 +88,38 @@ impl Lower<'_> {
         }
         Ok(Flow::End(Term::Branch {
             cond: cond(insn.condition_code())?,
+            taken: insn.near_branch_target(),
+            fallthrough: insn.next_ip(),
+        }))
+    }
+
+    /// `jrcxz`, `loop`, `loope`, `loopne` (RCX forms only; the 67h forms
+    /// with ECX stay unsupported). `loop` decrements RCX without flags.
+    pub(super) fn loop_rcx(&mut self) -> Lowered<Flow> {
+        let insn = self.insn;
+        let value = match insn.code() {
+            Code::Jrcxz_rel8_64 => self.bin(BinOp::Eq, Value::Reg(RCX), Value::Imm(0)),
+            code
+            @ (Code::Loop_rel8_64_RCX | Code::Loope_rel8_64_RCX | Code::Loopne_rel8_64_RCX) => {
+                let rcx = self.bin(BinOp::Sub, Value::Reg(RCX), Value::Imm(1));
+                self.set_reg(RCX, rcx);
+                let nz = self.bin(BinOp::Ne, rcx, Value::Imm(0));
+                match code {
+                    Code::Loope_rel8_64_RCX => {
+                        let z = self.cond(Cond::E);
+                        self.bin(BinOp::And, nz, z)
+                    }
+                    Code::Loopne_rel8_64_RCX => {
+                        let z = self.cond(Cond::Ne);
+                        self.bin(BinOp::And, nz, z)
+                    }
+                    _ => nz,
+                }
+            }
+            _ => return Err(Unsupported),
+        };
+        Ok(Flow::End(Term::BranchIf {
+            value,
             taken: insn.near_branch_target(),
             fallthrough: insn.next_ip(),
         }))

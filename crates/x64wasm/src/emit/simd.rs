@@ -269,6 +269,8 @@ fn vbin(f: &mut InstructionSink<'_>, op: VBinOp, a: u32, b: u32) {
         VBinOp::PackSsWb => f.i8x16_narrow_i16x8_s(),
         VBinOp::PackUsWb => f.i8x16_narrow_i16x8_u(),
         VBinOp::PackSsDw => f.i16x8_narrow_i32x4_s(),
-        VBinOp::AndNot | VBinOp::MulHiS16 | VBinOp::MulHiU16 | VBinOp::MulU32 | VBinOp::SadBw => unreachable!(),
+        VBinOp::AndNot | VBinOp::MulHiS16 | VBinOp::MulHiU16 | VBinOp::MulU32 | VBinOp::SadBw => {
+            unreachable!()
+        }
     };
 }
