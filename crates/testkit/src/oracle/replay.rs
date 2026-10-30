@@ -123,7 +123,7 @@ pub fn replay_dir(dir: &Path) -> Result<ReplayReport> {
             fixture::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
         fixtures.push(f);
     }
-    let host = Host::new()?;
+    let host = Host::fast_compile()?;
     // Work items: chunks of `CHUNK` cases, so that big families don't
     // leave the other workers idle at the end. Results are merged back per
     // family in case order, so the report doesn't depend on the schedule.
