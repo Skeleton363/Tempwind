@@ -45,6 +45,8 @@ impl Module {
 #[derive(Default)]
 pub struct HostState {
     fp_status: u32,
+    /// Calls of `fp` helpers other than `status` (slow paths taken).
+    fp_calls: u64,
 }
 
 /// Defines the `fp` helpers (`abi.md`, "Floating-point helper module") as
@@ -61,7 +63,9 @@ fn fp_funcs(store: &mut Store<HostState>) -> Vec<(&'static str, Func)> {
                     &mut *store,
                     |mut caller: Caller<'_, HostState>, $($arg: $t),*| -> $r {
                         let (r, status) = $f;
-                        caller.data_mut().fp_status = status;
+                        let data = caller.data_mut();
+                        data.fp_status = status;
+                        data.fp_calls += 1;
                         r as $r
                     },
                 ),
@@ -513,6 +517,12 @@ impl Machine {
         self.table
             .set(&mut self.store, index.into(), Ref::Func(Some(func)))?;
         Ok(index)
+    }
+
+    /// The number of `fp` helper calls (other than `status`) on this
+    /// machine so far: how often translated code took a slow path.
+    pub fn fp_calls(&self) -> u64 {
+        self.store.data().fp_calls
     }
 
     /// Calls `run(state_addr)` of `module`, which must be linked, without

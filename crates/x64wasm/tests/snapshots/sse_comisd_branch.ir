@@ -1,0 +1,26 @@
+function 0x1000: wasm function 5 (fn_0x1000)
+
+block 0x1000:
+  0x1000: comisd xmm0,xmm1
+    v0 = vload64 state[0x110]
+    v1 = vload128 state[0x100]
+    t0 = fp.comisd v1, v0
+    flags.update clear 0x8d5, set t0, flip 0x0
+  0x1004: ja short 0000000000001008h
+  -> if a jump 0x1008 else 0x1006
+
+block 0x1006:
+  0x1006: xor eax,eax
+    t0 = and rax, 0xffffffff
+    t1 = and rax, 0xffffffff
+    t2 = xor t0, t1
+    flags.logic32 t2, 0x0, t2
+    rax = t2
+  -> jump 0x1008
+
+block 0x1008:
+  0x1008: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

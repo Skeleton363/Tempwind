@@ -1,0 +1,23 @@
+function 0x1000: wasm function 7 (fn_0x1000)
+
+block 0x1000:
+  0x1000: mulsd xmm0,xmm1
+    v0 = vload64 state[0x110]
+    v1 = vload128 state[0x100]
+    v2 = fp.mulsd v1, v0
+    vstore128 state[0x100], v2
+  0x1004: addsd xmm0,[rax]
+    v0 = vload64 [rax]
+    v1 = vload128 state[0x100]
+    v2 = fp.addsd v1, v0
+    vstore128 state[0x100], v2
+  0x1008: sqrtsd xmm2,xmm0
+    v0 = vload64 state[0x100]
+    v1 = vload128 state[0x120]
+    v2 = fp.sqrtsd v1, v0
+    vstore128 state[0x120], v2
+  0x100c: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]
