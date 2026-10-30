@@ -1480,19 +1480,53 @@ impl fmt::Display for Op {
                 if *signaling { "" } else { "u" }
             ),
             Op::X87 { op, addr } => {
+                let mem = |k: &X87Kind| match addr {
+                    Some(a) => format!("{k:?} [{a}]").to_lowercase(),
+                    None => "?".to_string(),
+                };
+                let src = |s: &X87Src| match s {
+                    X87Src::St(i) => format!("st{i}"),
+                    X87Src::Mem(k) => mem(k),
+                };
+                let p = |pop: bool| if pop { "p" } else { "" };
+                let lower = |x: &dyn fmt::Debug| format!("{x:?}").to_lowercase();
                 match op {
+                    X87::Wait => write!(f, "x87.wait"),
+                    X87::Load(k) => write!(f, "x87.push {}", mem(k)),
+                    X87::LoadSt(i) => write!(f, "x87.push st{i}"),
+                    X87::LoadConst(m, se) => write!(f, "x87.push {se:#x}:{m:#x}"),
+                    X87::Store { kind, pop } => write!(f, "x87.store{} {}", p(*pop), mem(kind)),
+                    X87::StoreSt { i, pop } => write!(f, "x87.store{} st{i}", p(*pop)),
+                    X87::Xch(i) => write!(f, "x87.xch st{i}"),
+                    X87::Arith {
+                        op,
+                        dst,
+                        src: s,
+                        pop,
+                    } => write!(f, "x87.{}{} st{dst}, {}", lower(op), p(*pop), src(s)),
+                    X87::Unary(u) => write!(f, "x87.{}", lower(u)),
+                    X87::Scale => write!(f, "x87.scale"),
+                    X87::Com {
+                        src: s,
+                        quiet,
+                        pops,
+                    } => write!(
+                        f,
+                        "x87.{}com pop{pops} {}",
+                        if *quiet { "u" } else { "" },
+                        src(s)
+                    ),
                     X87::Comi { dst, i, quiet, pop } => write!(
                         f,
                         "t{} = x87.{}comi{} st{i}",
                         dst.0,
                         if *quiet { "u" } else { "" },
-                        if *pop { "p" } else { "" }
-                    )?,
-                    op => write!(f, "x87.{op:?}")?,
-                }
-                match addr {
-                    Some(a) => write!(f, " [{a}]"),
-                    None => Ok(()),
+                        p(*pop)
+                    ),
+                    X87::LoadEnv => match addr {
+                        Some(a) => write!(f, "x87.ldenv [{a}]"),
+                        None => write!(f, "x87.ldenv ?"),
+                    },
                 }
             }
         }

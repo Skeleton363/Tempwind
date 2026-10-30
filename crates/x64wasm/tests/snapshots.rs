@@ -147,3 +147,16 @@ fn sse_cvt() {
 fn sse_comisd_branch() {
     check("sse_comisd_branch", 0x1000, "660f2fc1 7702 31c0 c3");
 }
+
+/// `fld tbyte ptr [rcx]; fild dword ptr [rdx]; faddp st(1), st; fldz;
+/// fucomip st, st(1); fstp tbyte ptr [r8]; seta al; ret`: a `long double`
+/// sequence (inline m80 moves, helper calls, the stack, an eager flag record
+/// from fucomip).
+#[test]
+fn x87_long_double() {
+    check(
+        "x87_long_double",
+        0x1000,
+        "db29 db02 dec1 d9ee dfe9 41db38 0f97c0 c3",
+    );
+}

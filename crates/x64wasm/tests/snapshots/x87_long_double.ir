@@ -1,0 +1,26 @@
+function 0x1000: wasm function 7 (fn_0x1000)
+
+block 0x1000:
+  0x1000: fld st,tbyte ptr [rcx]
+    x87.push f80 [rcx]
+  0x1002: fild st,dword ptr [rdx]
+    x87.push i32 [rdx]
+  0x1004: faddp
+    x87.addp st1, st0
+  0x1006: fldz
+    x87.push 0x0:0x0
+  0x1008: fucomip st,st(1)
+    t0 = x87.ucomip st1
+    flags.update clear 0x8d5, set t0, flip 0x0
+  0x100a: fstp tbyte ptr [r8],st
+    x87.storep f80 [r8]
+  0x100d: seta al
+    t0 = cond.a
+    t1 = and rax, 0xffffffffffffff00
+    t2 = or t1, t0
+    rax = t2
+  0x1010: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]
