@@ -1,0 +1,21 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 6228 bytes (7 KiB)
+
+Listing archive: numbers.txt.xz
+
+--
+Path = numbers.txt.xz
+Type = xz
+Physical Size = 6228
+Method = LZMA2:17 CRC32
+Streams = 1
+Blocks = 1
+
+----------
+Size = 108894
+Packed Size = 6228
+Method = LZMA2:17 CRC32
+

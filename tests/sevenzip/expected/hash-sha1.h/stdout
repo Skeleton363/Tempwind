@@ -1,0 +1,31 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning
+3 folders, 9 files, 287613 bytes (281 KiB)
+
+SHA1                                              Size  Name
+---------------------------------------- -------------  ------------
+                                                        tree\
+ea0ed3c4903d1de6bdda0bf5e3ad739ed4b096eb         49152  tree\code.bin
+da39a3ee5e6b4b0d3255bfef95601890afd80709             0  tree\empty
+58853e8a5e8272b1012f9a52a80758b27bd0d3cb            12  tree\hello.txt
+425df0172ed5591c12f1f5efeefd24a18092b16b         60000  tree\lorem.txt
+49972ff155d0d5fb6bb9d8f18a7a4c4a2ea9562c        108894  tree\numbers.txt
+4f7119620bd0d9df00c84010989f20b86ee04860         65536  tree\random.bin
+                                                        tree\sub\
+                                                        tree\sub\deeper\
+84527021c58c7da84add15da3c0d1ca4b9cf5bae          4000  tree\sub\deeper\more.txt
+6897bc5b50ceac27200cda28f6d09319a1633114            12  tree\sub\deeper\nested.txt
+7bee8f3b184e1e141ff76efe369c3b8bfc50e64c             7  tree\sub\other.txt
+---------------------------------------- -------------  ------------
+5d0cab610b4a2d81fab1d32a9ea861cd74fa36c8-00000003        287613  
+
+Folders: 3
+Files: 9
+Size: 287613
+
+SHA1   for data:              5d0cab610b4a2d81fab1d32a9ea861cd74fa36c8-00000003
+SHA1   for data and names:    37f00687268906b3517efd171ba315e880e2993b-00000005
+
+Everything is Ok

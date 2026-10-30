@@ -1,0 +1,58 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning
+3 folders, 9 files, 287613 bytes (281 KiB)
+
+CRC32    CRC64            SHA256                                                           SHA1                                     BLAKE2sp                                                         MD5                              XXH64            SHA384                                                                                           SHA512                                                                                                                           SHA3-256                                                                  Size  Name
+-------- ---------------- ---------------------------------------------------------------- ---------------------------------------- ---------------------------------------------------------------- -------------------------------- ---------------- ------------------------------------------------------------------------------------------------ -------------------------------------------------------------------------------------------------------------------------------- ---------------------------------------------------------------- -------------  ------------
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         tree\
+141D9447 578664A7C59AC339 4711c5d1455c1c687a61b9c320ac473bf76eaa1dbbd30e2e80ffbcb4e006f600 ea0ed3c4903d1de6bdda0bf5e3ad739ed4b096eb a10c2ffb2fb83ed31aa35524b7fb448adc2569c87f48ff0404442f31b7add4b5 0089421fbc5367021a0dd91a780e0557 F4BAE8E1FDA9135F 83a2d17d642255015f1430b1ebaf00c12deb81f081d7a8255ccbf940ff796a0573a594dc5ca0bb3151b494bcae21dc60 c341da713a402037032289446113af26f473fc7fdff631c819b556bbdafdd325bbf94b7c8406c34aef1641de6269d4d337537b31e37fafb4d7280f43a9aaae03 906b1691fb1b20c877fcde754047c77e09ccc720469e97f3801f86037d6bbc18         49152  tree\code.bin
+00000000 0000000000000000 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 da39a3ee5e6b4b0d3255bfef95601890afd80709 dd0e891776933f43c7d032b08a917e25741f8aa9a12c12e1cac8801500f2ca4f d41d8cd98f00b204e9800998ecf8427e EF46DB3751D8E999 38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a             0  tree\empty
+C4C55DFF AE2B46CE77CEC687 4a1e67f2fe1d1cc7b31d0ca2ec441da4778203a036a77da10344c85e24ff0f92 58853e8a5e8272b1012f9a52a80758b27bd0d3cb 3494f3252342dc2f10b62e0553182fed90c01ed8291cbb686b2007d6e95cbd53 0f723ae7f9bf07744445e93ac5595156 D1D8DB7D17870EB5 96ac6e7831767ba8072ce8e0da5301b725e4660926dd127b454d33524cf6818d164ada5a10d4a9bb3b83c6ec56f5460e 595beeb13e543b7107c182bb23ac7766bd62ab3122e250e90573eb540f89520122150e5f69bb99140bc47ab526c9b7b2a3b2402b09b44b7391501a149876765c 6dbe70ff8167d9060c70dce72bdc36ea444a2b4d92d6e4f95566e9858b18dd7f            12  tree\hello.txt
+4CF914A4 AEE67AB348598763 7467098ca19a3b0aca9e0a382f5cd02c88b6f352189edf2345516803deefaa9c 425df0172ed5591c12f1f5efeefd24a18092b16b 1466a29e21494ae5ff9666c76b3fad2b7edc27fde24d7714c9b55fd29d043c46 95860043ca4c6b476a1035accb996ceb 76B766BDEC8EF892 66eb8b9464f9e1b15156443383a20e1b50cd1acc1a5279f63dee923f62d9632d5371f2cc08779cde0c45dd37719b0a80 185bf69907b52d4b4eacf403028ec9d3fdecaf9d9d6f4eceac578c4d706ce2fa03e2aaee7c866b0ffd194982d5a9a8bc5547f2eb304da573c6aed6b62c228b7b 34732f330fd3dd703328244e882b32e8f9fc14097d8bd119c42aaa3ad1c4414b         60000  tree\lorem.txt
+45C35897 C027612644C2453E f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a 49972ff155d0d5fb6bb9d8f18a7a4c4a2ea9562c db9cdf623732a316c179cef703c597a98570c13c28442dbef3f822c9e84f5a46 e071f707df7bbeee2a6a1eb48011ddd0 281B8B14801AA1E4 65ac75a56df439df93ff03f077d555b8f6d11042c7fe2df97f5492e333684df39f48f7b2a63416ce5e5e734d7d67a1e6 7686a0fb0b50564b3e6f2e2ab9bdcbd55d450d1add4bc3ad888d32c51013c3e86eb9d4d89466904cc65a049c1b8e38615df616b31902701b1c81216a9cc5b42b 658656e129914052546af527ba8cf573ab27fb47551a0682ffcf00eeaf56d32b        108894  tree\numbers.txt
+6DEE80D4 A58B29A6AD40B570 4fb728eb1ae140e3e5b091ad5dac4192a0c71ded2adf7e7fdf26981c2a120c67 4f7119620bd0d9df00c84010989f20b86ee04860 c89a27720fbcb9076f959a1939ed27def5e799e97a62cb2326aeac209348043b 282a17bea03db56675b66d2ffe661927 C32001EA63E055F5 3f65eea90c62e2624d74eb6f779df82a06218f8b7f02ca8637fd50a85e362aaa01b4c5f8dca0f0f0eafe5ea54d30e528 5d2ab0b93267c28272a65a68a8f5f87f69ccf7e19d235baaf8c298a366b52db7482b47223ca81176facaf8e77de50a4d717d43c36619b1db039222ba4815f5eb b23242d89e335d3aca5a1e050c89a4e5646c8c58e1586e007c897fc78a41c413         65536  tree\random.bin
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         tree\sub\
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         tree\sub\deeper\
+2936F203 675DA05385B21AF7 29bcf3e6877e7a198719730282fb1d0079f3775e15acf56eb47326f5a02db3e1 84527021c58c7da84add15da3c0d1ca4b9cf5bae eaa28fd31b1bfe054127b1ffc191381693ddf5ba032d1c15bb82f53302df4f8e 24c6e1e46d179f0b14ab38f005678632 4BAC57C4EECD6887 186c748094f23df530a3032b8e6bbc6ff630c273bcd2b9c3c809713083fd8b2c918cc240f6ff2632f95ecc7bf4e5aa04 20c2bd7e86212f43447049d72eaa9305ec803f8732769a916d8d5844bd8d0f72020f846178ef7572b96fac1118482886825a004929a195f11c8a5fbd781ee2bf db9d15b26e9aa1e46f0fb9f4b3e54eff0dcd62f1b398f6b35e66e41edc7c61ef          4000  tree\sub\deeper\more.txt
+22945282 49AB306B112FC761 414f8e9fd34ff68f66cbdab5ec63a5e738aa107f3454fa7edb51f49528abf9c6 6897bc5b50ceac27200cda28f6d09319a1633114 7776d0e41e03a79245e653becf4204f2913227e472c80d93547a4ae8af8d96d0 a47170636e9c528995092e14a81000ab A9025C051D318FFC 63b4ca5b8a3dd4603c027f6b03682e862a66e90802a7d18985095110835f085578f18760458070149e9374bf6448b7e0 fe734a58f8efe4e8bb75fcd5e673622050d331f7b3a306afbbee223819b25b4c1f2b370dd801c8e0d08e50de608cbc48106f64b62491a9df2366cf890e082711 c982e11870cab45823c17a11634046bf9e4fe1f197f594134ac1d2ec515c2143            12  tree\sub\deeper\nested.txt
+060FC07E 6DF1C05CF9B7BD31 480c2336b410f1ad5f8bf1b28944490255804b65350c527787e74ebdd511e3a4 7bee8f3b184e1e141ff76efe369c3b8bfc50e64c ac9903d61c4457595bdc72b5c35b844edfe5d72b187b505168c8e2cbf69f842b 59d0d19fc45ca69230d858f60a5557f8 8A198A03554C4016 32fe218a0eef028b025864b7f0aaf735ebd9463b4a64359eebe60611cf602a805bff0eeabac322a45174d9ce9a526b61 a7f76f090fcd3a897220845ad31254c754e1245065d91581ed8a801c6a7d276c7818bf2f0303ef9df9d2efd0c22c8a78ac6acc41f332ec91316f1b29eb4cc527 a7fdc3da8f35a320f6130c1c010d5c254fbcbfe4b0034630c9784d5eebf5896d             7  tree\sub\other.txt
+-------- ---------------- ---------------------------------------------------------------- ---------------------------------------- ---------------------------------------------------------------- -------------------------------- ---------------- ------------------------------------------------------------------------------------------------ -------------------------------------------------------------------------------------------------------------------------------- ---------------------------------------------------------------- -------------  ------------
+2B68E558-00000002 39454212085FAB5A-00000004 df4ce798566ca496f961eaffdf92ab54fe4dffa0705dac99ae619be8e4ae5db4-00000004 5d0cab610b4a2d81fab1d32a9ea861cd74fa36c8-00000003 7600b93a8927fe3b04bafe2593c720a7df308a3860f6b63e954f09c163a662ab-00000003 a1433cd1302b983f2c914c782d40dae4-00000004 9695D12098DE34B1-00000005 081bf2e7f3b37ab755e165f16c49250dcefd4d5d26a4f5451d5f3370799c683a0b2956fbd7742871a25bf7cf7e633ba1-00000003 9b5a6989cbcea9346e007ceea79f7fabdd2bd71f7102bc75e8cb3f81e5e575bb7af86ca0ecd089d33b70072dbccfd368a2ae6bbd2643677767d3c01cbfb9022b-00000003 3a74d11b84d44591b0ff7a5173f991f14901932d6d41dd7b0b83a92eaea8c30d-00000003        287613  
+
+Folders: 3
+Files: 9
+Size: 287613
+
+CRC32  for data:              2B68E558-00000002
+CRC32  for data and names:    CB26DB4B-00000007
+
+CRC64  for data:              39454212085FAB5A-00000004
+CRC64  for data and names:    090C9F8B9DA531A1-00000007
+
+SHA256 for data:              df4ce798566ca496f961eaffdf92ab54fe4dffa0705dac99ae619be8e4ae5db4-00000004
+SHA256 for data and names:    769aae6f5c27d4ce882b29c9a855f6f43b8c701604272ab139bb79c99030cf99-00000006
+
+SHA1   for data:              5d0cab610b4a2d81fab1d32a9ea861cd74fa36c8-00000003
+SHA1   for data and names:    37f00687268906b3517efd171ba315e880e2993b-00000005
+
+BLAKE2sp for data:              7600b93a8927fe3b04bafe2593c720a7df308a3860f6b63e954f09c163a662ab-00000003
+BLAKE2sp for data and names:    ac94c8e7c77265507a401b0ab0701452565b38e92934d7bdab147ce3ae33a1a5-00000006
+
+MD5    for data:              a1433cd1302b983f2c914c782d40dae4-00000004
+MD5    for data and names:    b3b3c2e80313fd6485f872f3fde5bf61-00000005
+
+XXH64  for data:              9695D12098DE34B1-00000005
+XXH64  for data and names:    8693C938193A091E-00000006
+
+SHA384 for data:              081bf2e7f3b37ab755e165f16c49250dcefd4d5d26a4f5451d5f3370799c683a0b2956fbd7742871a25bf7cf7e633ba1-00000003
+SHA384 for data and names:    71e8f630b53b1961e055d7b6bb0d17bb200d738e5c38629863cb9f295d896fca9fd0b5da79894fe7222fc3fa3c758cff-00000004
+
+SHA512 for data:              9b5a6989cbcea9346e007ceea79f7fabdd2bd71f7102bc75e8cb3f81e5e575bb7af86ca0ecd089d33b70072dbccfd368a2ae6bbd2643677767d3c01cbfb9022b-00000003
+SHA512 for data and names:    ece837eed1d90edb5248437bf7a7d5371149f05871a12bf9742810d67582e44e0f7472374c0b49a6d94dbfcb262fd1b2c634113bb94e41e8c5cad1dcec7b178b-00000005
+
+SHA3-256 for data:              3a74d11b84d44591b0ff7a5173f991f14901932d6d41dd7b0b83a92eaea8c30d-00000003
+SHA3-256 for data and names:    43aa2ee372124247b974919e504dff53c4698b62a1b7e9829339f7833b7ddca5-00000004
+
+Everything is Ok

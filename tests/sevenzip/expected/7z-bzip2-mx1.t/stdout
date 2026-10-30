@@ -1,0 +1,22 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 121707 bytes (119 KiB)
+
+Testing archive: 7z-bzip2-mx1.7z
+--
+Path = 7z-bzip2-mx1.7z
+Type = 7z
+Physical Size = 121707
+Headers Size = 369
+Method = BZip2
+Solid = +
+Blocks = 1
+
+Everything is Ok
+
+Folders: 3
+Files: 9
+Size:       287613
+Compressed: 121707

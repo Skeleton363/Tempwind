@@ -1,0 +1,21 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 296960 bytes (290 KiB)
+
+Testing archive: tar.tar
+--
+Path = tar.tar
+Type = tar
+Physical Size = 296960
+Headers Size = 7168
+Code Page = UTF-8
+Characteristics = GNU ASCII
+
+Everything is Ok
+
+Folders: 3
+Files: 9
+Size:       287613
+Compressed: 296960

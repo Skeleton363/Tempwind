@@ -1,0 +1,18 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 128045 bytes (126 KiB)
+
+Testing archive: zip-deflate.zip
+--
+Path = zip-deflate.zip
+Type = zip
+Physical Size = 128045
+
+Everything is Ok
+
+Folders: 3
+Files: 9
+Size:       287613
+Compressed: 128045

@@ -1,0 +1,31 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning
+3 folders, 9 files, 287613 bytes (281 KiB)
+
+CRC32             Size  Name
+-------- -------------  ------------
+                        tree\
+141D9447         49152  tree\code.bin
+00000000             0  tree\empty
+C4C55DFF            12  tree\hello.txt
+4CF914A4         60000  tree\lorem.txt
+45C35897        108894  tree\numbers.txt
+6DEE80D4         65536  tree\random.bin
+                        tree\sub\
+                        tree\sub\deeper\
+2936F203          4000  tree\sub\deeper\more.txt
+22945282            12  tree\sub\deeper\nested.txt
+060FC07E             7  tree\sub\other.txt
+-------- -------------  ------------
+2B68E558-00000002        287613  
+
+Folders: 3
+Files: 9
+Size: 287613
+
+CRC32  for data:              2B68E558-00000002
+CRC32  for data and names:    CB26DB4B-00000007
+
+Everything is Ok
