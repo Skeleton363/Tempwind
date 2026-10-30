@@ -56,7 +56,11 @@ The rule above decides which forms need fixtures. M4 adds forms by decision as w
     - the conversions with MMX operands (`cvtpi2ps`, `cvtps2pi`, `cvttps2pi`, `cvtpi2pd`, `cvtpd2pi`, `cvttpd2pi`), which no target uses.
 
   Phase 2's Wine DLLs and later programs use the whole set, and once the exact soft float and the generators exist, each form costs little.
-- **x87:** the forms of the census, which includes the float L2 program (`tests/native/l2_float.c`, its `long double` code and MinGW's fenv and rounding functions), plus the control forms those functions use: `fnstcw`, `fldcw`, `fnstsw` (m16 and AX), `fnstenv`, `fldenv`, `fnclex` and `fwait`. All share one exact 80-bit core, so more x87 forms are cheap to add when a census needs them.
+- **x87:** the forms of the census, which includes the float L2 program (`tests/native/l2_float.c`, its `long double` code and MinGW's fenv and rounding functions), plus the control forms those functions use: `fnstcw`, `fldcw`, `fnstsw` (m16 and AX), `fnstenv`, `fldenv`, `fnclex` and `fwait`. All share one exact 80-bit core, so more x87 forms are cheap to add when a census needs them. The list, as iced `Code`s:
+  - **loads and stores:** `Fld_m64fp`, `Fld_m80fp`, `Fld_sti`, `Fild_m32int`, `Fild_m64int`, `Fldz`, `Fstp_m32fp`, `Fstp_m64fp`, `Fstp_m80fp`, `Fstp_sti`, `Fistp_m16int`, `Fistp_m32int`, `Fistp_m64int`, `Fxch_st0_sti`;
+  - **arithmetic:** `Fadd_m32fp`, `Fadd_st0_sti`, `Faddp_sti_st0`, `Fsubp_sti_st0`, `Fmul_m64fp`, `Fmul_sti_st0`, `Fmulp_sti_st0`, `Fdiv_st0_sti`, `Fdiv_sti_st0`, `Fdivp_sti_st0`, `Fdivr_st0_sti`, `Fdivrp_sti_st0`, `Fsqrt`, `Frndint`, `Fscale`, `Fabs`, `Fchs`;
+  - **compares:** `Fcomp_m64fp`, `Ficomp_m16int`, `Fcomi_st0_sti`, `Fucomi_st0_sti`, `Fucomip_st0_sti`;
+  - **control:** `Fninit` (M3), `Fnstcw_m2byte`, `Fldcw_m2byte`, `Fnstsw_m2byte`, `Fnstsw_AX`, `Fnstenv_m28byte`, `Fldenv_m28byte`, `Fnclex`, `Wait`.
   - **Excluded:** the transcendental instructions (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`). Their results depend on the CPU model, so fixtures couldn't be CPU-independent. If a program needs them, they get their own tests.
 - **`cpuid`**, with the dedicated test above.
 
