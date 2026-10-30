@@ -28,8 +28,6 @@ pub enum Class {
     Inf,
     QNan,
     SNan,
-    // TODO(x87): constructed by the x87 functions (next commit).
-    #[allow(dead_code)]
     /// An x87 encoding the FPU doesn't support (unnormal, pseudo-NaN,
     /// pseudo-infinity): an invalid operand.
     Bad,
@@ -61,7 +59,6 @@ impl Val {
     pub const fn is_nan(&self) -> bool {
         matches!(self.class, Class::QNan | Class::SNan)
     }
-    #[allow(dead_code)]
     pub fn from_int(i: i64) -> Val {
         if i == 0 {
             Val::zero(false)
@@ -116,13 +113,14 @@ pub const F64: Fmt = Fmt {
     emax: 1023,
     lsb_min: -1074,
 };
-#[allow(dead_code)]
+/// The x87 register format at precision `p` (PC): the extended exponent
+/// range, with denormals at that precision too (the CPU decides).
 pub const fn f80(p: u32) -> Fmt {
     Fmt {
         p,
         emin: -16382,
         emax: 16383,
-        lsb_min: -16445,
+        lsb_min: -16382 - (p as i32 - 1),
     }
 }
 
@@ -214,7 +212,7 @@ pub fn round(sign: bool, exp: i32, sig: u128, f: &Fmt, rc: u32, ue_unmasked: boo
             r.inf = true;
             r.up = true;
         } else {
-            r.sig = (1u64 << f.p) - 1;
+            r.sig = u64::MAX >> (64 - f.p);
             r.exp = f.emax - (p - 1);
             r.up = false;
         }

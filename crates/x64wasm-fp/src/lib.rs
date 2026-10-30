@@ -27,6 +27,7 @@ mod exact;
 mod sse;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+mod x87;
 
 pub use crate::exact::{DE, IE, OE, PE, UE, ZE};
 pub use sse::FP_UNMASKED;
@@ -138,4 +139,73 @@ pub fn f32_to_i64(a: u32, mxcsr: u32, trunc: u32) -> (i64, u32) {
 }
 pub fn f64_to_i64(a: u64, mxcsr: u32, trunc: u32) -> (i64, u32) {
     sse::to_int_(&D, a, mxcsr, trunc != 0, 64)
+}
+
+// ---- x87 ----
+//
+// `a` is DEST and `b` SRC as the SDM names them. `bkind` operands pass their
+// value unconverted in `bm` (integers sign-extended; `bse` ignored). 80-bit
+// results return `m`, with `se` in status bits 16-31.
+
+macro_rules! x87_arith {
+    ($($(#[$doc:meta])* $name:ident => $op:ident;)*) => {$(
+        $(#[$doc])*
+        pub fn $name(am: u64, ase: u32, bm: u64, bse: u32, bkind: u32, fcw: u32) -> (u64, u32) {
+            x87::arith(am, ase, bm, bse, bkind, fcw, x87::Op::$op)
+        }
+    )*};
+}
+x87_arith! {
+    /// fadd, faddp, fiadd: a + b, rounded to PC by RC; C1 = rounded up.
+    f80_add => Add;
+    /// fsub, fsubp, fisub: a - b.
+    f80_sub => Sub;
+    /// fsubr, fsubrp, fisubr: b - a.
+    f80_subr => SubR;
+    f80_mul => Mul;
+    /// fdiv, fdivp, fidiv: a / b.
+    f80_div => Div;
+    /// fdivr, fdivrp, fidivr: b / a.
+    f80_divr => DivR;
+}
+/// fsqrt (PC and RC).
+pub fn f80_sqrt(am: u64, ase: u32, fcw: u32) -> (u64, u32) {
+    x87::sqrt_(am, ase, fcw)
+}
+/// frndint (RC).
+pub fn f80_round(am: u64, ase: u32, fcw: u32) -> (u64, u32) {
+    x87::round_int(am, ase, fcw)
+}
+/// fscale: a = ST(0), b = ST(1).
+pub fn f80_scale(am: u64, ase: u32, bm: u64, bse: u32, fcw: u32) -> (u64, u32) {
+    x87::scale(am, ase, bm, bse, fcw)
+}
+/// fprem: C2 = incomplete, C0, C3, C1 = quotient bits 2, 1, 0.
+pub fn f80_prem(am: u64, ase: u32, bm: u64, bse: u32, fcw: u32) -> (u64, u32) {
+    x87::prem(am, ase, bm, bse, fcw, false)
+}
+/// fprem1 (the IEEE remainder).
+pub fn f80_prem1(am: u64, ase: u32, bm: u64, bse: u32, fcw: u32) -> (u64, u32) {
+    x87::prem(am, ase, bm, bse, fcw, true)
+}
+/// fld m32/m64 (kinds 1, 2) and fild (kinds 3-5).
+pub fn f80_load(bm: u64, bkind: u32, fcw: u32) -> (u64, u32) {
+    x87::load(bm, bkind, fcw)
+}
+/// fst m32/m64 (kinds 1, 2: f32/f64 bits) and fist (kinds 3-5: the integer
+/// sign-extended, or the integer indefinite).
+pub fn f80_store(am: u64, ase: u32, kind: u32, fcw: u32) -> (u64, u32) {
+    x87::store(am, ase, kind, fcw)
+}
+/// fcom family: C3, C2, C0 in their FSW positions (`quiet` for fucom).
+pub fn f80_cmp(
+    am: u64,
+    ase: u32,
+    bm: u64,
+    bse: u32,
+    bkind: u32,
+    quiet: u32,
+    fcw: u32,
+) -> (u32, u32) {
+    x87::compare(am, ase, bm, bse, bkind, quiet != 0, fcw)
 }

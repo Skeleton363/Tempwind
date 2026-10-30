@@ -112,6 +112,68 @@ pub extern "C" fn f64_to_i64(a: i64, mxcsr: i32, trunc: i32) -> i64 {
     keep(crate::f64_to_i64(a as u64, mxcsr as u32, trunc as u32))
 }
 
+macro_rules! x87_bin {
+    ($($name:ident)*) => {$(
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(am: i64, ase: i32, bm: i64, bse: i32, bkind: i32, fcw: i32) -> i64 {
+            keep(crate::$name(am as u64, ase as u32, bm as u64, bse as u32, bkind as u32, fcw as u32)) as i64
+        }
+    )*};
+}
+x87_bin!(f80_add f80_sub f80_subr f80_mul f80_div f80_divr);
+
+macro_rules! x87_st01 {
+    ($($name:ident)*) => {$(
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(am: i64, ase: i32, bm: i64, bse: i32, fcw: i32) -> i64 {
+            keep(crate::$name(am as u64, ase as u32, bm as u64, bse as u32, fcw as u32)) as i64
+        }
+    )*};
+}
+x87_st01!(f80_scale f80_prem f80_prem1);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn f80_sqrt(am: i64, ase: i32, fcw: i32) -> i64 {
+    keep(crate::f80_sqrt(am as u64, ase as u32, fcw as u32)) as i64
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn f80_round(am: i64, ase: i32, fcw: i32) -> i64 {
+    keep(crate::f80_round(am as u64, ase as u32, fcw as u32)) as i64
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn f80_load(bm: i64, bkind: i32, fcw: i32) -> i64 {
+    keep(crate::f80_load(bm as u64, bkind as u32, fcw as u32)) as i64
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn f80_store(am: i64, ase: i32, kind: i32, fcw: i32) -> i64 {
+    keep(crate::f80_store(
+        am as u64,
+        ase as u32,
+        kind as u32,
+        fcw as u32,
+    )) as i64
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn f80_cmp(
+    am: i64,
+    ase: i32,
+    bm: i64,
+    bse: i32,
+    bkind: i32,
+    quiet: i32,
+    fcw: i32,
+) -> i32 {
+    keep(crate::f80_cmp(
+        am as u64,
+        ase as u32,
+        bm as u64,
+        bse as u32,
+        bkind as u32,
+        quiet as u32,
+        fcw as u32,
+    )) as i32
+}
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     core::arch::wasm32::unreachable()

@@ -29,6 +29,9 @@ pub(crate) const D: Ieee = Ieee {
 };
 
 impl Ieee {
+    pub(crate) const fn fmt(&self) -> &Fmt {
+        &self.fmt
+    }
     const fn bias(&self) -> i32 {
         (1 << (self.ebits - 1)) - 1
     }
