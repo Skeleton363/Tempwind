@@ -10,6 +10,8 @@
 //! - sum_loop with n = 10^8, and the call-heavy fib_rec(30) and byte_calls
 //!   (a leaf call per byte of 1 MiB), in wasmtime vs the same machine code
 //!   run natively;
+//! - the SSE2 floating-point fast path: a dot product of 10^7 doubles
+//!   (movsd, mulsd, addsd per element), in wasmtime vs native;
 //! - the deepest guest recursion wasmtime survives without the call-depth
 //!   guard.
 //!
@@ -185,6 +187,17 @@ fn call_heavy_wasm_vs_native() {
 }
 
 /// Deepest `n` in `lo..hi` for which `ok(n)`, assuming it is monotonic.
+#[test]
+#[ignore = "measurement; run with --release --ignored --nocapture"]
+#[cfg(all(target_arch = "x86_64", unix))]
+fn fp_dot_product_wasm_vs_native() {
+    wasm_vs_native(
+        "dot_product 10^7",
+        &bench::dot_product(10_000_000).unwrap(),
+        5,
+    );
+}
+
 fn deepest(mut lo: u64, mut hi: u64, mut ok: impl FnMut(u64) -> bool) -> u64 {
     assert!(ok(lo));
     while hi - lo > 1 {

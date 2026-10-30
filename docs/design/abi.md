@@ -32,7 +32,7 @@ A translated module imports, in this order:
   - helper functions such as `div128` (128-by-64-bit division) follow the chunks; they are emitted only when used and are not in the table;
   - guest functions (chunks) have the type `(state: i64, entry: i32, ret: i64) -> i32`. `entry` is the index of the block to start at, and every block is a valid entry. `ret` is the return address the caller expects: a `ret` that pops exactly this value returns to the wasm caller.
 - Globals 0-2 are the imported `table_base`, `lookup` and `depth`. Only `run` is exported.
-- The name section names every function, local, the table and the globals. A chunk is named after its guest function's entry: `fn_0x140001000`, or `fn_0x140001000_c1` and so on for the chunks of a large function that don't hold the entry.
+- The name section names every function (the `fp` imports as `fp.<name>`), local, the table and the globals. A chunk is named after its guest function's entry: `fn_0x140001000`, or `fn_0x140001000_c1` and so on for the chunks of a large function that don't hold the entry.
 
 ## Linking a module (host steps)
 

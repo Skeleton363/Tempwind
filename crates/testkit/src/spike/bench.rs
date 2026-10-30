@@ -158,6 +158,78 @@ pub fn byte_calls(len: u64) -> Result<Case> {
     })
 }
 
+// Layout of dot_product: two arrays of doubles and MXCSR's value.
+const DOT_CODE: u64 = 0x10_0000;
+const DOT_STACK: u64 = 0x1f_f000;
+const DOT_STATE: u64 = 0x30_0000;
+const DOT_MXCSR: u64 = 0x30_1000;
+const DOT_A: u64 = 0x40_0000;
+
+/// The arrays of [`dot_product`] and its result, the truncated sum as
+/// mulsd/addsd compute it (Rust's f64 operations round the same way).
+fn dot_product_ref(n: u64) -> (Vec<f64>, Vec<f64>, u64) {
+    let a: Vec<f64> = (0..n).map(|i| 0.5 + (i % 1000) as f64 * 0.001).collect();
+    let b: Vec<f64> = (0..n).map(|i| 1.0 / (1 + i % 13) as f64).collect();
+    let mut acc = 0.0f64;
+    for (x, y) in a.iter().zip(&b) {
+        acc += x * y;
+    }
+    (a, b, acc as i64 as u64)
+}
+
+/// dot_product: the SSE2 floating-point fast path. `ldmxcsr` sets MXCSR to
+/// 0x1FA0 (PE already set, as it is in any program after its first inexact
+/// operation), then a loop of movsd, mulsd and addsd over two arrays of
+/// `n` doubles; cvttsd2si returns the truncated sum in RAX.
+pub fn dot_product(n: u64) -> Result<Case> {
+    let n = n.max(1);
+    let b_addr = DOT_A + 8 * n;
+    let mut a = CodeAssembler::new(64)?;
+    let mut top = a.create_label();
+    a.ldmxcsr(dword_ptr(r9))?;
+    a.xorps(xmm0, xmm0)?;
+    a.xor(eax, eax)?;
+    a.set_label(&mut top)?;
+    a.movsd_2(xmm1, qword_ptr(rdx + rax * 8))?;
+    a.mulsd(xmm1, qword_ptr(r8 + rax * 8))?;
+    a.addsd(xmm0, xmm1)?;
+    a.add(rax, 1)?;
+    a.cmp(rax, rcx)?;
+    a.jb(top)?;
+    a.cvttsd2si(rax, xmm0)?;
+    a.ret()?;
+    let (xs, ys, sum) = dot_product_ref(n);
+    let bytes = |v: &[f64]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+    Ok(Case {
+        name: "dot_product",
+        code_base: DOT_CODE,
+        code: asm(&mut a, DOT_CODE)?,
+        entry: DOT_CODE,
+        extra_entries: vec![],
+        memory_bytes: b_addr + 8 * n,
+        state_addr: DOT_STATE,
+        init_regs: vec![
+            (reg("rsp"), DOT_STACK),
+            (reg("rcx"), n),
+            (reg("rdx"), DOT_A),
+            (reg("r8"), b_addr),
+            (reg("r9"), DOT_MXCSR),
+        ],
+        init_rflags: 0x202,
+        init_mem: vec![
+            sentinel_at(DOT_STACK),
+            (DOT_MXCSR, 0x1fa0u32.to_le_bytes().to_vec()),
+            (DOT_A, bytes(&xs)),
+            (b_addr, bytes(&ys)),
+        ],
+        expect_exit: abi::EXIT_LEFT_CODE,
+        expect_rip: abi::SENTINEL_RET,
+        expect_regs: vec![(reg("rax"), sum), (reg("rsp"), DOT_STACK + 8)],
+        expect_mem: vec![],
+        expect_rflags: None,
+    })
+}
+
 // Layout of the deep recursion probes: a 64 MiB stack.
 const PROBE_MEMORY: u64 = 0x410_0000;
 const PROBE_STACK: u64 = 0x40f_f000;

@@ -358,12 +358,13 @@ Each floating-point operation either takes the inline fast path, the wasm instru
   - cvtss2sd and cvtps2pd: no NaN or denormal operand (the widening is then exact).
   - cvtsd2ss and cvtpd2ps: the arithmetic test on the narrowed result.
 - **Packed forms** test every lane with SIMD compares and `all_true`. If any lane fails, the whole instruction takes the slow path.
+- **As implemented (M4):** scalar forms share the packed code: the fast path computes on the whole vector (`f64x2.add`, `f32x4.demote_f64x2_zero`, …) and the test reads the lanes the form uses from the lane mask's sign bits (`bitmask & 1` for lane 0, `& 3` for cvtps2pd and cvtpd2ps); the result's lane 0 is merged into the destination with one `i8x16.shuffle`. "No operand denormal" is tested as `|x| ≥ MIN_NORMAL or x = 0`, which also rejects NaN operands (their results fail the result test anyway). cvtsd2ss and cvtpd2ps test only the narrowed result: a denormal f64 operand narrows to 0 and fails it. cmpss … cmppd with imm8 > 7 (reserved bits set in the legacy encoding) stay `EXIT_UNSUPPORTED`. Chunks with floating-point code get two scratch locals, `mxcsr` (i32) and `fpv` (v128), after the vector temporaries. `crates/testkit/tests/sse_fp_paths.rs` checks that the fast path gives what the helper gives (each case at MXCSR 0x1FA0 and 0x1F80) and that unmasked exceptions exit before any change.
 
 MXCSR is loaded from the state block for each instruction that tests it. (M6 can hoist the load: inside a block the fast-path test can only go from false to true.)
 
 **Slow path:** call the helper (once per lane for packed forms, lane 0 first, passing each lane the MXCSR the previous one returned), then `fp.status()`. If bit 31 is set, exit with `EXIT_UNSUPPORTED`, RIP at the instruction and nothing written. Otherwise store the new MXCSR, then the result.
 
-**comis, ucomis:** write an eager flag record (`cc_op = CC_EAGER`, `cc_a` = ZF, PF and CF; OF, SF and AF 0). On the fast path: unordered gives ZF, PF and CF; less gives CF; equal gives ZF.
+**comis, ucomis:** write an eager flag record (`cc_op = CC_EAGER`, `cc_a` = ZF, PF and CF; OF, SF and AF 0). On the fast path: unordered gives ZF, PF and CF; less gives CF; equal gives ZF. The record is a `FlagsUpdate` that clears every status flag, which flag liveness treats as a full record (it doesn't read the previous one) and the emitter writes without materializing the previous one.
 
 **Alignment:** as in M3, a legacy-SSE m128 operand must be 16-byte aligned, so the packed forms with a memory source emit `FaultIf(addr & 15, FAULT_GENERAL_PROTECTION)` first. Scalar m32/m64 operands have no requirement.
 
