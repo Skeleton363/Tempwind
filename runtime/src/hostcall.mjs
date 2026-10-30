@@ -23,7 +23,8 @@ export class HostStop {
 /**
  * @typedef {{call: (target: bigint, args: bigint[]) => ({rax: bigint} | {exitCode: number} | {error: string}),
  *   alloc: (size: bigint, align: bigint) => bigint, dllState: (dll: string, init: () => object) => object,
- *   dataAddress: (dll: string, name: string) => bigint | undefined, argv: string[]}} HostServices
+ *   dataAddress: (dll: string, name: string) => bigint | undefined, argv: string[],
+ *   image: {base: bigint, size: bigint, sizeOfHeaders: bigint, sections: object[]} | null}} HostServices
  */
 const unavailable = (what) => () => { throw new HostStop({ error: `${what} is not available in this context` }); };
 const NO_HOST = {
@@ -32,6 +33,7 @@ const NO_HOST = {
   dllState: unavailable('shim DLL state'),
   dataAddress: unavailable('data imports'),
   argv: [],
+  image: null,
 };
 
 /** What a shim function sees: Win64 arguments, guest memory, last error, output, stops. */
@@ -85,6 +87,23 @@ export class HostContext {
     if (teb === 0n) this.fail('SetLastError without a TEB (GS base is 0)');
     this.mem.setU32(teb + BigInt(TEB_LAST_ERROR), code);
   }
+
+  /** The calling thread's last error (TEB.LastErrorValue). */
+  lastError() {
+    const teb = this.mem.u64(this.state + BigInt(STATE_GS_BASE));
+    if (teb === 0n) this.fail('GetLastError without a TEB (GS base is 0)');
+    return this.mem.u32(teb + BigInt(TEB_LAST_ERROR));
+  }
+
+  /** The TEB of the calling thread (GS base). */
+  teb() {
+    const teb = this.mem.u64(this.state + BigInt(STATE_GS_BASE));
+    if (teb === 0n) this.fail('no TEB (GS base is 0)');
+    return teb;
+  }
+
+  /** The loaded image: {base, size, sizeOfHeaders, sections: [{name, va, mappedSize, characteristics}]}. */
+  get image() { return this.host.image; }
 
   /** Appends to the process's captured stdout or stderr. */
   output(stream, bytes) { this.outputSink(stream, bytes); }

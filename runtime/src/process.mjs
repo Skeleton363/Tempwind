@@ -175,6 +175,10 @@ export class Process {
       },
       dataAddress: (dll, name) => p.dataAddress(dll, name),
       get argv() { return p.argv; },
+      get image() {
+        const { imageBase: base, sizeOfImage: size, sizeOfHeaders, sections } = p.plan;
+        return { base, size, sizeOfHeaders, sections };
+      },
     };
   }
 
