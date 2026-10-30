@@ -198,6 +198,23 @@ Phase 0's lessons still hold. New ones from M1:
   - fnstenv stores ES and B as they were, then clears them.
 - **Neighbouring x87 forms come along:** the x87 lowering covers forms that share code with the scope but have no fixtures yet (fsub/fsubr, the fi* arithmetic, fst/fist without pop, fcom/fucom/fcompp, fld1, fstcw/fstsw/fclex/fstenv).
 
+## M5 progress (paused 2026-10-30)
+
+**Committed:**
+- **Contracts** (`4562517`): the file system and shim spec in `runtime.md`, the matrix spec in `tests/sevenzip/README.md`, and `int1` excluded, so `census --check` passes on all programs.
+- **The matrix** (`f62e516`, `e78ebc5`, `bbb608e`):
+  - 138 steps in 40 groups, covering 7z, zip, tar, gz, bz2 and xz, the hashes, and AES round trips;
+  - `expected/` (472 files, 5.7 MB), from two identical Wine runs;
+  - CI: windows-x64 runs the native matrix and linux-x64 the translated one, both gating, and the census includes 7zz.exe;
+  - `7z b 2 -mmt1 -md18` in `bench.yml`.
+- **The shim, in progress** (WIP `57ff6b9`, `82c37ec`): the file system and its host mount, handles, kernel32 files and system calls, advapi32, oleaut32, user32, cp437 and msvcrt additions. Agent S was stopped mid-work; at the stop it had a 7-Zip command completing and was comparing its output with Wine.
+- **`bench-data`** exists, with the first CoreMark line (on an AMD EPYC 9V45 runner).
+
+**On resume:**
+1. **Read the result of CI run 41138603006** (a `workflow_dispatch` of `ci.yml` at `bbb608e`): does the windows-x64 native matrix match `expected/`? Wine may differ from Windows in zip's NTFS extra field or the file attributes. If it differs, correct `expected/` from the run's uploaded results before the shim targets it. The translated linux step fails until the shim is done.
+2. **Resume agent S** (or a fresh deep-worker from the committed docs and code) until `matrix.mjs --mode translated` matches `expected/`.
+3. **Integration:** measurements, this note, then PR "[Phase 1] 7-Zip exactly like native" with CI green.
+
 ## Decisions taken in M5
 
 - **Gap-only forms (the M5 gate):**
