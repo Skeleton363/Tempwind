@@ -1628,9 +1628,9 @@ fn gen_case(
 /// The M3 and M4 fixture groups, in commit order: each lands in one "Fixtures:
 /// <group>" commit (`docs/design/fixtures.md`). The Phase 0 forms belong to
 /// no group and are always recorded.
-pub const GROUPS: [&str; 13] = [
+pub const GROUPS: [&str; 14] = [
     "alu", "ext", "cc", "shift", "muldiv", "bit", "xchg", "string", "loop", "misc", "sse",
-    "fninit", "sse_fp",
+    "fninit", "sse_fp", "x87",
 ];
 
 /// How many of `GROUPS` `testkit record` records: the groups whose fixtures
@@ -1776,6 +1776,64 @@ mod tests {
         for f in forms().iter().filter(|f| f.family.starts_with("sse_fp_")) {
             assert!(f.count >= 96, "{}", f.id);
         }
+    }
+
+    /// The x87 forms of the census (7zz.exe's and l2_float.exe's) and the
+    /// control forms (`instruction-scope.md`, "M4 additions to the scope").
+    #[test]
+    fn m4_x87_scope_is_generated() {
+        let want = [
+            "Fld_m64fp/mem",
+            "Fld_m80fp/mem",
+            "Fild_m32int/mem",
+            "Fild_m64int/mem",
+            "Fld_sti/reg",
+            "Fldz/reg",
+            "Fxch_st0_sti/reg",
+            "Fstp_m32fp/mem",
+            "Fstp_m64fp/mem",
+            "Fstp_m80fp/mem",
+            "Fistp_m16int/mem",
+            "Fistp_m32int/mem",
+            "Fistp_m64int/mem",
+            "Fstp_sti/reg",
+            "Fadd_m32fp/mem",
+            "Fmul_m64fp/mem",
+            "Fadd_st0_sti/reg",
+            "Faddp_sti_st0/reg",
+            "Fsubp_sti_st0/reg",
+            "Fmul_sti_st0/reg",
+            "Fmulp_sti_st0/reg",
+            "Fdiv_st0_sti/reg",
+            "Fdiv_sti_st0/reg",
+            "Fdivp_sti_st0/reg",
+            "Fdivr_st0_sti/reg",
+            "Fdivrp_sti_st0/reg",
+            "Fabs/reg",
+            "Fchs/reg",
+            "Fsqrt/reg",
+            "Frndint/reg",
+            "Fscale/reg",
+            "Fcomp_m64fp/mem",
+            "Ficomp_m16int/mem",
+            "Fcomi_st0_sti/reg",
+            "Fucomi_st0_sti/reg",
+            "Fucomip_st0_sti/reg",
+            "Fnstcw_m2byte/mem",
+            "Fldcw_m2byte/mem",
+            "Fnstsw_m2byte/mem",
+            "Fnstsw_AX/reg",
+            "Fnstenv_m28byte/mem",
+            "Fldenv_m28byte/mem",
+            "Fnclex/reg",
+            "Wait/reg",
+        ];
+        let ids: Vec<String> = forms()
+            .iter()
+            .filter(|f| f.family.starts_with("x87_"))
+            .map(|f| f.id.clone())
+            .collect();
+        assert_eq!(ids, want);
     }
 
     #[test]

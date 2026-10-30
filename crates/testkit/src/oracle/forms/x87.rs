@@ -383,7 +383,7 @@ fn narrow_limits80(f: Fmt) -> Vec<u128> {
     vec![
         f80e(false, emax, ones),             // max
         f80e(false, emax, ones | half),      // max + half an ulp: overflow tie
-        f80e(true, emax, ones | half - 1),   // just below the tie
+        f80e(true, emax, ones | (half - 1)), // just below the tie
         f80e(false, emax + 1, J),            // overflow
         f80e(false, emin, J),                // min normal
         f80e(false, emin - 1, J | half),     // tiny
@@ -392,7 +392,7 @@ fn narrow_limits80(f: Fmt) -> Vec<u128> {
         f80e(true, emin - p as i64, J | 1),  // just above
         f80e(false, emin - 200, J),          // underflow to 0
         f80e(false, 0, J | half),            // 1 + half an ulp: tie
-        f80e(false, 0, J | 3 * half),        // 1 + 1.5 ulps: tie, up
+        f80e(false, 0, J | (3 * half)),      // 1 + 1.5 ulps: tie, up
         f80e(true, 0, J | half | 1),
         f80(false, 0x7fff, J | 1 << 62 | 0x7ff), // NaN payload cut
         f80(false, 0x7fff, J | 1 << 40),         // SNaN
@@ -653,6 +653,8 @@ pub(super) fn case(
     let mut ea = None;
     let mut undefined = Undefined::NONE;
     let mut mem_op = None;
+    // fadd m32, fmul m64: the memory operand as a NaN (sign, significand).
+    let mut mem_operand: Option<Option<(bool, u64)>> = None;
     if size > 0 {
         let lo = DATA_ADDR + OPERAND_LO + 32;
         let hi = DATA_ADDR + OPERAND_HI - size - 32;
@@ -667,14 +669,19 @@ pub(super) fn case(
             Op::Load(mf) | Op::ArithMem(mf) | Op::ComMem(mf) => {
                 let mut v = mem_value(rng, mf, idx);
                 // Compares: equal operands in some cases.
-                if matches!(op, Op::ComMem(_)) && idx >= 32 && rng.chance(1, 3) {
-                    if let Some(r) = as_reg_value(mf, &v) {
-                        b.fp.st[0] = r;
-                        b.fp.ftw = full_tag_word(abridged, &b.fp);
-                    }
+                if matches!(op, Op::ComMem(_))
+                    && idx >= 32
+                    && rng.chance(1, 3)
+                    && let Some(r) = as_reg_value(mf, &v)
+                {
+                    b.fp.st[0] = r;
+                    b.fp.ftw = full_tag_word(abridged, &b.fp);
                 }
                 if mf == Mf::F80 && idx >= edges80().len() && rng.chance(1, 4) {
                     v = (a.to_le_bytes()[..10]).to_vec();
+                }
+                if let Op::ArithMem(_) = op {
+                    mem_operand = Some(nan_of_mem(mf, &v));
                 }
                 v
             }
@@ -762,6 +769,31 @@ pub(super) fn case(
         },
     };
 
+    // Two NaNs of the same kind with equal significands and opposite
+    // signs: the SDM's rule (the larger significand wins) leaves the sign
+    // of the result to the CPU model, so it is undefined.
+    let st = &b.fp.st;
+    let pop = format!("{code:?}").contains("p_");
+    let (x, y, dst) = match op {
+        Op::ArithMem(_) => (nan_of(st[0]), mem_operand.flatten(), Some(0)),
+        Op::Scale => (nan_of(st[0]), nan_of(st[1]), Some(0)),
+        Op::Arith if format!("{code:?}").ends_with("_st0_sti") => {
+            (nan_of(st[0]), nan_of(st[sti]), Some(0))
+        }
+        Op::Arith => (
+            nan_of(st[0]),
+            nan_of(st[sti]),
+            Some(if pop { (sti + 7) % 8 } else { sti }),
+        ),
+        _ => (None, None, None),
+    };
+    if let (Some((sx, gx)), Some((sy, gy)), Some(d)) = (x, y, dst)
+        && sx != sy
+        && gx == gy
+    {
+        undefined.fp.st[d] |= SIGN;
+    }
+
     // Condition codes the SDM leaves undefined ("FPU Flags Affected").
     undefined.fp.fsw |= match op {
         Op::ComMem(_) | Op::Comi | Op::Fldenv => 0,
@@ -787,6 +819,38 @@ pub(super) fn case(
     );
     case.undefined = undefined;
     Ok(Some(case))
+}
+
+/// (sign, significand) of an 80-bit NaN (J bit set, fraction not 0).
+fn nan_of(v: u128) -> Option<(bool, u64)> {
+    let sig = v as u64;
+    ((v >> 64) & 0x7fff == 0x7fff && sig & J != 0 && sig << 1 != 0).then_some((v & SIGN != 0, sig))
+}
+
+/// (sign, significand as an 80-bit register would hold it) of an m32 or
+/// m64 NaN, converted bit-exactly (no quieting).
+fn nan_of_mem(mf: Mf, bytes: &[u8]) -> Option<(bool, u64)> {
+    let mut b = [0u8; 8];
+    b[..bytes.len()].copy_from_slice(bytes);
+    let raw = u64::from_le_bytes(b);
+    let (neg, exp, frac, emax, shift) = match mf {
+        Mf::F32 => (
+            raw >> 31 & 1 == 1,
+            raw >> 23 & 0xff,
+            raw & 0x7f_ffff,
+            0xff,
+            40,
+        ),
+        Mf::F64 => (
+            raw >> 63 == 1,
+            raw >> 52 & 0x7ff,
+            raw & ((1 << 52) - 1),
+            0x7ff,
+            11,
+        ),
+        _ => return None,
+    };
+    (exp == emax && frac != 0).then_some((neg, J | frac << shift))
 }
 
 /// A control word for fldcw and fldenv: any masks, PC and RC; in every
@@ -817,5 +881,11 @@ mod tests {
         assert_eq!(narrow_limits80(Fmt::S)[0], from_f64(f32::MAX as f64));
         assert_eq!(narrow_limits80(Fmt::D)[0], from_f64(f64::MAX));
         assert_eq!(narrow_limits80(Fmt::D)[6], from_f64(f64::from_bits(1)));
+        // QNaN default (binary32) and the indefinite: a sign tie.
+        let m = nan_of_mem(Mf::F32, &0x7fc0_0000u32.to_le_bytes()).unwrap();
+        let r = nan_of(f80(true, 0x7fff, J | 1 << 62)).unwrap();
+        assert_eq!((m.1, !m.0), (r.1, r.0));
+        assert_eq!(nan_of(f80(false, 0x7fff, J)), None);
+        assert_eq!(nan_of(f80(false, 0x7fff, 1 << 62)), None);
     }
 }

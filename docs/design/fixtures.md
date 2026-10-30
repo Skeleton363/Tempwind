@@ -111,6 +111,13 @@ The format needs no change for SSE floating point and x87: v2 already carries XM
 - **SSE families (`forms/sse_fp.rs`):** `sse_fp_arith`, `sse_fp_cmp` and `sse_fp_cvt`, 112 cases per form. The first cases make two passes over the edges (40 operand pairs for the two-operand forms, the domain's edge values for the others), each pass under a different RC; packed forms take a different edge in each lane. The rest are random, with equal and nearly equal operands in 2 of 5 two-operand cases. cmp\* cases cycle through the eight predicates. Packed m128 operands are aligned, except two cases per memory form that expect #GP.
 - **x87 stack states:** TOP in every position; tags consistent with the contents (as above); empty and full stacks, so that pushes overflow and empty operands underflow.
 - **Undefined:** the condition codes the SDM leaves undefined per instruction (for example C0, C2 and C3 after `fadd`) go into `undefined` as an `fsw` mask.
+- **x87 families (`forms/x87.rs`):** `x87_load`, `x87_store`, `x87_arith`, `x87_cmp` (64 cases per form) and `x87_control` (48). TOP is the case index mod 8. Blocks of 8 cases go through the stack scenarios: operands present, an empty operand or a full ST(7) under a push, a full stack and an empty one. FCW bit 6 is set and bits 12-15 are clear in every input; PC is never 01.
+- **CPU-model choices, under `undefined`** (GitHub's runners may be AMD):
+  - `fldcw` and `fldenv` load the reserved FCW bits 6 and 12-15 at random in every fourth case; those bits of the output FCW are masked (`0xf040`).
+  - `fldcw` that unmasks a flag already set leaves ES and B (`0x8080`) to the CPU.
+  - `fnstenv`: the reserved upper halves of the first three dwords and the pointer, opcode and selector fields (bytes 12-27) are `undefined.mem`.
+  - Two x87 NaN operands of the same kind with equal significands and opposite signs: the SDM's rule (the larger significand wins) doesn't decide, so the sign bit of the destination `st` is masked.
+- **Recorded, not masked:** after `fnstenv` masks every exception, ES and B are clear, as the SDM defines ES (set while an unmasked exception flag is set). The non-waiting forms (`fnstcw`, `fnstsw`, `fnstenv`, `fnclex`) also run with a pending unmasked exception (ES and B set); the waiting forms never do.
 
 ## Recording
 
