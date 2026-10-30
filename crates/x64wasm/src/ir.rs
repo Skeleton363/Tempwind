@@ -565,6 +565,157 @@ pub enum Rep {
     Repne,
 }
 
+/// The format of an x87 memory operand (`abi.md`'s `kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum X87Kind {
+    F80 = 0,
+    F32 = 1,
+    F64 = 2,
+    I16 = 3,
+    I32 = 4,
+    I64 = 5,
+}
+
+impl X87Kind {
+    /// Bytes in memory.
+    pub const fn size(self) -> u32 {
+        match self {
+            X87Kind::F80 => 10,
+            X87Kind::F32 | X87Kind::I32 => 4,
+            X87Kind::F64 | X87Kind::I64 => 8,
+            X87Kind::I16 => 2,
+        }
+    }
+
+    /// The value a masked invalid operation stores in this format (the
+    /// floating-point or integer indefinite; for f80 its significand).
+    pub const fn indefinite(self) -> u64 {
+        match self {
+            X87Kind::F80 => 0xC000_0000_0000_0000,
+            X87Kind::F32 => 0xFFC0_0000,
+            X87Kind::F64 => 0xFFF8_0000_0000_0000,
+            X87Kind::I16 => 0x8000,
+            X87Kind::I32 => 0x8000_0000,
+            X87Kind::I64 => 0x8000_0000_0000_0000,
+        }
+    }
+}
+
+/// The second operand of an x87 operation: ST(i) or the memory operand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum X87Src {
+    St(u8),
+    Mem(X87Kind),
+}
+
+/// x87 binary arithmetic: `a` is DEST, `b` SRC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum X87Arith {
+    Add,
+    Sub,
+    /// b - a
+    Subr,
+    Mul,
+    Div,
+    /// b / a
+    Divr,
+}
+
+/// x87 operations on ST(0) alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum X87Unary {
+    /// fsqrt (helper)
+    Sqrt,
+    /// frndint (helper)
+    Round,
+    /// fchs (inline)
+    Chs,
+    /// fabs (inline)
+    Abs,
+}
+
+/// An x87 instruction (`translator.md`, "x87"), expanded in `emit/x87.rs`.
+/// Every one reads TOP and the tags at run time, keeps FSW (exception flags,
+/// SF, C1, the condition codes it defines, TOP) and the tag word, handles
+/// stack overflow and underflow, and exits with `EXIT_UNSUPPORTED` before
+/// any change on an unmasked exception or a pending one (all are waiting
+/// forms; the non-waiting control forms lower to plain state ops).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum X87 {
+    /// fwait: only the pending-exception check.
+    Wait,
+    /// fld m32/m64/m80, fild m16/m32/m64: push the memory operand.
+    Load(X87Kind),
+    /// fld st(i)
+    LoadSt(u8),
+    /// fldz, fld1: push an exact constant (significand, sign and exponent).
+    LoadConst(u64, u16),
+    /// fst(p) m32/m64/m80, fist(p) m16/m32/m64.
+    Store {
+        kind: X87Kind,
+        pop: bool,
+    },
+    /// fst(p) st(i)
+    StoreSt {
+        i: u8,
+        pop: bool,
+    },
+    /// fxch st(i)
+    Xch(u8),
+    /// ST(dst) = ST(dst) op src, then a pop if `pop`.
+    Arith {
+        op: X87Arith,
+        dst: u8,
+        src: X87Src,
+        pop: bool,
+    },
+    Unary(X87Unary),
+    /// fscale: ST(0) scaled by ST(1).
+    Scale,
+    /// fcom, fucom (`quiet`), ficom: C3, C2, C0 from ST(0) and `src`, then
+    /// `pops` pops.
+    Com {
+        src: X87Src,
+        quiet: bool,
+        pops: u8,
+    },
+    /// fcomi, fucomi (`quiet`), fcomip, fucomip (`pop`): `dst` = ZF, PF and
+    /// CF from ST(0) and ST(i) (the lifter writes the eager flag record).
+    Comi {
+        dst: Temp,
+        i: u8,
+        quiet: bool,
+        pop: bool,
+    },
+    /// fldenv m28: FCW, FSW and the tags (recomputed for non-empty
+    /// registers).
+    LoadEnv,
+}
+
+impl X87 {
+    /// The `fp` helper the op calls, if any.
+    pub fn helper(self) -> Option<FpFunc> {
+        use FpFunc as F;
+        match self {
+            X87::Load(k) if k != X87Kind::F80 => Some(F::F80Load),
+            X87::Store { kind, .. } if kind != X87Kind::F80 => Some(F::F80Store),
+            X87::Arith { op, .. } => Some(match op {
+                X87Arith::Add => F::F80Add,
+                X87Arith::Sub => F::F80Sub,
+                X87Arith::Subr => F::F80Subr,
+                X87Arith::Mul => F::F80Mul,
+                X87Arith::Div => F::F80Div,
+                X87Arith::Divr => F::F80Divr,
+            }),
+            X87::Unary(X87Unary::Sqrt) => Some(F::F80Sqrt),
+            X87::Unary(X87Unary::Round) => Some(F::F80Round),
+            X87::Scale => Some(F::F80Scale),
+            X87::Com { .. } | X87::Comi { .. } => Some(F::F80Cmp),
+            _ => None,
+        }
+    }
+}
+
 /// One IR operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -744,6 +895,9 @@ pub enum Op {
         a: VTemp,
         b: VTemp,
     },
+    /// An x87 instruction ([`X87`]); `addr` is the guest address of its
+    /// memory operand, if it has one.
+    X87 { op: X87, addr: Option<Value> },
 }
 
 impl Op {
@@ -781,6 +935,7 @@ impl Op {
                 | Op::RepString { .. }
                 | Op::VStore { .. }
         ) || self.is_fp()
+            || matches!(self, Op::X87 { .. })
     }
 
     /// A floating-point op: it may call `fp` helpers, write MXCSR or exit.
@@ -840,6 +995,10 @@ impl Op {
             },
             Op::SseComi { fmt, .. } if fmt == d => F::F64Comi,
             Op::SseComi { .. } => F::F32Comi,
+            Op::X87 { op, .. } => match op.helper() {
+                Some(func) => func,
+                None => return,
+            },
             _ => return,
         };
         use_func(func);
@@ -1320,6 +1479,22 @@ impl fmt::Display for Op {
                 dst.0,
                 if *signaling { "" } else { "u" }
             ),
+            Op::X87 { op, addr } => {
+                match op {
+                    X87::Comi { dst, i, quiet, pop } => write!(
+                        f,
+                        "t{} = x87.{}comi{} st{i}",
+                        dst.0,
+                        if *quiet { "u" } else { "" },
+                        if *pop { "p" } else { "" }
+                    )?,
+                    op => write!(f, "x87.{op:?}")?,
+                }
+                match addr {
+                    Some(a) => write!(f, " [{a}]"),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }

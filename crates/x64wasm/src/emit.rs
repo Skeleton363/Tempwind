@@ -75,8 +75,10 @@ mod fp;
 mod helpers;
 mod simd;
 mod string;
+mod x87;
 
 use flags::{Known, emit_flags};
+use x87::X87Locals;
 
 // Parameters and locals of a chunk function.
 const P_STATE: u32 = 0;
@@ -164,6 +166,9 @@ struct ChunkEmitter<'p> {
     /// Scratch locals of the floating-point lowering (an i32 for MXCSR and
     /// a v128), present when the chunk has floating-point ops.
     l_fp: Option<(u32, u32)>,
+    /// Scratch locals of the x87 expansions, present when the chunk has
+    /// x87 ops.
+    l_x87: Option<X87Locals>,
     /// Address of the instruction being emitted.
     cur_addr: u64,
     /// Something branches to `$leave`.
@@ -472,6 +477,7 @@ impl ChunkEmitter<'_> {
             Op::SseFp { .. } | Op::SseFromInt { .. } | Op::SseToInt { .. } | Op::SseComi { .. } => {
                 self.fp_op(f, op)
             }
+            Op::X87 { op, addr } => self.x87_op(f, op, addr),
         }
     }
 
@@ -977,6 +983,7 @@ fn operands(op: &Op) -> [Option<Value>; 4] {
         Op::VShift { count, .. } => [Some(count), None, None, None],
         Op::VFromGpr { value, .. } => [Some(value), None, None, None],
         Op::SseFromInt { src, .. } => [Some(src), None, None, None],
+        Op::X87 { addr, .. } => [addr, None, None, None],
         Op::LoadState { .. }
         | Op::SseFp { .. }
         | Op::SseToInt { .. }
@@ -1403,7 +1410,9 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
         let t = insns().map(|i| i.temps).max().unwrap_or(0);
         let vt = insns().map(|i| i.vtemps).max().unwrap_or(0);
         let uses_fp = insns().flat_map(|i| i.ops.iter()).any(Op::is_fp);
-        temps.push((t, vt, uses_fp));
+        let uses_x87 = insns()
+            .flat_map(|i| i.ops.iter())
+            .any(|o| matches!(o, Op::X87 { .. }));
         let l_cc_op = L_TEMP0 + t;
         let mut locals = vec![(L_TEMP0 - L_GPR0 + t, ValType::I64), (3, ValType::I32)];
         if vt > 0 {
@@ -1414,6 +1423,11 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             locals.push((1, ValType::V128));
             (l_cc_op + 3 + vt, l_cc_op + 4 + vt)
         });
+        let x87_base = uses_x87.then(|| {
+            locals.extend(X87Locals::decls());
+            l_cc_op + 3 + vt + if uses_fp { 2 } else { 0 }
+        });
+        temps.push((t, vt, uses_fp, x87_base));
         let mut func = Function::new(locals);
         let mut emitter = ChunkEmitter {
             prog,
@@ -1434,6 +1448,7 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             fbase,
             fp: &fp,
             l_fp,
+            l_x87: x87_base.map(X87Locals::at),
             cur_addr: 0,
             leave_used: false,
         };
@@ -1468,7 +1483,7 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
 fn names(
     prog: &Program,
     part: &Partition,
-    temps: &[(u32, u32, bool)],
+    temps: &[(u32, u32, bool, Option<u32>)],
     fp: &FpImports,
     f_div128: Option<u32>,
 ) -> NameSection {
@@ -1508,7 +1523,7 @@ fn names(
         flags.append(i as u32, n);
     }
     locals.append(fbase + F_FLAGS, &flags);
-    for (c, &(t, vt, uses_fp)) in temps.iter().enumerate() {
+    for (c, &(t, vt, uses_fp, x87_base)) in temps.iter().enumerate() {
         let mut chunk = NameMap::new();
         chunk.append(P_STATE, "state");
         chunk.append(P_ENTRY, "entry");
@@ -1533,6 +1548,11 @@ fn names(
         if uses_fp {
             chunk.append(L_TEMP0 + t + 3 + vt, "mxcsr");
             chunk.append(L_TEMP0 + t + 4 + vt, "fpv");
+        }
+        if let Some(base) = x87_base {
+            for (i, n) in X87Locals::NAMES.iter().enumerate() {
+                chunk.append(base + i as u32, n);
+            }
         }
         locals.append(fbase + F_CHUNK0 + c as u32, &chunk);
     }

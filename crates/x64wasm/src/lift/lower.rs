@@ -269,7 +269,7 @@ impl Lower<'_> {
             M::Ret => self.ret(),
             M::Jmp => self.jmp(),
             M::Jrcxz | M::Jecxz | M::Loop | M::Loope | M::Loopne => self.loop_rcx(),
-            M::Fninit | M::Finit | M::Wait => self.x87(m),
+            _ if super::x87::is_x87(m) => self.x87(m),
             _ if insn.is_jcc_short_or_near() => self.jcc(),
             M::Seto
             | M::Setno
