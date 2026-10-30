@@ -25,13 +25,14 @@ for (const name of ['hello', 'l2_int', 'l2_crt', 'l2_float']) {
     need(aot, 'tests/native/prepare.sh');
     need(plan, 'tests/native/prepare.sh');
     need(RT, 'tests/pe/prepare.sh');
-    need(FP, 'tests/native/prepare.sh');
+    if (name === 'hello' || name === 'l2_float') need(FP, 'tests/native/prepare.sh'); // floating point
+    const fpArgs = existsSync(FP) ? ['--fp', FP] : [];
     const expected = Buffer.from(readFileSync(`${root}tests/native/${name}.expected`, 'latin1').replace(/\n/g, '\r\n'), 'latin1');
     // hello.exe has no .exitcode file: it exits 0.
     const exitFile = `${root}tests/native/${name}.exitcode`;
     const exitText = existsSync(exitFile) ? readFileSync(exitFile, 'utf8') : '0\n';
     assert.match(exitText, /^\d+\n?$/, `tests/native/${name}.exitcode holds one decimal exit code`);
-    const r = spawnSync(process.execPath, [CLI, '--exe', exe, '--aot', aot, '--plan', plan, '--rt', RT, '--fp', FP], {
+    const r = spawnSync(process.execPath, [CLI, '--exe', exe, '--aot', aot, '--plan', plan, '--rt', RT, ...fpArgs], {
       env: { ...process.env, TEMPWIND_TRACE: '' },
       maxBuffer: 1 << 24,
     });

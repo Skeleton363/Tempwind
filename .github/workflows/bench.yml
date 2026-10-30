@@ -1,0 +1,150 @@
+name: bench
+
+# CoreMark, translated in Node and natively under wine64 on the same runner (docs/design/runtime.md,
+# "Benchmarks (M4)"). On main the result line is appended to coremark.jsonl on the orphan branch
+# bench-data; on pull requests a ratio more than 10 % below the last recorded one is a warning
+# annotation, never a failure. coremark.exe also runs natively on windows-2025, for the record.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coremark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wine64
+        run: scripts/apt-install.sh wine64
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Fetch coremark.exe (targets release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
+
+      - name: Build the run-time translator and the floating-point helpers
+        run: |
+          cargo build -q -p x64wasm-rt --release --target wasm32-unknown-unknown
+          cargo build -q -p x64wasm-fp --release --target wasm32-unknown-unknown
+
+      - name: CoreMark, translated and under wine64 (medians of 3)
+        env:
+          WINE: /usr/lib/wine/wine64
+        run: node tests/bench/coremark.mjs --runs 3 | tee coremark-result.json
+
+      - name: Summary
+        run: |
+          {
+            echo "## CoreMark (ubuntu-24.04, wine64)"
+            echo '```json'
+            cat coremark-result.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compare with the last recorded ratio (pull requests, warning only)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if ! git fetch --depth=1 origin bench-data 2>/dev/null; then
+            echo "No bench-data branch yet; nothing to compare with."
+            exit 0
+          fi
+          last=$(git show FETCH_HEAD:coremark.jsonl 2>/dev/null | tail -n 1 || true)
+          if [ -z "$last" ]; then echo "coremark.jsonl is empty; nothing to compare with."; exit 0; fi
+          node -e '
+            const last = JSON.parse(process.argv[1]), now = JSON.parse(require("fs").readFileSync("coremark-result.json", "utf8"));
+            if (!last.ratio || !now.ratio) { console.log("a line has no ratio; skipping"); process.exit(0); }
+            const change = now.ratio / last.ratio - 1;
+            console.log(`ratio ${now.ratio} now, ${last.ratio} at ${last.commit} (${(change * 100).toFixed(1)} %)`);
+            if (change < -0.10) console.log(`::warning title=CoreMark ratio::translated/native ratio fell ${(-change * 100).toFixed(1)} % (${last.ratio} at ${last.commit} -> ${now.ratio})`);
+          ' "$last"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coremark-result
+          path: coremark-result.json
+          if-no-files-found: error
+
+  record:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: coremark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: bench-record
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: coremark-result
+      - name: Append to coremark.jsonl on bench-data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init -q repo
+          cd repo
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            if git fetch -q --depth=1 origin bench-data 2>/dev/null; then
+              git checkout -q -B bench-data FETCH_HEAD
+            else
+              git checkout -q --orphan bench-data   # first run: create the orphan branch
+            fi
+            cat ../coremark-result.json >> coremark.jsonl
+            git add coremark.jsonl
+            git commit -q -m "coremark: ${GITHUB_SHA::7}"
+            if git push -q origin bench-data; then exit 0; fi
+            echo "push raced with another run (attempt $attempt); retrying"
+            git reset -q --hard
+            sleep $((attempt * 3))
+          done
+          exit 1
+
+  windows-native:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fetch coremark.exe (targets release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
+      - name: CoreMark natively (for the record)
+        run: |
+          ./target/targets/coremark.exe 0x0 0x0 0x66 0 | tee coremark-windows.txt
+          grep -q "Correct operation validated" coremark-windows.txt
+          {
+            echo "## CoreMark natively on windows-2025"
+            grep -E "Iterations/Sec|Compiler" coremark-windows.txt | sed 's/\r$//'
+          } >> "$GITHUB_STEP_SUMMARY"
