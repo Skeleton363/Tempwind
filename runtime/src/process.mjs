@@ -16,7 +16,7 @@ import {
 import { createMemory64 } from './memory.mjs';
 import { GuestMemory } from './guest-memory.mjs';
 import { Linker, moduleBlockCount } from './link.mjs';
-import { makeHostCall } from './hostcall.mjs';
+import { makeHostCall, HostStop } from './hostcall.mjs';
 import { parsePlan, checkPlan, executableSection, hex } from './plan.mjs';
 import { findShim, SHIM } from './win32/index.mjs';
 
@@ -25,6 +25,8 @@ const ARG_REGS = [RCX, RDX, R8, R9];
 const EXIT_NAMES = { [EXIT_LEFT_CODE]: 'LEFT_CODE', [EXIT_UNSUPPORTED]: 'UNSUPPORTED', [EXIT_FAULT]: 'FAULT', [EXIT_HOST]: 'HOST' };
 const FAULT_NAMES = { [FAULT_READ]: 'read', [FAULT_WRITE]: 'write', [FAULT_EXECUTE]: 'execute' };
 const now = () => performance.now();
+/** Calls from the host into guest code nest at most this deep (runtime.md). */
+export const MAX_GUEST_CALL_NESTING = 16;
 
 /** An error stop of the process (exit status 125 in the CLI). */
 export class ProcessError extends Error {}
@@ -53,7 +55,9 @@ export class Process {
    * @param {{exe: Uint8Array, plan: object, aot: BufferSource | WebAssembly.Module,
    *   rt?: import('./rt.mjs').RuntimeTranslator | null,
    *   trace?: {api?: boolean, translate?: boolean, exits?: boolean}, log?: (line: string) => void,
-   *   onOutput?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void, shim?: object}} opts
+   *   onOutput?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void, shim?: object,
+   *   argv?: string[]}} opts
+   *   `argv`: the command line (default: the program name, the plan's `file`).
    */
   static async load(opts) {
     const p = new Process(opts);
@@ -61,7 +65,7 @@ export class Process {
     return p;
   }
 
-  constructor({ rt = null, trace = {}, log = () => {}, onOutput = () => {}, shim = SHIM }) {
+  constructor({ rt = null, trace = {}, log = () => {}, onOutput = () => {}, shim = SHIM, argv = null }) {
     this.rt = rt;
     this.trace = { api: false, translate: false, exits: false, ...trace };
     this.log = log;
@@ -70,6 +74,13 @@ export class Process {
     this.output = { stdout: [], stderr: [] };
     this.stop = null;
     this.running = false;
+    /** Depth of calls from host functions into guest code. */
+    this.nesting = 0;
+    this.argvOption = argv;
+    /** Per-process state of the shim DLLs (HostContext.dllState). */
+    this.dllStates = new Map();
+    /** Data import storage by `dll!name` (DLL lower-cased). */
+    this.dataImports = new Map();
     this.translations = 0;
     /** Total milliseconds of run-time translation: translate, compile, link. */
     this.translateMs = 0;
@@ -83,6 +94,7 @@ export class Process {
     // 1. The plan against the file.
     this.plan = parsePlan(plan);
     this.map = await checkPlan(this.plan, exe);
+    this.argv = this.argvOption ?? [this.plan.file];
     lap('check');
     let aotModule, aotBlocks;
     try {
@@ -117,6 +129,7 @@ export class Process {
       output: (stream, bytes) => this.write(stream, bytes),
       onStop: (stop) => { this.stop = stop; },
       trace: this.trace.api ? (line) => this.log(line) : undefined,
+      host: this.services(),
     }));
 
     // 4. Imports: thunks, lookup slots, IAT.
@@ -148,8 +161,53 @@ export class Process {
     }
   }
 
+  /** What host functions reach through HostContext (hostcall.mjs, HostServices). */
+  services() {
+    const p = this;
+    return {
+      call: (target, args) => p.callNested(target, args),
+      alloc: (size, align) => {
+        try { return p.guestHeap.alloc(size, align); } catch (e) { throw new HostStop({ error: e.message }); }
+      },
+      dllState: (dll, init) => {
+        if (!p.dllStates.has(dll)) p.dllStates.set(dll, init());
+        return p.dllStates.get(dll);
+      },
+      dataAddress: (dll, name) => p.dataAddress(dll, name),
+      get argv() { return p.argv; },
+    };
+  }
+
+  /** The storage of data import `dll!name`, or undefined. */
+  dataAddress(dll, name) { return this.dataImports.get(`${dll.toLowerCase()}!${name}`); }
+
+  /** Storage for a data import (runtime.md, "Loading", step 4): `{ data: { size, init } }`. */
+  allocDataImport(f) {
+    const { size, init } = f.impl.data;
+    const label = `${f.dll.toLowerCase()}!${f.name}`;
+    const addr = this.guestHeap.alloc(BigInt(size), 16n);
+    let v = typeof init === 'function' ? init(this.services()) : init;
+    if (v !== undefined) {
+      if (typeof v === 'number' || typeof v === 'bigint') {
+        let n = BigInt.asUintN(8 * size, BigInt(v));
+        const bytes = new Uint8Array(size);
+        for (let i = 0; i < size; i++, n >>= 8n) bytes[i] = Number(n & 0xffn);
+        v = bytes;
+      }
+      if (!(v instanceof Uint8Array)) throw new ProcessError(`data import ${label}: init is not bytes or a number`);
+      if (v.length > size) throw new ProcessError(`data import ${label}: init has ${v.length} bytes, size is ${size}`);
+      this.mem.write(addr, v);
+    }
+    this.dataImports.set(label, addr);
+    return addr;
+  }
+
   writeImports() {
     for (const [id, f] of this.imports.entries()) {
+      if (f.impl?.data) {
+        this.mem.setU64(f.iat, this.allocDataImport(f));
+        continue;
+      }
       this.mem.write(f.thunk, THUNK_BYTES);
       this.linker.insert(f.thunk, HOST_FUNC_INDEX, id);
       this.mem.setU64(f.iat, f.thunk);
@@ -239,34 +297,98 @@ export class Process {
     }
   }
 
+  /**
+   * The run loop (runtime.md, "Run loop"). Asynchronous at the top level,
+   * so a page can compile run-time translations off the main thread.
+   */
   async loop() {
-    const m = this.mem;
     for (;;) {
-      const reason = this.run(this.state);
-      const rip = m.u64(this.state + BigInt(STATE_RIP));
-      if (this.trace.exits) this.log(`exit ${EXIT_NAMES[reason] ?? reason} rip=${hex(rip)}`);
-      switch (reason) {
-        case EXIT_LEFT_CODE:
-          if (rip === SENTINEL_RET) return { returned: true, rax: this.reg(0) };
-          if (executableSection(this.plan, rip)) { await this.translateAt(rip); continue; }
-          throw new ProcessError(`fault: execute at ${hex(rip)}`);
-        case EXIT_UNSUPPORTED:
-          throw new ProcessError(`unsupported instruction at ${hex(rip)} (bytes ${this.codeBytes(rip)})`);
-        case EXIT_HOST: {
-          const stop = this.stop;
-          this.stop = null;
-          if (!stop) throw new ProcessError(`EXIT_HOST at ${hex(rip)} without a recorded stop`);
-          if ('exitCode' in stop) return { exitCode: stop.exitCode };
-          throw new ProcessError(stop.error);
-        }
-        case EXIT_FAULT: {
-          const addr = m.u64(this.state + BigInt(STATE_FAULT_ADDR));
-          const kind = m.u32(this.state + BigInt(STATE_FAULT_KIND));
-          throw new ProcessError(`fault: ${FAULT_NAMES[kind] ?? `kind ${kind}`} at ${hex(addr)} (rip ${hex(rip)})`);
-        }
-        default:
-          throw new ProcessError(`run returned unknown exit reason ${reason} (rip ${hex(rip)})`);
+      const r = this.onExit(this.run(this.state));
+      if (r.translate === undefined) return r;
+      await this.translateAt(r.translate);
+    }
+  }
+
+  /** The run loop of a call from a host function: host functions are synchronous. */
+  loopSync() {
+    for (;;) {
+      const r = this.onExit(this.run(this.state));
+      if (r.translate === undefined) return r;
+      this.translateAtSync(r.translate);
+    }
+  }
+
+  /**
+   * What an exit of `run` means: the guest call returned, the process
+   * exited, or code at `translate` needs translating. Throws ProcessError on
+   * an error stop.
+   * @returns {{returned: true, rax: bigint} | {exitCode: number} | {translate: bigint}}
+   */
+  onExit(reason) {
+    const m = this.mem;
+    const rip = m.u64(this.state + BigInt(STATE_RIP));
+    if (this.trace.exits) this.log(`exit ${EXIT_NAMES[reason] ?? reason} rip=${hex(rip)}`);
+    switch (reason) {
+      case EXIT_LEFT_CODE:
+        if (rip === SENTINEL_RET) return { returned: true, rax: this.reg(0) };
+        if (executableSection(this.plan, rip)) return { translate: rip };
+        throw new ProcessError(`fault: execute at ${hex(rip)}`);
+      case EXIT_UNSUPPORTED:
+        throw new ProcessError(`unsupported instruction at ${hex(rip)} (bytes ${this.codeBytes(rip)})`);
+      case EXIT_HOST: {
+        const stop = this.stop;
+        this.stop = null;
+        if (!stop) throw new ProcessError(`EXIT_HOST at ${hex(rip)} without a recorded stop`);
+        if ('exitCode' in stop) return { exitCode: stop.exitCode };
+        throw new ProcessError(stop.error);
       }
+      case EXIT_FAULT: {
+        const addr = m.u64(this.state + BigInt(STATE_FAULT_ADDR));
+        const kind = m.u32(this.state + BigInt(STATE_FAULT_KIND));
+        throw new ProcessError(`fault: ${FAULT_NAMES[kind] ?? `kind ${kind}`} at ${hex(addr)} (rip ${hex(rip)})`);
+      }
+      default:
+        throw new ProcessError(`run returned unknown exit reason ${reason} (rip ${hex(rip)})`);
+    }
+  }
+
+  /**
+   * A call from a host function into guest code (runtime.md, "Calls from
+   * the host into guest code"): saves the state block and `depth`, builds a
+   * Win64 call frame below the guest's RSP (16-byte aligned, shadow space,
+   * stack arguments, SENTINEL_RET), runs to the sentinel and restores both.
+   * @param {bigint} target
+   * @param {bigint[]} args
+   * @returns {{rax: bigint} | {exitCode: number} | {error: string}}
+   */
+  callNested(target, args) {
+    if (!this.running) return { error: 'a guest call from the host outside a running guest call' };
+    if (this.nesting >= MAX_GUEST_CALL_NESTING) return { error: `guest calls nested deeper than ${MAX_GUEST_CALL_NESTING}` };
+    const m = this.mem;
+    const saved = m.read(this.state, Number(STATE_SIZE));
+    const depth = this.linker.depth.value;
+    this.nesting++;
+    try {
+      const stackArgs = args.slice(4);
+      const top = this.reg(RSP) & ~0xfn;
+      const rsp = ((top - 0x20n - 8n * BigInt(stackArgs.length)) & ~0xfn) - 8n;
+      if (rsp < this.map.stackBottom) return { error: `stack overflow in a guest call to ${hex(target)} (rsp ${hex(rsp)})` };
+      m.setU64(rsp, SENTINEL_RET);
+      stackArgs.forEach((a, i) => m.setU64(rsp + 0x28n + 8n * BigInt(i), a));
+      args.slice(0, 4).forEach((a, i) => this.setReg(ARG_REGS[i], a));
+      this.setReg(RSP, rsp);
+      m.setU64(this.state + BigInt(STATE_RIP), target);
+      m.setU64(this.state + BigInt(STATE_RFLAGS), RFLAGS_INIT);
+      if (this.trace.api) this.log(`call ${hex(target)}(${args.map(hex).join(', ')})`);
+      const r = this.loopSync();
+      return 'exitCode' in r ? r : { rax: r.rax };
+    } catch (e) {
+      if (e instanceof ProcessError) return { error: e.message };
+      throw e;
+    } finally {
+      m.write(this.state, saved);
+      this.linker.depth.value = depth;
+      this.nesting--;
     }
   }
 
@@ -281,21 +403,41 @@ export class Process {
 
   /** Run-time translation (runtime.md, "Run-time translation") of the code at `rip`. */
   async translateAt(rip) {
-    if (!this.rt) throw new ProcessError(`no translated code at ${hex(rip)} and no run-time translator loaded`);
-    const s = executableSection(this.plan, rip);
     const t0 = now();
-    let wasm;
-    try {
-      wasm = this.rt.translate({ codeBase: s.va, code: this.mem.read(s.va, Number(s.mappedSize)), entry: rip, known: this.linker.sortedKeys() });
-    } catch (e) {
-      throw new ProcessError(`run-time translation at ${hex(rip)}: ${e.message}`);
-    }
+    const wasm = this.translateRequest(rip);
     let linked;
     try {
       linked = await this.linker.link(await WebAssembly.compile(wasm));
     } catch (e) {
       throw new ProcessError(`linking the run-time translation at ${hex(rip)}: ${e.message}`);
     }
+    this.translated(rip, wasm, linked, t0);
+  }
+
+  /** translateAt for a guest call from a host function: synchronous compile and link. */
+  translateAtSync(rip) {
+    const t0 = now();
+    const wasm = this.translateRequest(rip);
+    let linked;
+    try {
+      linked = this.linker.linkSync(new WebAssembly.Module(wasm));
+    } catch (e) {
+      throw new ProcessError(`linking the run-time translation at ${hex(rip)}: ${e.message}`);
+    }
+    this.translated(rip, wasm, linked, t0);
+  }
+
+  translateRequest(rip) {
+    if (!this.rt) throw new ProcessError(`no translated code at ${hex(rip)} and no run-time translator loaded`);
+    const s = executableSection(this.plan, rip);
+    try {
+      return this.rt.translate({ codeBase: s.va, code: this.mem.read(s.va, Number(s.mappedSize)), entry: rip, known: this.linker.sortedKeys() });
+    } catch (e) {
+      throw new ProcessError(`run-time translation at ${hex(rip)}: ${e.message}`);
+    }
+  }
+
+  translated(rip, wasm, linked, t0) {
     this.translations++;
     this.translateMs += now() - t0;
     if (this.trace.translate) {
