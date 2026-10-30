@@ -1,6 +1,6 @@
 # L1 fixture format (v2)
 
-Status: **format 2, M3.** The contract between the oracle's recorder (`testkit record`), its replay (`testkit replay`, `crates/testkit/tests/replay.rs`) and the generators in `crates/testkit/src/oracle/forms.rs`. Fixtures live in `crates/testkit/fixtures/l1/<family>.json`, one file per mnemonic family. They are written only by `testkit record`, never by hand; `record --check` re-records in memory and diffs.
+Status: **format 2, M3; M4 adds memory masks to `undefined` and the floating-point generator rules.** The contract between the oracle's recorder (`testkit record`), its replay (`testkit replay`, `crates/testkit/tests/replay.rs`) and the generators in `crates/testkit/src/oracle/forms.rs`. Fixtures live in `crates/testkit/fixtures/l1/<family>.json`, one file per mnemonic family. They are written only by `testkit record`, never by hand; `record --check` re-records in memory and diffs.
 
 - **v1 (Phase 0 to M2):** GPRs, RIP, RFLAGS and the data window; one native single step; any signal was a recording error.
 - **v2 (M3):** adds the SSE and x87 state, FS and GS bases, faults as expected outcomes, masks of undefined register bits, and multi-step recording for `rep` string instructions. A v1 file is rejected ("re-record").
@@ -89,6 +89,27 @@ The file repeats these in `layout`; a file whose layout differs from the build's
 - **`flags_mask`** (as in v1): RFLAGS bits whose output is compared. Flags the SDM leaves undefined are outside it.
 - **`undefined`**: per register, a mask of result bits the SDM leaves undefined (for example `bsf`/`bsr`'s destination when the source is 0). Names are GPR names and the `fp` field names; values are 64-bit masks (128-bit for `xmm*`, 80-bit for `st*`, 16 or 32 for the others). Omitted when empty.
 - **Normalization.** The recorder writes the input's value for every bit outside `flags_mask` and inside `undefined`. What the CPU actually produced there is dropped, because it varies between CPU models: GitHub's runners and a session VM must record the same file. Replay doesn't compare those bits.
+- **Memory (M4):** `undefined` may also hold `"mem": [{"addr", "hex"}]`, a bit mask over bytes at `addr` (same `hex` layout as memory). It must lie inside a compared range. It is normalized like registers: output bytes take the input's value under the mask, and replay doesn't compare them. Its use is for fields the SDM leaves reserved or that differ between CPU models, such as the reserved upper halves and the pointer selectors that `fnstenv` writes.
+
+## Floating-point cases (M4)
+
+The format needs no change for SSE floating point and x87: v2 already carries XMM, MXCSR, FCW, FSW, the full tag word and ST0-7. The generators follow these rules:
+- **Exceptions stay masked.** An unmasked floating-point exception stops the child with `SIGFPE`, which is a recording error. So every form that can raise one runs with MXCSR bits 7-12 and FCW bits 0-5 set. The control forms (`ldmxcsr`, `fldcw`, `fldenv`) may load other masks, since they raise nothing themselves. An input FSW has ES and B clear unless it is consistent with the input FCW.
+- **Control and status vary:**
+  - MXCSR: RC (all four modes), FTZ and DAZ, and the six exception flags, which are sticky (so both "PE clear" and "PE already set" occur);
+  - FCW: PC (single, double, extended; 01 is reserved) and RC;
+  - FSW: TOP, the condition codes and the exception flags.
+- **Values, edge pairs first:**
+  - ±0, the smallest and largest denormals, MIN_NORMAL and the values next to it, ±1, the largest normal, ±∞;
+  - QNaN and SNaN with several payloads;
+  - pairs whose exact result is a rounding tie, or overflows, or underflows to a tiny or zero result;
+  - integers at the conversion limits (±2^31, ±2^63, and the halves around them);
+  - x87: unnormals and pseudo-denormals in memory operands (m80);
+  - plus seeded random values.
+
+  Packed forms mix classes across lanes.
+- **x87 stack states:** TOP in every position; tags consistent with the contents (as above); empty and full stacks, so that pushes overflow and empty operands underflow.
+- **Undefined:** the condition codes the SDM leaves undefined per instruction (for example C0, C2 and C3 after `fadd`) go into `undefined` as an `fsw` mask.
 
 ## Recording
 

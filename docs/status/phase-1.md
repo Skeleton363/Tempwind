@@ -1,6 +1,6 @@
 # Phase 1 status: Translator
 
-**M1, M2 and M3 (integer instructions and CRT startup) are done; next is M4 (SSE floating point, x87 and CoreMark).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**M1, M2 and M3 (integer instructions and CRT startup) are done; M4 (SSE floating point, x87 and CoreMark) is in progress.** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
 - **Session 1, continued (2026-10-23/24):**
@@ -162,6 +162,25 @@ Phase 0's lessons still hold. New ones from M1:
   - the file system is empty: `fopen` for reading fails with ENOENT, and writing stops;
   - `Sleep` returns at once, and `_amsg_exit` writes its message to stderr;
   - the `strerror` texts were written from memory, and only the four codes the L2 programs print are checked.
+
+## Decisions taken in M4
+
+- **Scope** (`instruction-scope.md`, "M4 additions to the scope"):
+  - every SSE/SSE2 floating-point form, scalar and packed, except the approximations `rcp*`/`rsqrt*` (they differ between Intel and AMD) and the conversions with MMX operands;
+  - x87: the census forms, which now include the float L2 program and MinGW's fenv and rounding functions, plus the control forms those use (`fnstcw`, `fldcw`, `fnstsw`, `fnstenv`, `fldenv`, `fnclex`, `fwait`). The transcendentals are excluded, because their results depend on the CPU model.
+  - **Why the whole SSE set:** Phase 2's Wine DLLs and later programs use it, and once the soft float and the generators exist, each form costs little. Coming back later costs more.
+- **`cpuid` moves from M5 to M4:** MinGW's `fesetround`, `feclearexcept` and `fetestexcept` call `__mingw_has_sse`, which executes it. It returns the profile with a vendor of our own, "TempwindVCPU" (values in `instruction-scope.md`).
+- **Exactness:** results, the MXCSR and FSW exception flags, C1 and the x87 tags are bit-exact under every rounding mode, FTZ/DAZ and x87 precision control. An exception that is unmasked and actually occurs exits with `EXIT_UNSUPPORTED`; #XM and #MF come with Windows exceptions in Phase 4.
+- **Soft float in a helper module** (`crates/x64wasm-fp`, `x64wasm_fp.wasm`, ABI v4): `no_std` integer-only Rust. Translated modules import the helpers they use as `fp.*`, and testkit links the same functions natively in wasmtime.
+  - Plain Rust can be checked natively against the CPU with inline asm on millions of cases. Hand-written wasm like `div128` would mean thousands of lines that only the fixtures check.
+- **Inline fast path** (`translator.md`, "Floating point and x87 (M4)"): the plain wasm instruction runs only when its result is provably exact and no flag can change. For arithmetic that means all exceptions masked, round to nearest, PE already set, no denormal operand and a normal result. Everything else calls the helper. x87 arithmetic always calls helpers.
+- **No new IR value types:** FP values travel in `VTemp`s.
+- **XMM stays in the state block:** caching it in locals waits for M6's liveness work, since every boundary already syncs about 80 values.
+- **Float formatting is guest code:** hello.exe, coremark.exe and the L2 programs print floats with MinGW's own printf (pformat and gdtoa), so the shim needs no float formatting. CoreMark needs only `QueryPerformanceCounter` and `QueryPerformanceFrequency` added.
+- **CoreMark tracking** follows the decision taken when Phase 1 was planned (`runtime.md`, "Benchmarks (M4)"):
+  - `bench.yml` runs it translated in Node 24 and natively under wine64 on the same runner, with a windows-2025 native run for the record;
+  - each run calibrates itself to at least 10 s, so it is validated;
+  - main appends one JSON line to the orphan `bench-data` branch, and PRs warn when the ratio is more than 10 % worse.
 
 ## What works
 

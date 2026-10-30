@@ -15,6 +15,7 @@ What lives where:
 | Process | Guest memory and its address map, mapping the image, PEB/TEB/stack/TLS, import thunks, the run loop, exit status, captured stdout and stderr. |
 | Shim | `runtime/src/win32/`: one module per DLL, a function per API. |
 | Run-time translator | `x64wasm_rt.wasm` (`abi.md`). The runtime calls it when execution reaches code no module has translated. |
+| Floating-point helpers | `x64wasm_fp.wasm` (`abi.md`, v4). One instance per process (per thread later); its exports are the `fp` import namespace of every module the Linker links. |
 | CLI `run-pe` | Runs a program from the command line, with the guest's stdout, stderr and exit code as its own. |
 
 ## Address map of a Phase 1 process
@@ -206,8 +207,11 @@ If the run-time translator isn't loaded, or reports an error, the process stops 
 ## CLI
 
 ```text
-node runtime/src/run-pe.mjs --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt x64wasm_rt.wasm]
+node runtime/src/run-pe.mjs --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt x64wasm_rt.wasm] [--fp x64wasm_fp.wasm] [-- ARGS...]
 ```
+
+- `--fp` (M4) names the floating-point helper module. Without it, `run-pe` uses `target/wasm32-unknown-unknown/release/x64wasm_fp.wasm` under the repository root if that file exists. A module that imports `fp` with neither fails to link, with an error that names `--fp`.
+- Arguments after `--` follow the program name in the guest's command line (`__getmainargs`), as CoreMark's seeds and iteration count need.
 
 - Its stdout and stderr are the guest's, byte for byte, and its exit code is the guest's.
 - When the runtime itself stops with an error, it prints `tempwind: <error>` to stderr and exits with 125.
@@ -232,3 +236,40 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - Each has a `.expected` stdout and an exit-code file.
 - CI runs them natively on Windows and translated in Node.
 - `hello.exe` moves to M4: its float output needs SSE2 and x87 arithmetic.
+
+## kernel32 timing (M4)
+
+- `QueryPerformanceFrequency(&f)` stores 10,000,000 (100 ns ticks, as on current Windows) and returns TRUE.
+- `QueryPerformanceCounter(&c)` stores a monotonic count of 100 ns ticks since the process started (from `process.hrtime.bigint()` in Node and `performance.now()` in browsers), and returns TRUE.
+- A null pointer stops loudly, like every strict shim function.
+
+## M4 programs
+
+- **`hello.exe`** (`tests/native/hello.c`): runs translated, matching `hello.expected` and exit code 0.
+- **`l2_float.exe`** (`tests/native/l2_float.c`): deterministic, built with `-O2 -fno-math-errno`. It covers:
+  - special values: ±0, denormals, ±∞ and NaN, printed;
+  - conversions in every direction, truncating and rounding;
+  - compares with NaN;
+  - the four rounding modes through `fesetround`;
+  - exception flags through `feclearexcept`/`fetestexcept`;
+  - FTZ and DAZ through `_mm_setcsr`;
+  - loops that GCC vectorizes, over floats and doubles;
+  - a `long double` section: arithmetic, `sqrtl`, conversions, compares and printing.
+
+  Its rules: all floating point stays in guest code, so there are no msvcrt math imports, and every import is one the shim already has. It is checked like the M3 programs: natively on Windows in CI, and translated in Node with the exact CRLF bytes and its exit code.
+- **CoreMark** (`coremark.exe` from the targets release): a Node test runs it translated with `0x0 0x0 0x66 200` and checks what `tests/targets/smoke.sh` checks: the run type, the four CRCs, and only the "at least 10 secs" error.
+
+## Benchmarks (M4)
+
+`tests/bench/coremark.mjs` translates `coremark.exe` (all entries), runs it translated in Node with `0x0 0x0 0x66 0`, and natively under wine64 with the same arguments. Iteration count 0 makes CoreMark calibrate itself to a run of at least 10 seconds, so a valid run prints "Correct operation validated". The script prints one JSON line with:
+- the commit and the date;
+- Node's version and the CPU model;
+- iterations per second, translated and native, each the median of 3 runs;
+- their ratio.
+
+A run that isn't validated fails the script.
+
+`.github/workflows/bench.yml` runs it on every push to `main` and on pull requests, and also runs `coremark.exe` natively on windows-2025 for the record.
+- **On main,** it appends the JSON line to `coremark.jsonl` on the orphan branch `bench-data`, which the workflow creates on its first run. The commit comes from the workflow's bot, with `contents: write` for this job only.
+- **On pull requests,** it compares the ratio with the last line on `bench-data` and emits a warning annotation, never a failure, when it is more than 10 % worse.
+

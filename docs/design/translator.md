@@ -308,7 +308,7 @@ In scope for M3: every SSE/SSE2 form whose result doesn't depend on floating-poi
 
 ### x87: fninit
 
-fninit (`DB E3`): FCW ← 0x037F, FSW ← 0 (TOP 0, condition codes and exception flags clear), FTW ← 0xFFFF (every register empty, in the state block's full 2-bit format), through `StoreState`. The register contents, MXCSR and the XMM registers are unchanged; the FPU instruction and data pointers are not modeled. finit (`9B DB E3`) is wait + fninit, and wait is a no-op until M4 models pending x87 exceptions. fnstcw and fldcw (FCW to and from memory) are as simple and can come with fninit if fixtures appear.
+fninit (`DB E3`): FCW ← 0x037F, FSW ← 0 (TOP 0, condition codes and exception flags clear), FTW ← 0xFFFF (every register empty, in the state block's full 2-bit format), through `StoreState`. The register contents, MXCSR and the XMM registers are unchanged; the FPU instruction and data pointers are not modeled. finit (`9B DB E3`) is wait + fninit. M4 adds the other x87 forms ("Floating point and x87 (M4)").
 
 ### Tests, before each family's code
 
@@ -328,6 +328,80 @@ fninit (`DB E3`): FCW ← 0x037F, FSW ← 0 (TOP 0, condition codes and exceptio
 4. **`abi.md`, "Inside the module":** needs one line saying helper functions (`div128`) follow the chunks, outside the table.
 5. The 67h forms of string ops, loop and jecxz stay unsupported (not in the census).
 6. `int1` (`F1`, gap-only in the census) is not lowered (it would raise #DB); it is part of the M5 decision on gap-only forms.
+
+## Floating point and x87 (M4)
+
+Scope: `instruction-scope.md`, "M4 additions to the scope". The standard is M3's: every result bit, every MXCSR and FSW flag, C1 and the tags as the CPU produces them, under every rounding mode, FTZ/DAZ and x87 precision control. The fixtures compare all of them. The exact arithmetic lives in the soft-float helper module (`abi.md`, "Floating-point helper module"); translated code calls it whenever the plain wasm instruction can't be proven exact.
+
+### Code layout
+
+- `lift/sse.rs` gains the SSE/SSE2 floating-point forms; a new `emit/fp.rs` emits their fast and slow paths.
+- `lift/x87.rs` gains the x87 forms; a new `emit/x87.rs` emits them.
+- `crates/x64wasm-fp` holds the soft float. The emitter imports the helpers a module uses (`fp.*`, v4), and `crates/testkit`'s wasmtime host defines them natively.
+
+### IR
+
+No new value types. FP values travel in `VTemp`s: scalar forms use lane 0 and keep the destination's other lanes, packed forms use every lane, and GPR operands are ordinary temps. New ops, one per class of x86 operation (names up to the implementation): binary arithmetic (add, sub, mul, div, min, max) and sqrt per format (ss, sd, ps, pd), compares with a predicate, comis/ucomis, and conversions by kind. x87 instructions lower to a few macro ops expanded in `emit/x87.rs`. Like `FaultIf`, an op that can exit (an unmasked exception) comes before the instruction's first side effect.
+
+### SSE: fast path and helper
+
+Each floating-point operation either takes the inline fast path, the wasm instruction itself, or calls its helper. The fast path is taken only when the wasm result is bit-exact under the current MXCSR and the operation can't change MXCSR. wasm arithmetic is IEEE round-to-nearest-even with gradual underflow, which is what x86 computes when no special case is involved; NaN results, rounding modes, FTZ/DAZ and the flags are where they differ.
+
+- **add, sub, mul, div:** `(mxcsr & 0x7FA0) == 0x1FA0` (all exceptions masked, RC = nearest, PE already set), no operand denormal, and MIN_NORMAL < |r| < ∞ for the wasm result r. That excludes NaN, infinite, overflowing, zero and tiny results (a result rounded up to MIN_NORMAL can still be tiny). DAZ and FTZ don't matter then, and the only flag the operation could raise, PE, is already set.
+- **sqrt:** the same MXCSR test and a positive normal operand.
+- **min, max:** no operand NaN or denormal. Then `select(a, b, a < b)` for min and `select(a, b, a > b)` for max: x86 returns the second operand when the two are equal (±0 included). No flag can change, so MXCSR isn't read.
+- **cmp\*, comis, ucomis:** no operand NaN or denormal; MXCSR isn't read.
+- **Conversions:**
+  - int → float: no test when the value is exactly representable (|x| ≤ 2^24 for f32, ≤ 2^53 for f64); otherwise the arithmetic MXCSR test. cvtsi2sd r/m32 and cvtdq2pd are always exact.
+  - float → int, truncating: the value in range and either already integral or PE set with PM masked.
+  - float → int, rounding: also RC = nearest (`f64.nearest`, which rounds ties to even like x86).
+  - cvtss2sd and cvtps2pd: no NaN or denormal operand (the widening is then exact).
+  - cvtsd2ss and cvtpd2ps: the arithmetic test on the narrowed result.
+- **Packed forms** test every lane with SIMD compares and `all_true`. If any lane fails, the whole instruction takes the slow path.
+
+MXCSR is loaded from the state block for each instruction that tests it. (M6 can hoist the load: inside a block the fast-path test can only go from false to true.)
+
+**Slow path:** call the helper (once per lane for packed forms, lane 0 first, passing each lane the MXCSR the previous one returned), then `fp.status()`. If bit 31 is set, exit with `EXIT_UNSUPPORTED`, RIP at the instruction and nothing written. Otherwise store the new MXCSR, then the result.
+
+**comis, ucomis:** write an eager flag record (`cc_op = CC_EAGER`, `cc_a` = ZF, PF and CF; OF, SF and AF 0). On the fast path: unordered gives ZF, PF and CF; less gives CF; equal gives ZF.
+
+**Alignment:** as in M3, a legacy-SSE m128 operand must be 16-byte aligned, so the packed forms with a memory source emit `FaultIf(addr & 15, FAULT_GENERAL_PROTECTION)` first. Scalar m32/m64 operands have no requirement.
+
+### x87
+
+**State** (`abi.md`): FCW at 0x204, FSW at 0x206 (TOP in bits 11-13), the full tag word at 0x208, R0-R7 at 0x210 + 16 × p (significand at +0, sign and exponent at +8). ST(i) = R[(TOP + i) & 7], computed at run time from FSW.
+
+**Tags** are written with every register write, from the contents, exactly as FSTENV reports them: exponent 0x7FFF → special; exponent 0 → zero if the significand is 0, else special; J bit clear → special (unnormal); else valid. A pop marks the register empty.
+
+**Stack faults:**
+- **Push** (fld, fild, fldz, fld1 …): TOP − 1. If the new ST(0) isn't empty, it is an overflow: IE and SF are set and C1 = 1, and with IE masked the register gets the QNaN indefinite (sign 1, exponent 0x7FFF, significand `0xC000_0000_0000_0000`).
+- **An empty operand** is an underflow: IE and SF are set and C1 = 0. With IE masked, a register result gets the indefinite, a store to memory writes the destination format's indefinite (the integer indefinite for fist), and a compare reports unordered.
+- **Pop:** the tag becomes empty and TOP + 1.
+
+**Operations:**
+- Arithmetic, loads from m32/m64 and integers, stores to m32/m64 and integers, compares, frndint, fscale and fprem call their helper. The status's exception flags are ORed into FSW bits 0-5. C1 and, for compares and fprem, C0, C2 and C3 are written as the instruction defines them. Condition codes the SDM leaves undefined keep their value (the fixtures mask them).
+- Operations that can't raise are inline: fld m80 and fstp m80 copy all 80 bits; fld st(i), fstp st(i), fxch; fchs and fabs change only the sign; the constants (fldz, fld1, and any others the census adds, rounded by RC); fxam (C3, C2, C0 from the class, C1 = sign, empty included).
+- fcomi, fcomip, fucomi and fucomip write an eager flag record from the compare: C3 → ZF, C2 → PF, C0 → CF; OF, SF and AF 0.
+- **An unmasked exception** (status bit 7) exits with `EXIT_UNSUPPORTED` before any change, as for SSE. ES and B in FSW follow the CPU (the fixtures decide, for example after fldcw unmasks a flag that is already set). A waiting x87 instruction that finds ES set exits with `EXIT_UNSUPPORTED` too (#MF).
+- **Control forms:**
+  - fnstcw m16 and fldcw m16. fldcw stores what the CPU keeps (for example, bit 6 reads as 1); the fixtures decide.
+  - fnstsw m16 and fnstsw AX.
+  - fnclex clears the exception flags, SF, ES and B.
+  - fnstenv m28 stores the 32-bit protected-mode environment (FCW, FSW and the full tag word in the low halves of the first three dwords), with the instruction and data pointers, the opcode and the selectors as 0. Then it masks all exceptions.
+  - fldenv m28 loads FCW, FSW and the tag word. Non-empty registers get their tags recomputed from their contents; empty ones stay empty.
+  - fwait is a no-op unless ES is set.
+
+### cpuid
+
+`cpuid` lowers to a lookup of EAX in the table of `instruction-scope.md` ("`cpuid` results"), done at run time, since EAX is usually not a constant. It writes EAX, EBX, ECX and EDX as 32-bit registers and leaves the flags alone. The dedicated test checks every row.
+
+### Tests
+
+- **`crates/x64wasm-fp`:** native differential tests against the CPU (inline `asm!`) for every helper. They cover edge pairs (±0, the smallest and largest denormals and normals, ±1, ±∞, QNaN and SNaN with several payloads, rounding ties, and the limits of the integer conversions) and seeded random cases, under every RC, FTZ/DAZ combination and x87 PC. The default count fits `cargo test`; an `#[ignore]` test runs millions. A Node test checks the wasm build against vectors from the native build.
+- **L1 fixtures** for every in-scope form decide when a family is done: replay at 100 %, every earlier family still at 100 %.
+- **Snapshots:** an SSE scalar sequence (fast and slow path), a packed form, a conversion, comisd with a branch, and an x87 sequence.
+- **`cpuid`:** the dedicated test above.
+- **The order of exits before side effects**, for the forms that can exit (unmasked exceptions, #GP for alignment).
 
 ## Measurements (M1)
 
