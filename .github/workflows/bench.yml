@@ -4,6 +4,7 @@ name: bench
 # "Benchmarks (M4)"). On main the result line is appended to coremark.jsonl on the orphan branch
 # bench-data; on pull requests a ratio more than 10 % below the last recorded one is a warning
 # annotation, never a failure. coremark.exe also runs natively on windows-2025, for the record.
+# The same for `7zz b 2 -mmt1 -md18` (tests/bench/sevenzip.mjs, recorded in sevenzip.jsonl).
 
 on:
   pull_request:
@@ -88,9 +89,75 @@ jobs:
           path: coremark-result.json
           if-no-files-found: error
 
+  sevenzip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wine64
+        run: scripts/apt-install.sh wine64
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Fetch 7zz.exe (targets release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets
+
+      - name: Build the run-time translator and the floating-point helpers
+        run: |
+          cargo build -q -p x64wasm-rt --release --target wasm32-unknown-unknown
+          cargo build -q -p x64wasm-fp --release --target wasm32-unknown-unknown
+
+      - name: 7z b, translated and under wine64 (`b 2 -mmt1 -md18`, medians of 3)
+        env:
+          WINE: /usr/lib/wine/wine64
+        run: node tests/bench/sevenzip.mjs --runs 3 | tee sevenzip-result.json
+
+      - name: Summary
+        run: |
+          {
+            echo "## 7z b (ubuntu-24.04, wine64)"
+            echo '```json'
+            cat sevenzip-result.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compare with the last recorded ratio (pull requests, warning only)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if ! git fetch --depth=1 origin bench-data 2>/dev/null; then
+            echo "No bench-data branch yet; nothing to compare with."
+            exit 0
+          fi
+          last=$(git show FETCH_HEAD:sevenzip.jsonl 2>/dev/null | tail -n 1 || true)
+          if [ -z "$last" ]; then echo "sevenzip.jsonl is empty; nothing to compare with."; exit 0; fi
+          node -e '
+            const last = JSON.parse(process.argv[1]), now = JSON.parse(require("fs").readFileSync("sevenzip-result.json", "utf8"));
+            if (!last.ratio || !now.ratio) { console.log("a line has no ratio; skipping"); process.exit(0); }
+            const change = now.ratio / last.ratio - 1;
+            console.log(`ratio ${now.ratio} now, ${last.ratio} at ${last.commit} (${(change * 100).toFixed(1)} %)`);
+            if (change < -0.10) console.log(`::warning title=7z b ratio::translated/native ratio fell ${(-change * 100).toFixed(1)} % (${last.ratio} at ${last.commit} -> ${now.ratio})`);
+          ' "$last"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sevenzip-result
+          path: sevenzip-result.json
+          if-no-files-found: error
+
   record:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs: coremark
+    needs: [coremark, sevenzip]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -102,7 +169,10 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: coremark-result
-      - name: Append to coremark.jsonl on bench-data
+      - uses: actions/download-artifact@v8
+        with:
+          name: sevenzip-result
+      - name: Append to coremark.jsonl and sevenzip.jsonl on bench-data
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -119,8 +189,9 @@ jobs:
               git checkout -q --orphan bench-data   # first run: create the orphan branch
             fi
             cat ../coremark-result.json >> coremark.jsonl
-            git add coremark.jsonl
-            git commit -q -m "coremark: ${GITHUB_SHA::7}"
+            cat ../sevenzip-result.json >> sevenzip.jsonl
+            git add coremark.jsonl sevenzip.jsonl
+            git commit -q -m "bench: ${GITHUB_SHA::7}"
             if git push -q origin bench-data; then exit 0; fi
             echo "push raced with another run (attempt $attempt); retrying"
             git reset -q --hard
@@ -136,10 +207,12 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-      - name: Fetch coremark.exe (targets release)
+      - name: Fetch coremark.exe and 7zz.exe (targets release)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
+        run: |
+          scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
+          scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets
       - name: CoreMark natively (for the record)
         run: |
           ./target/targets/coremark.exe 0x0 0x0 0x66 0 | tee coremark-windows.txt
@@ -147,4 +220,11 @@ jobs:
           {
             echo "## CoreMark natively on windows-2025"
             grep -E "Iterations/Sec|Compiler" coremark-windows.txt | sed 's/\r$//'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: 7z b natively (for the record)
+        run: |
+          ./target/targets/7zz.exe b 2 -mmt1 -md18 | tee sevenzip-windows.txt
+          {
+            echo "## 7z b 2 -mmt1 -md18 natively on windows-2025"
+            grep -E "^Tot:|^Windows|Intel|AMD" sevenzip-windows.txt | sed 's/\r$//'
           } >> "$GITHUB_STEP_SUMMARY"
