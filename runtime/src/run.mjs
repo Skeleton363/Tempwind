@@ -55,8 +55,8 @@ export function assertV3(module) {
  * lookup table after the case memory. Table slot 0 (host functions) stays empty.
  * @returns {Promise<{linker: Linker, run: Function}>}
  */
-export async function linkCase(module, memory, layout) {
-  const linker = new Linker({ memory, header: layout.header, slotsAddr: layout.slotsAddr, slots: layout.slots });
+export async function linkCase(module, memory, layout, fp = null) {
+  const linker = new Linker({ memory, header: layout.header, slotsAddr: layout.slotsAddr, slots: layout.slots, fp });
   const { run } = await linker.link(module);
   return { linker, run };
 }
@@ -64,7 +64,7 @@ export async function linkCase(module, memory, layout) {
 /**
  * @param {BufferSource} wasmBytes
  * @param {object} spec a manifest case (name, memoryBytes, state, init, expect)
- * @param {{shared?: boolean, maximumPages?: number}} [opts]
+ * @param {{shared?: boolean, maximumPages?: number, fp?: WebAssembly.Exports}} [opts] `fp`: exports of x64wasm_fp.wasm for modules that import it
  * @returns {Promise<{ok: boolean, diffs: string[], exit: number, state: object, memoryForm: string}>}
  */
 export async function runCase(wasmBytes, spec, opts = {}) {
@@ -95,7 +95,7 @@ export async function runCase(wasmBytes, spec, opts = {}) {
   if (init.rip !== undefined) dv.setBigUint64(stateAddr + STATE_RIP, big(init.rip), true);
   if (init.rflags !== undefined) dv.setBigUint64(stateAddr + STATE_RFLAGS, big(init.rflags), true);
 
-  const { run } = await linkCase(module, memory, layout);
+  const { run } = await linkCase(module, memory, layout, opts.fp ?? null);
   const exit = run(BigInt(stateAddr));
 
   // Read back from the (possibly regrown) buffer.

@@ -90,6 +90,22 @@ test('Sleep returns at once; Sleep(INFINITE) stops', () => {
   assert.match(env.stop('kernel32.dll', 'Sleep', 0xffff_ffff).error, /INFINITE/);
 });
 
+test('QueryPerformanceFrequency and QueryPerformanceCounter: 100 ns ticks, monotonic, NULL stops', () => {
+  const env = shimEnv();
+  const f = env.zeros(8), c1 = env.zeros(8), c2 = env.zeros(8);
+  assert.equal(kernel32(env, 'QueryPerformanceFrequency', f), 1n);
+  assert.equal(env.mem.u64(f), 10_000_000n);
+  assert.equal(kernel32(env, 'QueryPerformanceCounter', c1), 1n);
+  const t0 = process.hrtime.bigint();
+  while (process.hrtime.bigint() - t0 < 2_000_000n); // 2 ms
+  assert.equal(kernel32(env, 'QueryPerformanceCounter', c2), 1n);
+  const a = env.mem.u64(c1), b = env.mem.u64(c2);
+  assert.ok(a < 10_000_000n, `first count ${a} is not near the process start`);
+  assert.ok(b - a >= 15_000n && b - a < 10_000_000n, `2 ms apart gave ${b - a} ticks`);
+  assert.match(env.stop('kernel32.dll', 'QueryPerformanceFrequency', 0).error, /NULL/);
+  assert.match(env.stop('kernel32.dll', 'QueryPerformanceCounter', 0).error, /NULL/);
+});
+
 test('SetUnhandledExceptionFilter returns the previous filter', () => {
   const env = shimEnv();
   assert.equal(kernel32(env, 'SetUnhandledExceptionFilter', 0x1234), 0n);

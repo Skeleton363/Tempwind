@@ -56,8 +56,9 @@ export class Process {
    *   rt?: import('./rt.mjs').RuntimeTranslator | null,
    *   trace?: {api?: boolean, translate?: boolean, exits?: boolean}, log?: (line: string) => void,
    *   onOutput?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void, shim?: object,
-   *   argv?: string[]}} opts
+   *   argv?: string[], fp?: WebAssembly.Exports | null}} opts
    *   `argv`: the command line (default: the program name, the plan's `file`).
+   *   `fp`: the exports of x64wasm_fp.wasm (loadFp), instantiated once for this process.
    */
   static async load(opts) {
     const p = new Process(opts);
@@ -65,8 +66,9 @@ export class Process {
     return p;
   }
 
-  constructor({ rt = null, trace = {}, log = () => {}, onOutput = () => {}, shim = SHIM, argv = null }) {
+  constructor({ rt = null, trace = {}, log = () => {}, onOutput = () => {}, shim = SHIM, argv = null, fp = null }) {
     this.rt = rt;
+    this.fp = fp;
     this.trace = { api: false, translate: false, exits: false, ...trace };
     this.log = log;
     this.onOutput = onOutput;
@@ -121,6 +123,7 @@ export class Process {
       memory, header: LOOKUP_HEADER_ADDR, slots,
       slotsAddr: this.runtimeHeap.alloc(BigInt(slots * LOOKUP_SLOT_SIZE), 16n),
       alloc: (size, align) => this.runtimeHeap.alloc(size, align),
+      fp: this.fp,
     });
     this.imports = imports.map((f, id) => ({ ...f, thunk: THUNK_BASE + THUNK_SIZE * BigInt(id), impl: findShim(f.dll, f.name, this.shim) }));
     this.linker.setHostFunction(makeHostCall({

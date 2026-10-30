@@ -10,6 +10,7 @@ import {
   HOST_FUNC_INDEX, LOOKUP_HASH_MUL,
 } from './abi.mjs';
 import { GuestMemory } from './guest-memory.mjs';
+import { FP_NAMESPACE, fpImports } from './fp.mjs';
 
 const hex = (v) => '0x' + BigInt(v).toString(16);
 const isPow2 = (n) => Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0;
@@ -131,12 +132,13 @@ export function hostFunction(fn) {
 export class Linker {
   /**
    * @param {{memory: WebAssembly.Memory, header: bigint, slotsAddr: bigint, slots: number,
-   *   alloc?: (size: bigint, align: bigint) => bigint}} opts
+   *   alloc?: (size: bigint, align: bigint) => bigint, fp?: WebAssembly.Exports | null}} opts
    *   `header`: guest address of the 32-byte lookup header (8-byte aligned);
    *   `slotsAddr`/`slots`: the first slot array (16-byte aligned, power-of-two count, at most 2^32);
    *   `alloc`: zeroed guest memory for larger slot arrays (rehash). Without it, a full table is an error.
+   *   `fp`: the exports of x64wasm_fp.wasm (loadFp), passed as the `fp` namespace to every module; one per process.
    */
-  constructor({ memory, header, slotsAddr, slots, alloc }) {
+  constructor({ memory, header, slotsAddr, slots, alloc, fp = null }) {
     header = BigInt(header);
     slotsAddr = BigInt(slotsAddr);
     if (header % 8n) throw new Error(`lookup header ${hex(header)} is not 8-byte aligned`);
@@ -146,6 +148,7 @@ export class Linker {
     this.mem = new GuestMemory(memory);
     this.header = header;
     this.alloc = alloc;
+    this.fp = fp;
     this.table = new WebAssembly.Table({ element: 'anyfunc', initial: HOST_FUNC_INDEX + 1 });
     this.lookupGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, header);
     this.depth = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
@@ -300,8 +303,18 @@ export class Linker {
     return this.insertBlocks(module, tableBase, new WebAssembly.Instance(module, this.imports(tableBase)));
   }
 
+  /** A module that imports `fp` needs the helper module (v4). */
+  checkFp(module) {
+    if (this.fp) return;
+    const names = fpImports(module);
+    if (names.length) {
+      throw new Error(`the module imports ${names.length} floating-point helper(s) (fp.${names[0]}, ...) but no floating-point helper module is loaded; pass --fp x64wasm_fp.wasm (cargo build -p x64wasm-fp --release --target wasm32-unknown-unknown)`);
+    }
+  }
+
   /** Grows the table for the module's chunks; returns its table base. */
   reserve(module) {
+    this.checkFp(module);
     const { chunks } = readBlocks(blocksSection(module));
     const tableBase = this.table.length;
     this.table.grow(chunks);
@@ -327,7 +340,7 @@ export class Linker {
 
   /** The import object for a module whose chunk 0 sits at `tableBase`. */
   imports(tableBase) {
-    return {
+    const imports = {
       [MEMORY_MODULE]: {
         [MEMORY_NAME]: this.memory,
         [TABLE_NAME]: this.table,
@@ -336,5 +349,7 @@ export class Linker {
         [DEPTH_NAME]: this.depth,
       },
     };
+    if (this.fp) imports[FP_NAMESPACE] = this.fp;
+    return imports;
   }
 }
