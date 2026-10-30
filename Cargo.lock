@@ -1233,6 +1233,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "x64wasm-fp"
+version = "0.0.0"
+
+[[package]]
 name = "x64wasm-rt"
 version = "0.0.0"
 dependencies = [
