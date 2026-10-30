@@ -163,6 +163,43 @@ Phase 0's lessons still hold. New ones from M1:
   - `Sleep` returns at once, and `_amsg_exit` writes its message to stderr;
   - the `strerror` texts were written from memory, and only the four codes the L2 programs print are checked.
 
+## M4 progress (paused 2026-10-30)
+
+**Committed:**
+- **Contracts:** `f9a0d3f`, `c94616c`.
+- **Float L2 program:** `l2_float.c`, 401 lines of expected output, exit code 23 (`2ce5f0d`).
+- **Runtime wiring** (`9999a90`…`8543bc0`):
+  - the `fp` module in the Linker and Process, and `run-pe --fp` and `-- ARGS`;
+  - `QueryPerformanceCounter` and `QueryPerformanceFrequency`;
+  - Node tests for hello, l2_float and CoreMark, which wait for the lowering;
+  - `tests/bench/coremark.mjs`, `bench.yml` and the `ci.yml` wiring.
+- **`crates/x64wasm-fp`** (`a19bfe0`, `2c7836a`, `52cee93`, `7570f1d`):
+  - every export matches the CPU natively, with 850M cases in the long runs;
+  - the wasm build is 24,671 bytes;
+  - the Node vectors test passes.
+- **Fixtures:**
+  - SSE floating point: 116 forms, 12,992 cases (`3201df7`);
+  - x87: 44 forms, 2,688 cases (`5198100`);
+  - `record --check` reproduces all 75 files on the session's Intel CPU.
+- **SSE floating-point lowering** (`1d929f4`): ABI v4 `fp` imports, the wasmtime `fp` host and `cpuid`. Agent D was stopped before its final report, so its replay numbers are not confirmed yet.
+
+**On resume:**
+1. Check D's state:
+   - `cargo run -p testkit --release -- replay`: the `sse_fp_*` families should be at 100 %;
+   - clippy;
+   - the wasm32 builds of `x64wasm-rt` and `x64wasm-fp`;
+   - `cargo test -p x64wasm`.
+
+   Finish whatever D left: its FP measurement case and doc notes.
+2. Run agent E (x87 lowering: `lift/x87.rs`, `emit/x87.rs`, on D's `fp` import plumbing) until the `x87_*` families replay at 100 %.
+3. Integrate:
+   - `tests/native/prepare.sh`, then `npm run test:node`: hello, l2_float and CoreMark translated;
+   - `census --check` over coremark, hello and the four L2 programs;
+   - measurements;
+   - this note;
+   - draft PR "[Phase 1] SSE, x87 and CoreMark", CI green.
+4. **Watch on CI:** GitHub's runner may have an AMD CPU. `record --check`, `cargo test -p x64wasm-fp` and the `fnstenv` ES/B fixtures were only checked on Intel.
+
 ## Decisions taken in M4
 
 - **Scope** (`instruction-scope.md`, "M4 additions to the scope"):
