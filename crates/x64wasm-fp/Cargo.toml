@@ -1,0 +1,16 @@
+[package]
+name = "x64wasm-fp"
+description = "Exact x86 soft float (SSE and x87) for translated code: x64wasm_fp.wasm, the `fp` imports of ABI v4"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "x64wasm_fp"
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true

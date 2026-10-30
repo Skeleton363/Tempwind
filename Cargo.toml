@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/x64wasm", "crates/x64wasm-cli", "crates/x64wasm-rt", "crates/testkit"]
+members = ["crates/x64wasm", "crates/x64wasm-cli", "crates/x64wasm-rt", "crates/x64wasm-fp", "crates/testkit"]
 
 [workspace.package]
 version = "0.0.0"
@@ -39,3 +39,12 @@ opt-level = 1
 [profile.release.package.x64wasm-rt]
 opt-level = "s"
 strip = true
+
+# The soft float (x64wasm_fp.wasm) runs on every slow-path FP instruction:
+# fast over small. Its differential tests run millions of cases in dev.
+[profile.release.package.x64wasm-fp]
+opt-level = 3
+strip = true
+
+[profile.dev.package.x64wasm-fp]
+opt-level = 3
