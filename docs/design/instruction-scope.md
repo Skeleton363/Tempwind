@@ -70,6 +70,7 @@ The rule above decides which forms need fixtures. M4 adds forms by decision as w
    - privileged or system instructions that never run in user mode (`hlt`, `in`/`out`, `cli`/`sti`, control and debug register moves, …);
    - `syscall`/`sysenter` (PE user code doesn't use them in Phase 1);
    - nondeterministic instructions (`cpuid`, `rdtsc`, `rdtscp`, `rdrand`, `rdseed`), which get dedicated tests instead of recorded fixtures (`cpuid` must return the profile above).
+   - debug traps: `int1` (ICEBP, `F1`), which raises #DB for a debugger. Decided at the M5 gate: it occurs in the targets only in gaps (data the sweep reads as code). The other gap-only forms stay in scope; they all have fixtures.
 2. **Fixtures.** Every Code in S has recorded L1 fixtures in `crates/testkit/fixtures/l1/`:
    - covering each operand-kind combination (register or memory, every width the Code allows);
    - for memory operands, all 9 address modes of the oracle (base, base+disp8, base+disp32, base+index, base+index+disp8, base+index+disp32, index+disp32, absolute, RIP-relative);
@@ -137,7 +138,7 @@ MMX has no instructions in these builds. `mov` alone is 34.5 % of all instructio
 
 - **491 in-scope forms** (a `Code` as register or memory variant) over 383 `Code`s.
 - 5 `Code`s are excluded by the rule: `In_AL_imm8`, `Out_imm8_AL`, `Out_DX_AL`, `Hlt` (the first four only in gaps of 7zz.exe, so data bytes) and `Cpuid` (14 occurrences, dedicated test).
-- 22 forms occur only in gaps, where the sweep reads some data bytes as code (`Std`, `Cmc`, `Int1`, `Loop_rel8_64_RCX`, ...). They are listed in `census.md` and count toward S as the rule is written. Dropping them is a decision for the M5 gate (they are probably not code); the rule as decided keeps them.
+- 22 forms occur only in gaps, where the sweep reads some data bytes as code (`Std`, `Cmc`, `Int1`, `Loop_rel8_64_RCX`, ...). They are listed in `census.md` and count toward S as the rule is written. The M5 gate kept them, except `int1`, which the rule now excludes as a debug trap; the others have fixtures.
 - **L1 fixtures cover 134 of the 491 forms (27.3 %)**, counting M2's `jmp` fixtures. `testkit census --check` lists the 357 missing ones, and fails until the instruction PRs add them (M5).
 - **After M3:**
   - the M3 L2 programs (`tests/native/l2_*.c`) bring the scope to 509 forms;

@@ -1,6 +1,6 @@
 # Phase 1 status: Translator
 
-**M1-M4 are done (M4, SSE floating point, x87 and CoreMark: PR #6, CI green at `22bece6`); next is M5 (7-Zip exactly like native).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**M1-M4 are done (M4, SSE floating point, x87 and CoreMark: PR #6, merged); M5 (7-Zip exactly like native) is in progress.** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
 - **Session 1, continued (2026-10-23/24):**
@@ -197,6 +197,29 @@ Phase 0's lessons still hold. New ones from M1:
   - fxch and fchs on an empty register give the indefinite;
   - fnstenv stores ES and B as they were, then clears them.
 - **Neighbouring x87 forms come along:** the x87 lowering covers forms that share code with the scope but have no fixtures yet (fsub/fsubr, the fi* arithmetic, fst/fist without pop, fcom/fucom/fcompp, fld1, fstcw/fstsw/fclex/fstenv).
+
+## Decisions taken in M5
+
+- **Gap-only forms (the M5 gate):**
+  - `int1` (ICEBP, a debugger's #DB trap) joins the scope rule's exclusions;
+  - the other 21 gap-only forms stay, and all have fixtures;
+  - `census --check` now passes on every program, 7zz.exe included (614 of 614 forms), and CI gates it.
+- **Look things up before implementing.** The shim reads three sources before writing a function:
+  - Wine's source (the wine-11.0 tarball from dl.winehq.org) for Windows' details;
+  - Microsoft's documentation for the contract;
+  - 7-Zip's own source (release `src-7zip-25.01`, unpacked by the targets build) for what 7zz actually calls and when.
+
+  That replaces trial-and-error runs. Our code stays our own: Wine is read, not copied. The clean-room list in `CLAUDE.md` still holds.
+- **An in-memory file system with Win32 and NTFS semantics** (`runtime.md`, "Files, handles and the 7-Zip shim (M5)"). `run-pe --dir` loads a host directory as `C:\work` and writes it back. It ports to browsers (OPFS) later.
+- **The shim stays strict:**
+  - **Exceptions:** stop loudly (Phase 4).
+  - **Thread creation:** stops loudly (Phase 1 has one thread, `-mmt1`).
+  - **`GetProcAddress`:** stops on a function the shim lacks rather than returning NULL, so no run takes a fallback that native Windows wouldn't.
+  - **Machine profile:** fixed and documented: 1 processor, UTC, an empty registry and environment, redirected stdout.
+- **The command matrix** (`tests/sevenzip/README.md`):
+  - deterministic inputs and switches;
+  - expected outputs committed from a native run, with real Windows gating them in CI and Node gating the translated run;
+  - encryption is checked by round trip only, since its salt and IV are random.
 
 ## What works
 
