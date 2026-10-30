@@ -1,12 +1,13 @@
 # Phase 1 status: Translator
 
-**M1 and M2 (PE loading) are done; next is M3 (integer instructions and CRT startup).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**M1, M2 and M3 (integer instructions and CRT startup) are done; next is M4 (SSE floating point, x87 and CoreMark).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
 - **Session 1, continued (2026-10-23/24):**
   - commits in the owner's name and the working-efficiently rules;
   - then M2 with three agents: the Rust side and the JS runtime (deep-worker each), and the test program and CI (builder);
   - paused once and resumed.
+- **Session 1, continued (2026-10-24/30):** M3 with the oracle, translator and CRT-runtime agents (deep-worker each) and the builder, paused twice to stay within the owner's weekly usage.
 
 ## Lessons for future sessions
 
@@ -31,6 +32,10 @@ Phase 0's lessons still hold. New ones from M1:
 - **GCC's default PE linker script puts `__CTOR_LIST__`/`__DTOR_LIST__` data into `.text`.** A linear sweep decodes that data as code; `tests/pe/basic.ld` is the default script without it.
 - **V8 compile measurements need one process per configuration.** "Eager TurboFan" is `--no-liftoff --no-wasm-lazy-compilation`. `--no-wasm-lazy-compilation` alone compiles every function with Liftoff.
 - **BigInt arithmetic is slow in hot JS loops.** Linking 41k blocks took 79 ms with BigInt hashing, and 8.5 ms with 32-bit Numbers.
+- **Replay time is wasm compile time.** Nearly every L1 case has its own encoding: 36,831 modules for 44,256 cases, with compiling at about 95 % of the time. Cranelift's fast settings cut replay by about 30 %; caching per form can't help.
+- **Integer programs need SSE2 integer forms.** GCC -O2 vectorizes integer loops, and MinGW's CRT startup and printf execute `punpck*`, `pshufd`, `paddd` and `packuswb`. So the split between milestones is "exact integer results" against "floating-point arithmetic".
+- **Undefined bits are recorded as the input's values.** That keeps recordings identical across CPU models (the session VM and GitHub's runners).
+- **A fresh agent continues a WIP checkpoint well from the approved design docs.** Resuming a stopped agent reloads its whole transcript, about 1.6 MB here.
 
 ## Decisions taken when planning (2026-10-22)
 
@@ -125,6 +130,39 @@ Phase 0's lessons still hold. New ones from M1:
   - The `jmp` fixtures were recorded first.
   - Its exit code lives in `tests/pe/basic.exitcode`.
 
+## Decisions taken in M3
+
+- **Split with M4:** M3 covers every in-scope integer form, plus every SSE/SSE2 form whose result doesn't depend on floating-point arithmetic (moves, bitwise ops, packed integer arithmetic, compares, shifts, multiplies, shuffles, unpacks, packs) and `fninit`. M4 takes the SSE floating-point arithmetic, compares and conversions, and x87. `hello.exe` moves to M4, because it prints floats.
+- **Phase 1 semantics** (`abi.md`):
+  - `lock` is an ordinary read-modify-write, which is exact with one thread;
+  - FS/GS add their bases from the state block, and 67h computes 32-bit addresses;
+  - DF lives in the state block's RFLAGS;
+  - XMM, MXCSR and the x87 control words live in the state block (M4 may cache XMM in locals);
+  - x87 R0-R7 are preserved.
+- **Faults:** `FAULT_DIVIDE` (#DE) 4, `FAULT_INVALID_OPCODE` (#UD) 5, `FAULT_GENERAL_PROTECTION` (#GP) 6, raised before any side effect, with RIP at the instruction.
+  - Bytes that don't decode raise #UD.
+  - Decodable instructions outside the CPUID profile stay `EXIT_UNSUPPORTED`, for clear diagnostics.
+- **Lowering** (`translator.md`, "Instruction lowering and lazy flags (M3)"):
+  - lazy flag kinds for logic, inc/dec, adc/sbb, shifts, mul;
+  - `FlagsUpdate` records for instructions that change only some flags;
+  - a `div128` helper after the chunks, outside the table;
+  - the 67h forms of string ops, `loop` and `jecxz`, and `int1`, stay unsupported.
+- **Fixture format v2** (`docs/design/fixtures.md`):
+  - SSE and x87 state, FS/GS bases, faults as outcomes;
+  - per-case undefined-register masks;
+  - `rep` instructions recorded step by step;
+  - undefined bits normalized to the input's values.
+- **Generators:** a generic form generator on iced's `OpCodeInfo`, plus hand-written ones for division, string ops, `loop`/`jrcxz` and the miscellaneous forms.
+- **Replay** compiles with Cranelift's fast settings; results are identical.
+- **CRT runtime** (`runtime.md`):
+  - calls from the host into guest code save and restore the state block and `depth`, and nest at most 16 deep;
+  - data imports get storage behind their IAT slot;
+  - the msvcrt and kernel32 shims are strict, following Microsoft's documentation and Wine's `dlls/msvcrt`;
+  - stdout is in text mode (LF → CRLF), and the L2 checks compare the exact CRLF bytes;
+  - the file system is empty: `fopen` for reading fails with ENOENT, and writing stops;
+  - `Sleep` returns at once, and `_amsg_exit` writes its message to stderr;
+  - the `strerror` texts were written from memory, and only the four codes the L2 programs print are checked.
+
 ## What works
 
 | Item | Evidence |
@@ -143,6 +181,20 @@ Phase 0's lessons still hold. New ones from M1:
 | **JS runtime** (`runtime/src/`):<br>• linker<br>• load-plan checks and mapping<br>• thunks and IAT<br>• PEB, TEB, stack and TLS<br>• host calls<br>• shim v0 (`GetStdHandle`, `WriteFile`, `ExitProcess`)<br>• run loop and run-time translation<br>• traces and the `run-pe` CLI | 114 Node tests, including `basic.exe` in both AOT variants. |
 | **M2 test program** (`tests/pe/basic.exe`). It exercises:<br>• output<br>• recursion 1000 deep, past the depth guard<br>• fib<br>• a function-pointer table<br>• a jump table<br>• a function that only a computed pointer reaches<br>• exit code 42 | It matches `basic.expected` and exit code 42 natively (under Wine 9 here, on Windows in CI) and translated in Node. That holds from all entries (1 run-time translation) and from the entry point only (8). `census --check`: 25 of 25 forms have fixtures. |
 | **`jmp` fixtures** | 192 cases (rel8, rel32, r64, m64); replay passes 100 %. |
+
+| **Fixture format v2 and generators** | 67 families, 44,256 cases, recorded natively. `record --check` reproduces all 67 files. |
+| **M3 lowering:**<br>• every in-scope integer form<br>• SSE/SSE2 integer, bitwise and move forms<br>• `fninit`<br>• FS/GS and 67h addressing<br>• `lock`<br>• `rep` string ops<br>• #DE, #UD and #GP faults | Replay 44,256/44,256, with 0 unsupported. |
+| **CRT runtime:** nested guest calls, data imports, the msvcrt and kernel32 functions of the L2 programs | Node tests, including startup, TLS callbacks, `_initterm`, constructors and `atexit`, and `qsort` calling the guest comparator. |
+| **L2 programs** `l2_int.exe` and `l2_crt.exe`: integer code, MinGW CRT startup and printf | Translated in Node, both match their expected CRLF output and their exit codes (0 and 37). Under Wine 9 the native runs match too; Windows checks them natively in CI. |
+
+### Test summary (local, M3, Node 24.22.0)
+
+- `cargo fmt --all --check`, and clippy for the workspace and for `x64wasm-rt` on wasm32: clean.
+- `cargo test --workspace`: 155 passed, 0 failed, 5 ignored (measurements).
+- `record --check`: "67 fixture files match a fresh recording". Replay: 44,256/44,256, 0 unsupported.
+- `tests/pe` and `tests/native` build and prepare: OK. `census --check` on `basic.exe`: OK.
+- `npm run test:node`: 144/144, including both L2 programs. `npm run test:browser`: 4/4.
+- Census of the targets plus the L2 programs: fixtures cover 484 of 509 in-scope forms. The 25 left are M4's floating-point and x87 forms and `int1`.
 
 ### Test summary (local, M2, Node 24.22.0)
 
@@ -244,6 +296,14 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
   - The first translation takes about 24 ms, mostly compiling `x64wasm_rt.wasm`; each later one about 0.6 ms.
   - The entry-point-only variant needs 8 translations, because AOT already finds 46 of its 53 blocks by following direct calls.
 
+**M3:**
+- **Replay** of 44,256 cases (36,831 modules): debug test 63 → 50 s, release 42 → 27 s, after switching to Cranelift's fast settings.
+- **`EXIT_UNSUPPORTED` sites:**
+  - 7zz.exe: 81,372 → 1,202. What's left is out of profile (AVX, AES, SHA, SSSE3, SSE4.1), M4 floating point and x87, 14 `cpuid` and 1 `xgetbv`.
+  - coremark.exe: 87.
+  - hello.exe, `l2_int.exe` and `l2_crt.exe`: 77 each.
+- **7zz.exe after M3:** 129,966 blocks (was 208,426: unsupported instructions no longer split blocks). The module is 27.6 MB, 2.9 MB gzipped, and translates in 1.4 s.
+
 **Census** (details in `docs/design/instruction-scope.md`):
 - Sizes:
   - functions: 6,289 / 134 / 95 in 7zz / coremark / hello;
@@ -251,15 +311,24 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
   - distinct `Code`s: 443.
 - Classes: 97.4 % integer, 1.6 % SSE2, 0.8 % SSE, 74 x87 instructions, no MMX.
 - Out of profile: 56 `Code`s, all in 27 CPUID-dispatched functions of 7zz.exe (AES-NI, SHA-NI, AVX2, SSSE3/SSE4.1 paths and the feature probes).
-- In scope: 491 forms over 383 `Code`s; L1 fixtures cover 134 (27.3 %, with M2's `jmp` fixtures).
+- In scope: 491 forms over 383 `Code`s for the targets; 509 with the M3 L2 programs. After M3, L1 fixtures cover 484 of the 509.
 - Imports: 189 distinct functions in 5 DLLs (kernel32 113, msvcrt 54, advapi32 14, oleaut32 6, user32 2).
 
 ## Known issues and risks
 
 - **Calls are expensive** (10-20× native) until M6 syncs only live registers at boundaries.
 - **22 forms occur only in gap sweeps** (likely data read as code: `std`, `cmc`, `int1`, `loop`, …). The rule as decided counts them; the M5 gate decides whether to drop them.
-- **`testkit census --check` fails** (134 of 491) until the instruction milestones add fixtures. CI doesn't gate on it before M5. It does gate `tests/pe/basic.exe`.
-- **7zz.exe's module is large and slow under Cranelift:** 29.3 MB and 47.6 s. Its 81,372 `EXIT_UNSUPPORTED` sites each store the full state. M3 and M4 lower those instructions, and M6 narrows the state syncs.
+- **`testkit census --check` fails** on the targets: 484 of 509 forms have fixtures. The 25 left are M4's floating-point and x87 forms and `int1` (the M5 gate decides on gap-only forms). CI gates `tests/pe/basic.exe` only.
+- **`cpuid` has no lowering yet.** 7zz.exe executes it while probing features; it comes with M5, with the dedicated test that `instruction-scope.md` requires.
+- **Shim gaps:**
+  - `strerror` is verified only for EACCES, ENOENT, EINVAL and EEXIST;
+  - float printf conversions are missing (M4);
+  - best-fit character mapping is missing;
+  - `VirtualQuery` works only inside the image;
+  - TLS callbacks don't get DLL_PROCESS_DETACH at exit.
+
+  Each of these stops loudly.
+- **7zz.exe's module is large under Cranelift:** 27.6 MB after M3. M6 narrows the state syncs at boundaries.
 - **5 of 138 jump tables in 7zz.exe aren't recovered:** 4 load the table base earlier in the function, and 1 sits in a handler nothing reaches. Run-time translation covers them.
 - **The run-time translator compiles on first use** (about 24 ms). Compiling it while the image loads would hide that.
 - **Runtime limits in Phase 1:**
@@ -273,33 +342,10 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 - **One release publish failed with a transient 403.** The `targets` run of `6d4536c` was refused by the GitHub releases API with "Resource not accessible by integration", although its token had `contents: write`. `hello-7613c87` published 38 s later, and the same step published `targets-7613c87` on the next commit. If it recurs, re-run the job once, or retry the publish step.
 - **Phase 0's translator gaps remain until M3:** `lock` and atomics, FS/GS, the 67h prefix, precise faults.
 
-## Next step: M3 (integer instructions and CRT startup)
+## Next step: M4 (SSE floating point, x87 and CoreMark)
 
-**In progress (paused 2026-10-25).** The plan is in four parts: agent A (oracle and fixtures), agent B (translator lowering), the builder (L2 programs, CI), and agent C (CRT runtime), not started yet.
-- **Committed:**
-  - the M3 contracts (`a4e5674`, `3d56827`, `9cc2f95`, `f6183d9`);
-  - the L2 programs (`2d8c2c9`);
-  - fixture format v2 (`5b4b7eb`);
-  - the lowering split and its design (`703bdfd`, `f94c01e`);
-  - the generic and special form generators (`605be8b`);
-  - **fixtures for every M3 family**: ALU/logic, extensions, setcc/cmovcc, shifts/rotates, mul/div, bit ops, xchg/xadd/cmpxchg, string ops, jrcxz/loop, ud2 and the other miscellaneous forms, SSE integer/bitwise/moves, fninit (`384dae8` … `df9d82d`);
-  - **lowering of the integer families**, FS/GS and 67h addressing, #UD faults, `cmps`/`scas` and `fninit` (`5c75e3d`, `110735b`).
-- **Work in progress, as WIP checkpoints that may not build:**
-  - the SSE integer, bitwise and move lowering (`lift/sse.rs`);
-  - testkit host and replay changes (the last two checkpoints).
-- **Next:**
-  1. Finish the SSE lowering, and run replay to confirm every family is 100 %.
-  2. Make replay faster.
-  3. Agent C: nested guest calls, data imports, msvcrt.
-  4. Integration and the PR.
-
-1. **Fixture format v2:** XMM0-15, MXCSR and x87 state, recorded faults, and per-case flag masks, read and written through `PTRACE_GETFPREGS`/`SETFPREGS`. Every family is re-recorded.
-2. **A generic form generator** built on iced's `OpCodeInfo`. Hand-written generators stay for control flow, stack, string, division and x87-stack forms.
-3. **Fixtures first, then lowering, for:**
-   - every in-scope integer form (`census --check` lists the missing ones);
-   - `lock` and atomics, FS/GS bases, the 67h prefix;
-   - the SSE data moves and x87/MXCSR control words that CRT startup needs.
-
-   Lowering is split into one module per instruction family.
-4. **CRT startup:** the shim grows to what MinGW CRT startup and the L2 programs import, and `hello.exe` and the L2 programs run translated with output equal to their `.expected` files.
-5. **Replay speed:** keep replay fast as fixtures grow to tens of thousands of cases.
+1. **IR value types** (f32, f64, v128). XMM registers move from the state block into locals, synced at boundaries.
+2. **Fixtures first, then lowering, for the in-scope SSE/SSE2 floating-point forms** (arithmetic, compares, conversions). They must follow x86 semantics for NaN, rounding (MXCSR), conversion results and the flags of `comisd`/`ucomisd`.
+3. **The in-scope x87 forms with exact 80-bit results:** `fld`/`fstp`/`fistp`/`fcomp`/`ficomp` and the others the census lists.
+4. **`hello.exe` and a float L2 program** run translated == native. The shim gains msvcrt's float formatting where programs use it.
+5. **CoreMark:** a harness, the run validated translated, and `bench.yml` tracking it on main.
