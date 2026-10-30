@@ -121,6 +121,7 @@ The offsets are those of Windows x64 (`TEB64`, `PEB64`); verify them against Win
 - Let `top` be the 16-byte-aligned top of the free stack. Then `RSP = top − 0x38`, and `[RSP] = SENTINEL_RET`. So RSP ≡ 8 (mod 16), as after a `call`, with 32 bytes of shadow space above the return address.
 - For the entry point, `RCX = PEB` (Windows passes it), every other GPR is 0, and `RFLAGS = 0x202`.
 - GS base = TEB, FS base = 0.
+- The FP state belongs to the thread (M4). It starts as on Windows x64: MXCSR = 0x1F80 (all exceptions masked, round to nearest), FCW = 0x027F, FSW = 0, the tag word 0xFFFF (every x87 register empty), XMM and R0-R7 zero. Host-initiated calls on the thread keep it, as a TLS callback's changes reach the entry point on Windows. (MinGW's CRT startup then runs `fninit`, which sets FCW = 0x037F.)
 
 A guest call ends when the run loop sees `EXIT_LEFT_CODE` at `SENTINEL_RET`. For the entry point, that means the process exits with code `EAX`.
 

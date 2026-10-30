@@ -9,6 +9,7 @@ import {
   FAULT_READ, FAULT_WRITE, FAULT_EXECUTE, SENTINEL_RET, LOOKUP_HEADER_ADDR, MAIN_STATE_ADDR,
   THUNK_BASE, THUNK_SIZE, THUNK_BYTES, HOST_FUNC_INDEX, MIN_LOOKUP_SLOTS, LOOKUP_SLOT_SIZE,
   PEB_ADDR, TEB_ADDR, PROCESS_ID, THREAD_ID, RFLAGS_INIT, GUEST_CALL_FRAME, DLL_PROCESS_ATTACH,
+  STATE_XMM, STATE_MXCSR, STATE_FCW, STATE_FTW, STATE_FP_END, MXCSR_INIT, FCW_INIT, FTW_EMPTY,
   TEB_STACK_BASE, TEB_STACK_LIMIT, TEB_SELF, TEB_CLIENT_ID_PROCESS, TEB_CLIENT_ID_THREAD,
   TEB_TLS_POINTER, TEB_PEB, PEB_BEING_DEBUGGED, PEB_IMAGE_BASE, PEB_NUMBER_OF_PROCESSORS,
   PEB_OS_MAJOR, PEB_OS_MINOR, PEB_OS_BUILD, PEB_OS_PLATFORM_ID, OS_VERSION, gprOffset,
@@ -147,9 +148,11 @@ export class Process {
     this.run = this.aot.run;
     lap('link');
 
-    // 6. PEB, TEB, stack (the state block is fresh, zeroed memory).
+    // 6. PEB, TEB, stack, and the main thread's FP state (the rest of the
+    // state block is fresh, zeroed memory).
     this.state = MAIN_STATE_ADDR;
     this.writePebTeb();
+    this.initFpState();
 
     // 7. TLS data (callbacks run in start()).
     if (this.plan.tls) this.setupTls();
@@ -268,15 +271,28 @@ export class Process {
   reg(i) { return this.mem.u64(this.state + BigInt(gprOffset(i))); }
   setReg(i, v) { this.mem.setU64(this.state + BigInt(gprOffset(i)), v); }
 
+  /** The FP state of a new thread, as on Windows x64 (runtime.md, "Start of the main thread"). */
+  initFpState() {
+    const m = this.mem;
+    m.setU32(this.state + BigInt(STATE_MXCSR), MXCSR_INIT);
+    m.setU16(this.state + BigInt(STATE_FCW), FCW_INIT);
+    m.setU16(this.state + BigInt(STATE_FTW), FTW_EMPTY);
+  }
+
   /**
    * Sets up a host-initiated guest call (runtime.md, "Start of the main
    * thread"): fresh GPRs, Win64 register arguments, RSP = top - 0x38 with
-   * [RSP] = SENTINEL_RET, RFLAGS = 0x202, GS base = TEB, FS base = 0.
+   * [RSP] = SENTINEL_RET, RFLAGS = 0x202, GS base = TEB, FS base = 0. The FP
+   * state (XMM, MXCSR, x87) is the thread's and carries over, as from a TLS
+   * callback to the entry point on Windows.
    */
   prepareCall(target, args = []) {
     if (args.length > 4) throw new ProcessError('host-initiated guest calls take at most 4 arguments');
     const m = this.mem;
+    const fpAt = this.state + BigInt(STATE_XMM);
+    const fp = m.read(fpAt, STATE_FP_END - STATE_XMM);
     m.fill(this.state, Number(STATE_SIZE));
+    m.write(fpAt, fp);
     const top = this.map.stackTop & ~0xfn;
     const rsp = top - GUEST_CALL_FRAME;
     args.forEach((a, i) => this.setReg(ARG_REGS[i], BigInt.asUintN(64, BigInt(a))));
