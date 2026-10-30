@@ -27,6 +27,19 @@ fn replay_reports_mutated_expectations() {
         .position(|c| c.form.starts_with("add_m") && c.output.mem != c.input.mem)
         .expect("a memory-destination case");
     let mem_case = add.cases[m].clone();
+    // Two more memory-destination cases of other forms, for `undefined.mem`.
+    let mut mask_cases: Vec<fixture::Case> = Vec::new();
+    for c in &add.cases {
+        if mask_cases.len() < 2
+            && c.form.starts_with("add_m")
+            && c.form != mem_case.form
+            && c.output.mem != c.input.mem
+            && mask_cases.iter().all(|p| p.form != c.form)
+        {
+            mask_cases.push(c.clone());
+        }
+    }
+    assert_eq!(mask_cases.len(), 2);
     let mut picked: Vec<fixture::Case> = Vec::new();
     for c in &add.cases {
         if picked.len() < 10
@@ -40,6 +53,7 @@ fn replay_reports_mutated_expectations() {
     assert_eq!(picked.len(), 10);
     add.cases = picked;
     add.cases.push(mem_case);
+    add.cases.extend(mask_cases);
     let mut jcc = load("jcc");
     jcc.cases.truncate(8);
 
@@ -78,6 +92,24 @@ fn replay_reports_mutated_expectations() {
     c.input.fp.st[5] = 0x4000_c000_0000_0000_0000;
     c.input.fp.ftw = 0xff3f;
     c.output.fp = c.input.fp;
+    // Not a mutation: memory bits under `undefined.mem` are not compared.
+    // 8. A memory bit outside the mask (the mask covers the other bits).
+    for (n, inside) in [(11, true), (12, false)] {
+        let c = &mut add.cases[n];
+        let k = c
+            .output
+            .mem
+            .iter()
+            .zip(&c.input.mem)
+            .position(|(o, i)| o != i)
+            .unwrap();
+        let addr = c.output.mem[k].addr;
+        c.output.mem[k].bytes[0] ^= 0x81;
+        c.undefined.mem = vec![fixture::MemBlock {
+            addr,
+            bytes: vec![if inside { 0x81 } else { 0x7e }],
+        }];
+    }
     // 7. The branch target.
     jcc.cases[0].output.rip ^= 0x10;
     // Not a mutation: a bit outside flags_mask is not compared.
@@ -91,11 +123,11 @@ fn replay_reports_mutated_expectations() {
     let summary = report.render();
     println!("{summary}");
     let total = report.total();
-    assert_eq!(total.cases, 19, "{summary}");
+    assert_eq!(total.cases, 21, "{summary}");
     if total.unsupported == 0 {
         assert_eq!(
-            total.fail, 7,
-            "exactly the 7 mutated cases must fail:\n{summary}"
+            total.fail, 8,
+            "exactly the 8 mutated cases must fail:\n{summary}"
         );
         for needle in [
             "rax: expected",
@@ -105,12 +137,17 @@ fn replay_reports_mutated_expectations() {
             "xmm3: expected",
             "(EXIT_FAULT, fault #DE)",
             "fcw: expected",
+            "FAIL add[12]",
         ] {
             assert!(
                 summary.contains(needle),
                 "missing `{needle}` in:\n{summary}"
             );
         }
+        assert!(
+            !summary.contains("FAIL add[11]"),
+            "a bit under undefined.mem was compared:\n{summary}"
+        );
     }
     assert!(!report.ok());
 }

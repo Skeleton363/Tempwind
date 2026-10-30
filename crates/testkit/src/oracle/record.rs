@@ -70,7 +70,7 @@ fn to_case(c: &GenCase, output: Output) -> Case {
         bytes: c.bytes.clone(),
         asm: c.asm.clone(),
         flags_mask: c.flags_mask,
-        undefined: c.undefined,
+        undefined: c.undefined.clone(),
         input: c.input.clone(),
         output,
     }
