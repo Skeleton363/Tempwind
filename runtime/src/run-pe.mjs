@@ -2,30 +2,35 @@
 // run-pe: runs a translated 64-bit PE program in Node (docs/design/runtime.md, "CLI").
 //
 //   node runtime/src/run-pe.mjs --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt x64wasm_rt.wasm]
+//       [--fp x64wasm_fp.wasm] [-- ARGS...]
 //
 // stdout and stderr are the guest's, byte for byte, and the exit code is the
 // guest's (POSIX keeps its low 8 bits). When the runtime itself stops with an
 // error, it prints "tempwind: <error>" to stderr and exits with 125.
 // TEMPWIND_TRACE=api,translate,exits traces to stderr.
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { Process, ProcessError } from './process.mjs';
 import { PlanError } from './plan.mjs';
 import { RuntimeTranslator } from './rt.mjs';
+import { loadFp } from './fp.mjs';
 import { parseTrace } from './trace.mjs';
 
 export const RUNTIME_ERROR_EXIT = 125;
-const USAGE = 'usage: run-pe --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt x64wasm_rt.wasm]';
+const USAGE = 'usage: run-pe --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt x64wasm_rt.wasm] [--fp x64wasm_fp.wasm] [-- ARGS...]';
+const DEFAULT_FP = fileURLToPath(new URL('../../target/wasm32-unknown-unknown/release/x64wasm_fp.wasm', import.meta.url));
 
 class UsageError extends Error {}
 
 async function main(argv) {
-  let values;
+  let values, positionals;
   try {
-    ({ values } = parseArgs({
+    ({ values, positionals } = parseArgs({
       args: argv,
-      options: { exe: { type: 'string' }, aot: { type: 'string' }, plan: { type: 'string' }, rt: { type: 'string' } },
-      strict: true, allowPositionals: false,
+      options: { exe: { type: 'string' }, aot: { type: 'string' }, plan: { type: 'string' }, rt: { type: 'string' }, fp: { type: 'string' } },
+      strict: true, allowPositionals: true,
     }));
   } catch (e) {
     throw new UsageError(`${e.message}\n${USAGE}`);
@@ -48,8 +53,20 @@ async function main(argv) {
       throw e instanceof UsageError ? e : new UsageError(`cannot load the run-time translator ${values.rt}: ${e.message}`);
     }
   }
+  // Positionals can only follow `--` (anything else is a mistake): the guest's arguments.
+  const dd = argv.indexOf('--');
+  const guestArgs = dd < 0 ? [] : argv.slice(dd + 1);
+  if (positionals.length !== guestArgs.length) throw new UsageError(`unexpected argument ${positionals[0]}\n${USAGE}`);
+  let fp = null;
+  const fpPath = values.fp ?? (existsSync(DEFAULT_FP) ? DEFAULT_FP : null);
+  if (fpPath) {
+    try { fp = await loadFp(await read(fpPath, 'the floating-point helper module')); } catch (e) {
+      throw e instanceof UsageError ? e : new UsageError(`cannot load the floating-point helper module ${fpPath}: ${e.message}`);
+    }
+  }
   const p = await Process.load({
-    exe, plan, aot, rt, trace,
+    exe, plan, aot, rt, trace, fp,
+    argv: [plan.file, ...guestArgs],
     log: (line) => process.stderr.write(`[tempwind] ${line}\n`),
     onOutput: (stream, bytes) => (stream === 'stdout' ? process.stdout : process.stderr).write(bytes),
   });

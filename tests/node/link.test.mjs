@@ -229,3 +229,15 @@ test('a host function sits in table slot 0 with the guest-function type', () => 
   // The wrapper has exactly the (i64, i32, i64) -> i32 type: an i64 must be a BigInt.
   assert.throws(() => hostFunction(() => 0)(1, 0, 0n), TypeError);
 });
+
+test('a module that imports fp.* needs the floating-point helper module: error names --fp; with fp it is passed through', async () => {
+  const { memory } = createMemory64({ initialPages: 4 });
+  const mk = (fp) => new Linker({ memory, header: 0x1000n, slotsAddr: 0x2000n, slots: 16, fp });
+  // (module (type (func)) (import "fp" "nop" (func (type 0))))
+  const bytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 10, 1, 2, 0x66, 0x70, 3, 0x6e, 0x6f, 0x70, 0, 0]);
+  const module = new WebAssembly.Module(bytes);
+  assert.throws(() => mk(null).reserve(module), /--fp/);
+  const nop = () => {};
+  assert.equal(mk({ nop }).imports(0).fp.nop, nop);
+  assert.equal(mk(null).imports(0).fp, undefined);
+});

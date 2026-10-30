@@ -214,6 +214,7 @@ fn finish(mut prog: ir::Program, entries: &[u64], opts: &Options, dump: bool) ->
     prog.analyze_flags();
     let part = func::partition(&prog, entries, opts);
     let wasm = emit::emit(&prog, &part, opts);
+    let chunk0 = emit::first_chunk_index(&prog);
     let functions = part
         .functions
         .iter()
@@ -223,7 +224,7 @@ fn finish(mut prog: ir::Program, entries: &[u64], opts: &Options, dump: bool) ->
                 .chunks
                 .iter()
                 .map(|&c| ChunkInfo {
-                    wasm_index: emit::F_CHUNK0 + c as u32,
+                    wasm_index: chunk0 + c as u32,
                     blocks: part.chunks[c]
                         .blocks
                         .iter()
@@ -238,7 +239,7 @@ fn finish(mut prog: ir::Program, entries: &[u64], opts: &Options, dump: bool) ->
         blocks: prog.blocks.iter().map(|b| b.addr).collect(),
         functions,
         ir: if dump {
-            part.dump(&prog, emit::F_CHUNK0)
+            part.dump(&prog, chunk0)
         } else {
             String::new()
         },

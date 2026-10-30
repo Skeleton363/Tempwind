@@ -1,0 +1,20 @@
+function 0x1000: wasm function 6 (fn_0x1000)
+
+block 0x1000:
+  0x1000: addps xmm0,[rcx]
+    t0 = and rcx, 0xf
+    fault 6 if t0
+    v0 = vload128 [rcx]
+    v1 = vload128 state[0x100]
+    v2 = fp.addps v1, v0
+    vstore128 state[0x100], v2
+  0x1003: maxpd xmm1,xmm2
+    v0 = vload128 state[0x120]
+    v1 = vload128 state[0x110]
+    v2 = fp.maxpd v1, v0
+    vstore128 state[0x110], v2
+  0x1007: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

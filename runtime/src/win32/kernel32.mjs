@@ -40,8 +40,17 @@ const CP_ACP = 0, CP_THREAD_ACP = 3, CP_1252 = 1252;
 const MB_PRECOMPOSED = 0x1, MB_ERR_INVALID_CHARS = 0x8;
 const WC_NO_BEST_FIT_CHARS = 0x400;
 
+/** Monotonic clock in 100 ns ticks (runtime.md, "kernel32 timing"): process.hrtime in Node, performance.now in browsers. */
+const QPC_FREQUENCY = 10_000_000n;
+function monotonicTicks() {
+  const hr = globalThis.process?.hrtime?.bigint;
+  if (hr) return hr.call(globalThis.process) / 100n;
+  return BigInt(Math.floor(performance.now() * 10_000));
+}
+
 /** Per-process kernel32 state. */
 const k32 = (ctx) => ctx.dllState('kernel32.dll', () => ({
+  clockStart: monotonicTicks(),
   criticalSections: new Map(),
   pages: null,
   unhandledExceptionFilter: 0n,
@@ -258,6 +267,29 @@ export default {
       const last = pageIndex(ctx, pages, addr + size - 1n, 'VirtualProtect');
       ctx.write32(oldP, pages.protect[first]);
       for (let i = first; i <= last; i++) pages.protect[i] = protect;
+      return 1;
+    },
+  },
+
+  // BOOL QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency): 100 ns ticks, as on current Windows.
+  QueryPerformanceFrequency: {
+    args: 1,
+    fn(ctx) {
+      const out = ctx.arg(0);
+      if (out === 0n) ctx.fail('lpFrequency is NULL');
+      ctx.write64(out, QPC_FREQUENCY);
+      return 1;
+    },
+  },
+
+  // BOOL QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount): 100 ns ticks since the process started.
+  QueryPerformanceCounter: {
+    args: 1,
+    fn(ctx) {
+      const out = ctx.arg(0);
+      if (out === 0n) ctx.fail('lpPerformanceCount is NULL');
+      const start = k32(ctx).clockStart; // read first: the state may be created by this call
+      ctx.write64(out, monotonicTicks() - start);
       return 1;
     },
   },

@@ -35,6 +35,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: cargo clippy (x64wasm-fp, wasm32)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p x64wasm-fp --target wasm32-unknown-unknown -- -D warnings
+
       - name: cargo test
         if: ${{ !cancelled() }}
         run: cargo test --workspace
@@ -55,10 +59,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/pe/build.sh
 
-      - name: basic.exe uses only forms with L1 fixtures
-        if: ${{ !cancelled() }}
-        run: cargo run -p testkit --release -- census target/pe/basic.exe --check
-
       - name: Translate basic.exe (AOT, run-time translator)
         if: ${{ !cancelled() }}
         run: tests/pe/prepare.sh
@@ -67,7 +67,20 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/native/build.sh
 
-      - name: Translate the L2 programs (AOT)
+      - name: Fetch coremark.exe (targets release)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
+
+      - name: The programs use only forms with L1 fixtures
+        if: ${{ !cancelled() }}
+        run: >
+          cargo run -p testkit --release -- census
+          target/pe/basic.exe target/targets/coremark.exe target/native/hello.exe
+          target/native/l2_int.exe target/native/l2_crt.exe target/native/l2_float.exe --check
+
+      - name: Translate the L2 programs and CoreMark (AOT), build x64wasm_fp.wasm, write its vectors
         if: ${{ !cancelled() }}
         run: tests/native/prepare.sh
 
@@ -140,7 +153,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install MinGW-w64
         run: scripts/apt-install.sh gcc-mingw-w64-x86-64
-      - name: Build hello.exe and the L2 programs
+      - name: Build hello.exe and the L2 programs (incl. l2_float.exe)
         run: tests/native/build.sh
       - name: Build basic.exe
         run: tests/pe/build.sh
@@ -157,6 +170,7 @@ jobs:
           path: |
             target/native/l2_int.exe
             target/native/l2_crt.exe
+            target/native/l2_float.exe
             target/native/exes.sha256
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
@@ -214,7 +228,7 @@ jobs:
       - name: Run the L2 programs natively and compare
         run: |
           # msvcrt's stdout is in text mode: the raw output is the expected text with CRLF line ends.
-          for name in l2_int l2_crt; do
+          for name in l2_int l2_crt l2_float; do
             code=0
             ./l2-exes/$name.exe > $name.actual || code=$?
             tr -d '\r' < tests/native/$name.expected | sed 's/$/\r/' > $name.expected

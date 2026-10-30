@@ -131,6 +131,12 @@ export const ADDRESS_LIMIT = 0x4_0000_0000n;
 export const STACK_ALIGN = 0x1_0000n;
 export const MIN_LOOKUP_SLOTS = 4096;
 export const RFLAGS_INIT = 0x202n;
+/** A thread's FP state at its start, as on Windows x64: all exceptions masked, round to nearest, x87 at double precision, empty x87 stack. */
+export const MXCSR_INIT = 0x1f80;
+export const FCW_INIT = 0x027f;
+export const FTW_EMPTY = 0xffff;
+/** End of the FP part of the state block (XMM, MXCSR, x87), which belongs to the thread. */
+export const STATE_FP_END = STATE_FPR + 8 * 16;
 /** Host-initiated guest call: RSP = top - GUEST_CALL_FRAME, [RSP] = SENTINEL_RET. */
 export const GUEST_CALL_FRAME = 0x38n;
 export const THUNK_BYTES = [0x0f, 0x0b, ...new Array(14).fill(0xcc)];

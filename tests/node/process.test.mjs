@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   LOOKUP_HEADER_ADDR, LOOKUP_SLOTS, LOOKUP_MASK, THUNK_BASE, PEB_ADDR, TEB_ADDR, SENTINEL_RET,
-  STATE_RIP, STATE_RFLAGS, STATE_EXIT, STATE_GS_BASE, STATE_FAULT_ADDR, STATE_FAULT_KIND,
+  STATE_RIP, STATE_RFLAGS, STATE_XMM, STATE_MXCSR, STATE_FCW, STATE_FSW, STATE_FTW, STATE_EXIT, STATE_GS_BASE, STATE_FAULT_ADDR, STATE_FAULT_KIND,
   EXIT_LEFT_CODE, EXIT_UNSUPPORTED, EXIT_FAULT, FAULT_WRITE, MAIN_STATE_ADDR, gprOffset,
 } from '../../runtime/src/abi.mjs';
 import { Process, ProcessError } from '../../runtime/src/process.mjs';
@@ -87,6 +87,25 @@ test('a host-initiated guest call starts as after a call, with 32 bytes of shado
   assert.equal(p.mem.u64(MAIN_STATE_ADDR + BigInt(STATE_RFLAGS)), 0x202n);
   assert.equal(p.mem.u64(MAIN_STATE_ADDR + BigInt(STATE_GS_BASE)), TEB_ADDR);
   assert.equal(p.mem.u64(MAIN_STATE_ADDR + 0x300n), 0n, 'state block zeroed');
+});
+
+test('the main thread FP state starts as on Windows and carries over between host-initiated calls', async () => {
+  const p = await load();
+  const at = (o) => MAIN_STATE_ADDR + BigInt(o);
+  p.prepareCall(TEXT, [PEB_ADDR]);
+  assert.equal(p.mem.u32(at(STATE_MXCSR)), 0x1f80, 'all SSE exceptions masked, round to nearest');
+  assert.equal(p.mem.u16(at(STATE_FCW)), 0x027f, 'the Windows x64 x87 control word');
+  assert.equal(p.mem.u16(at(STATE_FSW)), 0);
+  assert.equal(p.mem.u16(at(STATE_FTW)), 0xffff, 'every x87 register empty');
+  assert.equal(p.mem.u64(at(STATE_XMM)), 0n);
+  // A TLS callback's FP changes reach the entry point, as on one Windows thread.
+  p.mem.setU32(at(STATE_MXCSR), 0x9fc0);
+  p.mem.setU64(at(STATE_XMM + 0x10), 0x4000_0000_0000_0000n);
+  p.mem.setU16(at(STATE_FCW), 0x037f);
+  p.prepareCall(TEXT, [PEB_ADDR]);
+  assert.equal(p.mem.u32(at(STATE_MXCSR)), 0x9fc0);
+  assert.equal(p.mem.u64(at(STATE_XMM + 0x10)), 0x4000_0000_0000_0000n);
+  assert.equal(p.mem.u16(at(STATE_FCW)), 0x037f);
 });
 
 /** Replaces `run` with a JS script: each call gets (process, state) and returns an exit reason. */

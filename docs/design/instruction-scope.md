@@ -24,6 +24,46 @@ What translated code reports through `cpuid` in Phase 1:
 - Without BMI1 and LZCNT, `F3 0F BC` and `F3 0F BD` execute as `bsf` and `bsr`, not as `tzcnt` and `lzcnt`. The translator and the census decode them that way (`x64wasm::DECODER_OPTIONS`, iced's `NO_MPFX_0FBC | NO_MPFX_0FBD`). MinGW's gdtoa (`__trailz_D2A`, `__d2b_D2A`) relies on this encoding. The oracle records on a CPU that has both features, so fixtures for these forms use the plain `0F BC`/`0F BD` encodings.
 - Raising the profile later only adds forms to the scope.
 
+### `cpuid` results (M4)
+
+`cpuid` (`0F A2`) is lowered from M4; it moved from M5, because MinGW's `fesetround`, `feclearexcept` and `fetestexcept` call `__mingw_has_sse`, which executes it. It reads EAX (the leaf) and ignores ECX (the subleaf). It writes EAX, EBX, ECX and EDX as 32-bit registers, zero-extending them into RAX, RBX, RCX and RDX, and changes no flags. The values describe the profile above and nothing more:
+
+| Leaf (EAX) | EAX | EBX | ECX | EDX |
+|---|---|---|---|---|
+| `0` | `0x1` (highest basic leaf) | `0x706D6554` "Temp" | `0x55504356` "VCPU" | `0x646E6977` "wind" |
+| `1` | `0x600` (family 6, model 0, stepping 0) | `0` | `0x2000` (CMPXCHG16B) | `0x07808101` (FPU, CX8, CMOV, MMX, FXSR, SSE, SSE2) |
+| `0x80000000` | `0x80000004` (highest extended leaf) | `0` | `0` | `0` |
+| `0x80000001` | `0` | `0` | `0x1` (LAHF/SAHF) | `0x20100800` (SYSCALL, NX, LM) |
+| `0x80000002`-`0x80000004` | brand string | | | |
+| any other | `0` | `0` | `0` | `0` |
+
+- The vendor string (EBX, EDX, ECX) is "TempwindVCPU": a vendor of our own, so programs don't apply workarounds for a real CPU model. Software that knows neither vendor takes its generic paths.
+- The brand string is "Tempwind virtual x86-64 CPU" padded with NUL bytes to 48. Leaf `0x80000002` holds bytes 0-15, `…03` bytes 16-31 and `…04` bytes 32-47, each in EAX, EBX, ECX, EDX order (little-endian).
+- Leaf 1 advertises no TSC, CLFSH or HTT, so EBX (CLFLUSH size, logical processor count, APIC ID) is 0. `rdtsc` and `clflush` stay unlowered.
+- Leaves above the highest one return zeros (as on AMD; Intel would repeat the highest basic leaf). Programs that check the highest leaf first, as they should, never see them.
+- The dedicated test (`crates/x64wasm/tests`) translates `cpuid` and checks every row, including leaves 2, 7 and `0x80000005` (zeros), and that RFLAGS and the other registers are unchanged. `cpuid` stays out of the L1 fixtures: a real CPU answers differently.
+
+## M4 additions to the scope
+
+The rule above decides which forms need fixtures. M4 adds forms by decision as well, as M3 did with the SSE/SSE2 integer forms (`docs/status/phase-1.md`, "Decisions taken in M4"):
+
+- **Every SSE/SSE2 floating-point form** with XMM, GPR or memory operands:
+  - `add`, `sub`, `mul`, `div`, `min`, `max` and `sqrt` in `ps`, `ss`, `pd` and `sd`;
+  - `cmpps`, `cmpss`, `cmppd` and `cmpsd` (all eight predicates), and `comiss`, `ucomiss`, `comisd` and `ucomisd`;
+  - the conversions `cvtsi2ss`, `cvtsi2sd`, `cvtss2si`, `cvttss2si`, `cvtsd2si`, `cvttsd2si` (32- and 64-bit GPRs), `cvtss2sd`, `cvtsd2ss`, `cvtps2pd`, `cvtpd2ps`, `cvtdq2ps`, `cvtps2dq`, `cvttps2dq`, `cvtdq2pd`, `cvtpd2dq` and `cvttpd2dq`.
+  - **Excluded:**
+    - `rcpps`, `rcpss`, `rsqrtps` and `rsqrtss`: their results are approximations that differ between Intel and AMD, so their fixtures couldn't be CPU-independent;
+    - the conversions with MMX operands (`cvtpi2ps`, `cvtps2pi`, `cvttps2pi`, `cvtpi2pd`, `cvtpd2pi`, `cvttpd2pi`), which no target uses.
+
+  Phase 2's Wine DLLs and later programs use the whole set, and once the exact soft float and the generators exist, each form costs little.
+- **x87:** the forms of the census, which includes the float L2 program (`tests/native/l2_float.c`, its `long double` code and MinGW's fenv and rounding functions), plus the control forms those functions use: `fnstcw`, `fldcw`, `fnstsw` (m16 and AX), `fnstenv`, `fldenv`, `fnclex` and `fwait`. All share one exact 80-bit core, so more x87 forms are cheap to add when a census needs them. The list, as iced `Code`s:
+  - **loads and stores:** `Fld_m64fp`, `Fld_m80fp`, `Fld_sti`, `Fild_m32int`, `Fild_m64int`, `Fldz`, `Fstp_m32fp`, `Fstp_m64fp`, `Fstp_m80fp`, `Fstp_sti`, `Fistp_m16int`, `Fistp_m32int`, `Fistp_m64int`, `Fxch_st0_sti`;
+  - **arithmetic:** `Fadd_m32fp`, `Fadd_st0_sti`, `Faddp_sti_st0`, `Fsubp_sti_st0`, `Fmul_m64fp`, `Fmul_sti_st0`, `Fmulp_sti_st0`, `Fdiv_st0_sti`, `Fdiv_sti_st0`, `Fdivp_sti_st0`, `Fdivr_st0_sti`, `Fdivrp_sti_st0`, `Fsqrt`, `Frndint`, `Fscale`, `Fabs`, `Fchs`;
+  - **compares:** `Fcomp_m64fp`, `Ficomp_m16int`, `Fcomi_st0_sti`, `Fucomi_st0_sti`, `Fucomip_st0_sti`;
+  - **control:** `Fninit` (M3), `Fnstcw_m2byte`, `Fldcw_m2byte`, `Fnstsw_m2byte`, `Fnstsw_AX`, `Fnstenv_m28byte`, `Fldenv_m28byte`, `Fnclex`, `Wait`.
+  - **Excluded:** the transcendental instructions (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`). Their results depend on the CPU model, so fixtures couldn't be CPU-independent. If a program needs them, they get their own tests.
+- **`cpuid`**, with the dedicated test above.
+
 ## The rule: "all instruction fixtures pass"
 
 1. **Scope S** is every iced-x86 `Code` (one encoding form, for example `Add_rm64_imm8`) that appears in the census of the pinned targets and whose `cpuid_features()` are all in the profile, minus these exclusions:
@@ -103,6 +143,7 @@ MMX has no instructions in these builds. `mov` alone is 34.5 % of all instructio
   - the M3 L2 programs (`tests/native/l2_*.c`) bring the scope to 509 forms;
   - L1 fixtures cover 484 of them: 67 families, 44,256 cases;
   - the 25 left are M4's SSE floating-point and x87 forms and the gap-only `int1`.
+  - Of the 25, `fcomp m64`, `ficomp m16` and `fistp m16`/`m32` occur only in 7zz.exe's `.ctors` data, which the sweep reads as code; M4 records them anyway.
 
 ### Imports (the Win32 shim's surface)
 

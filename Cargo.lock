@@ -897,6 +897,7 @@ dependencies = [
  "serde_json",
  "wasmtime",
  "x64wasm",
+ "x64wasm-fp",
 ]
 
 [[package]]
@@ -1231,6 +1232,10 @@ dependencies = [
  "wasmprinter 0.262.0",
  "x64wasm",
 ]
+
+[[package]]
+name = "x64wasm-fp"
+version = "0.0.0"
 
 [[package]]
 name = "x64wasm-rt"

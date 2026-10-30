@@ -168,8 +168,8 @@ fn ud2_and_undecodable_bytes_fault() {
             prog.dump()
         );
     }
-    // cpuid decodes: it stays unsupported.
-    let prog = lift("0fa2");
+    // rdtsc decodes but isn't lowered: it stays unsupported.
+    let prog = lift("0f31");
     assert!(matches!(
         prog.blocks[0].term,
         Term::Exit {
@@ -189,4 +189,62 @@ fn ud2_and_undecodable_bytes_fault() {
     )
     .unwrap();
     assert!(t.unsupported.is_empty());
+}
+
+/// SSE floating-point forms: the m128 alignment check comes first, then the
+/// floating-point op (which can exit on an unmasked exception and writes
+/// MXCSR), and only then the register, memory or flag writes.
+#[test]
+fn floating_point_ops_come_before_side_effects() {
+    // (code, has an alignment check)
+    let forms = [
+        ("0f5803", true),      // addps xmm0, [rbx]
+        ("660f5c03", true),    // subpd xmm0, [rbx]
+        ("0fc20302", true),    // cmpleps xmm0, [rbx]
+        ("660f5a03", true),    // cvtpd2ps xmm0, [rbx]
+        ("f30fe603", false),   // cvtdq2pd xmm0, [rbx] (m64)
+        ("0f5a03", false),     // cvtps2pd xmm0, [rbx] (m64)
+        ("f30f5803", false),   // addss xmm0, [rbx]
+        ("f20f5103", false),   // sqrtsd xmm0, [rbx]
+        ("f20f2cc1", false),   // cvttsd2si eax, xmm1
+        ("f3480f2d03", false), // cvtss2si rax, [rbx]
+        ("660f2fc1", false),   // comisd xmm0, xmm1
+        ("0f2e03", false),     // ucomiss xmm0, [rbx]
+        ("f2480f2ac0", false), // cvtsi2sd xmm0, rax
+        ("f30f2a03", false),   // cvtsi2ss xmm0, [rbx]
+        ("f20fc2c107", false), // cmpordsd xmm0, xmm1
+    ];
+    for (code, aligned) in forms {
+        let prog = lift(code);
+        let insn = &prog.blocks[0].insns[0];
+        let fp: Vec<usize> = (0..insn.ops.len())
+            .filter(|&i| insn.ops[i].is_fp())
+            .collect();
+        assert_eq!(
+            fp.len(),
+            1,
+            "{code}: one floating-point op\n{}",
+            prog.dump()
+        );
+        let first_effect = insn.ops.iter().position(Op::has_side_effect).unwrap();
+        assert_eq!(
+            first_effect,
+            fp[0],
+            "{code}: a side effect before the floating-point op\n{}",
+            prog.dump()
+        );
+        let fault = insn
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::FaultIf { .. }));
+        assert_eq!(
+            fault.is_some(),
+            aligned,
+            "{code}: alignment check\n{}",
+            prog.dump()
+        );
+        if let Some(f) = fault {
+            assert!(f < fp[0], "{code}: alignment check after the op");
+        }
+    }
 }

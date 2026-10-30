@@ -249,19 +249,52 @@ impl std::fmt::Display for Fault {
     }
 }
 
-/// Result bits the SDM leaves undefined, per register (not compared; the
-/// file holds their input values). All zero: everything is defined.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Result bits the SDM leaves undefined, per register and memory byte (not
+/// compared; the file holds their input values). All zero and no memory
+/// masks: everything is defined.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Undefined {
     pub gprs: [u64; 16],
     pub fp: FpState,
+    /// Bit masks over memory bytes, each inside one compared range.
+    pub mem: Vec<MemBlock>,
 }
 
 impl Undefined {
     pub const NONE: Undefined = Undefined {
         gprs: [0; 16],
         fp: FpState::ZERO,
+        mem: Vec::new(),
     };
+
+    /// The memory mask over the bytes of `block` (0 where nothing is masked).
+    pub fn mem_mask(&self, block: &MemBlock) -> Vec<u8> {
+        let mut out = vec![0u8; block.bytes.len()];
+        for m in &self.mem {
+            for (k, &bits) in m.bytes.iter().enumerate() {
+                let a = m.addr + k as u64;
+                if a >= block.addr && a < block.end() {
+                    out[(a - block.addr) as usize] |= bits;
+                }
+            }
+        }
+        out
+    }
+
+    /// Checks that every memory mask lies inside one of `ranges`.
+    pub fn check_mem(&self, ranges: &[MemBlock]) -> Result<()> {
+        for m in &self.mem {
+            ensure!(
+                ranges
+                    .iter()
+                    .any(|r| m.addr >= r.addr && m.end() <= r.end()),
+                "undefined.mem at {:#x} (+{}) is not inside a compared range",
+                m.addr,
+                m.bytes.len()
+            );
+        }
+        Ok(())
+    }
 
     pub fn is_empty(&self) -> bool {
         *self == Self::NONE
@@ -357,6 +390,12 @@ impl Case {
             let m = u.fp.get(f);
             o.fp.set(f, (o.fp.get(f) & !m) | (i.fp.get(f) & m));
         }
+        for (ob, ib) in o.mem.iter_mut().zip(&i.mem) {
+            let mask = u.mem_mask(ib);
+            for (k, &m) in mask.iter().enumerate() {
+                ob.bytes[k] = (ob.bytes[k] & !m) | (ib.bytes[k] & m);
+            }
+        }
     }
 }
 
@@ -445,6 +484,20 @@ fn undefined_object(u: &Undefined) -> Option<String> {
             json_str(&format!("{:#x}", u.fp.get(f)))
         )
     }));
+    if !u.mem.is_empty() {
+        let blocks: Vec<String> = u
+            .mem
+            .iter()
+            .map(|b| {
+                format!(
+                    "{{\"addr\": {}, \"hex\": {}}}",
+                    json_str(&hex(b.addr)),
+                    json_str(&mem_hex(&b.bytes))
+                )
+            })
+            .collect();
+        parts.push(format!("\"mem\": [{}]", blocks.join(", ")));
+    }
     (!parts.is_empty()).then(|| format!("{{{}}}", parts.join(", ")))
 }
 
@@ -702,7 +755,13 @@ fn parse_undefined(v: Option<&Value>) -> Result<Undefined> {
     let Some(v) = v else { return Ok(u) };
     let obj: &Map<String, Value> = v.as_object().context("`undefined` is not an object")?;
     for (name, value) in obj {
-        if let Some(i) = GPR_NAMES.iter().position(|n| n == name) {
+        if name == "mem" {
+            u.mem = parse_mem(value).context("undefined.mem")?;
+            ensure!(
+                u.mem.iter().all(|m| !m.bytes.is_empty()),
+                "undefined.mem: empty mask"
+            );
+        } else if let Some(i) = GPR_NAMES.iter().position(|n| n == name) {
             u.gprs[i] = parse_u64(value.as_str().context("mask is not a string")?)?;
         } else {
             let f = fp_index(name).with_context(|| format!("unknown register `{name}`"))?;
@@ -814,12 +873,14 @@ pub fn parse(text: &str) -> Result<(Header, Fixture)> {
                 };
                 *slot = block;
             }
+            let undefined = parse_undefined(c.get("undefined"))?;
+            undefined.check_mem(&input.mem)?;
             Ok(Case {
                 form: str_field(c, "form")?.to_string(),
                 bytes: parse_bytes(str_field(c, "bytes")?)?,
                 asm: str_field(c, "asm")?.to_string(),
                 flags_mask: u64_field(c, "flags_mask")?,
-                undefined: parse_undefined(c.get("undefined"))?,
+                undefined,
                 output: Output {
                     gprs: parse_gprs(field(output_v, "gprs")?, &input.gprs)?,
                     rip: u64_field(output_v, "rip")?,
@@ -1015,6 +1076,10 @@ mod tests {
         undefined.gprs[2] = 0xffff_ffff;
         undefined.fp.xmm[3] = 0xff << 120;
         undefined.fp.fsw = 0x4700;
+        undefined.mem = vec![MemBlock {
+            addr: DATA_ADDR + 0x14,
+            bytes: vec![0xff, 0x0f],
+        }];
         let mut rich = plain.clone();
         rich.form = "pxor_xmm_xmmm128/reg".into();
         rich.undefined = undefined;
@@ -1061,6 +1126,10 @@ mod tests {
         assert!(text.contains("\"fault\": {\"kind\": \"DE\"}"));
         assert!(text.contains("\"undefined\": {\"rdx\": \"0xffffffff\""));
         assert!(text.contains("\"fs_base\": \"0x200000\""));
+        assert!(
+            text.contains("\"mem\": [{\"addr\": \"0x200014\", \"hex\": \"ff0f\"}]"),
+            "{text}"
+        );
 
         let mut changed = fixture.clone();
         changed.cases[0].output.rflags ^= 1;
@@ -1079,6 +1148,7 @@ mod tests {
             (|c| c.output.fault = None, "output.fault"),
             (|c| c.input.gs_base = 0, "input.gs_base"),
             (|c| c.undefined.fp.fsw = 0, "undefined"),
+            (|c| c.undefined.mem[0].bytes[1] = 0xf0, "undefined"),
         ] {
             let mut changed = fixture.clone();
             mutate(&mut changed.cases[1]);
@@ -1096,6 +1166,16 @@ mod tests {
             ("\"st0\": \"0x3fff", "\"st0\": \"0x13fff"),
             ("\"fcw\": \"0x37f\"", "\"fcw\": \"0x37e\""),
             ("\"format\": 2", "\"format\": 1"),
+            // A memory mask outside every compared range.
+            (
+                "\"addr\": \"0x200014\", \"hex\": \"ff0f\"",
+                "\"addr\": \"0x200030\", \"hex\": \"ff0f\"",
+            ),
+            // Or straddling the end of one.
+            (
+                "\"addr\": \"0x200014\", \"hex\": \"ff0f\"",
+                "\"addr\": \"0x200023\", \"hex\": \"ff0f\"",
+            ),
         ] {
             assert!(text.contains(from), "{from}");
             let bad = text.replacen(from, to, 1);
@@ -1113,7 +1193,13 @@ mod tests {
         c.output.gprs[2] = 0x3333_3333_4444_4444;
         c.output.fp.xmm[3] = u128::MAX;
         c.output.fp.fsw = 0x4700 | 0x0800;
+        // Input bytes 0x14, 0x15 are 4, 5; the mask is ff 0f.
+        c.output.mem[0].bytes[3] = 0xaa;
+        c.output.mem[0].bytes[4] = 0xaa;
+        c.output.mem[0].bytes[5] = 0xaa;
+        c.output.mem[0].bytes[6] = 0xaa;
         c.normalize();
+        assert_eq!(&c.output.mem[0].bytes[3..7], &[0xaa, 0x04, 0xa5, 0xaa]);
         assert_eq!(c.output.rflags, 0x202);
         assert_eq!(c.output.gprs[2], 0x3333_3333_2222_2222);
         assert_eq!(c.output.fp.xmm[3], u128::MAX >> 8);

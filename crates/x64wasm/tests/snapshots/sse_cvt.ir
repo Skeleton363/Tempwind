@@ -1,0 +1,21 @@
+function 0x1000: wasm function 7 (fn_0x1000)
+
+block 0x1000:
+  0x1000: cvttsd2si eax,xmm0
+    v0 = vload64 state[0x100]
+    t0 = fp.cvttsd2si32 v0
+    rax = t0
+  0x1004: cvtsi2sd xmm1,rax
+    v0 = vload128 state[0x110]
+    v1 = fp.cvtsi642sd v0, rax
+    vstore128 state[0x110], v1
+  0x1009: cvtps2pd xmm2,xmm3
+    v0 = vload64 state[0x130]
+    v1 = vload128 state[0x120]
+    v2 = fp.cvt Ps2Pd v1, v0
+    vstore128 state[0x120], v2
+  0x100c: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

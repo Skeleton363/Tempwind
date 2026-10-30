@@ -17,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 wasmtime.workspace = true
 x64wasm.workspace = true
+x64wasm-fp = { path = "../x64wasm-fp" }
 
 [lints]
 workspace = true

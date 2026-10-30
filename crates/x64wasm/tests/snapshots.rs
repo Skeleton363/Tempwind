@@ -120,3 +120,43 @@ fn div() {
 fn rep_movsb() {
     check("rep_movsb", 0x1000, "f3a4 f3a6 c3");
 }
+
+/// `mulsd xmm0, xmm1; addsd xmm0, [rax]; sqrtsd xmm2, xmm0; ret`: SSE
+/// scalar floating point, each op with its fast path and its helper call.
+#[test]
+fn sse_scalar() {
+    check("sse_scalar", 0x1000, "f20f59c1 f20f5800 f20f51d0 c3");
+}
+
+/// `addps xmm0, [rcx]; maxpd xmm1, xmm2; ret`: packed forms (an alignment
+/// check, a lane test with `all_true`, one helper call per lane).
+#[test]
+fn sse_packed() {
+    check("sse_packed", 0x1000, "0f5801 660f5fca c3");
+}
+
+/// `cvttsd2si eax, xmm0; cvtsi2sd xmm1, rax; cvtps2pd xmm2, xmm3; ret`
+#[test]
+fn sse_cvt() {
+    check("sse_cvt", 0x1000, "f20f2cc0 f2480f2ac8 0f5ad3 c3");
+}
+
+/// `comisd xmm0, xmm1; ja 1f; xor eax, eax; 1: ret`: an eager flag record
+/// feeding a branch.
+#[test]
+fn sse_comisd_branch() {
+    check("sse_comisd_branch", 0x1000, "660f2fc1 7702 31c0 c3");
+}
+
+/// `fld tbyte ptr [rcx]; fild dword ptr [rdx]; faddp st(1), st; fldz;
+/// fucomip st, st(1); fstp tbyte ptr [r8]; seta al; ret`: a `long double`
+/// sequence (inline m80 moves, helper calls, the stack, an eager flag record
+/// from fucomip).
+#[test]
+fn x87_long_double() {
+    check(
+        "x87_long_double",
+        0x1000,
+        "db29 db02 dec1 d9ee dfe9 41db38 0f97c0 c3",
+    );
+}

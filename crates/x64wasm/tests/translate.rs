@@ -393,9 +393,9 @@ fn known_addresses_are_never_decoded() {
 
 #[test]
 fn discovery_continues_after_unsupported_instructions() {
-    // 0x1000: mov eax, 1; rex.w cpuid (unsupported); add eax, 2;
-    // jz 0x100e; nop; ret
-    let code = hex("b801000000 480fa2 83c002 7401 90 c3");
+    // 0x1000: mov eax, 1; vzeroupper (AVX, outside the Phase 1 profile, so
+    // unsupported); add eax, 2; jz 0x100e; nop; ret
+    let code = hex("b801000000 c5f877 83c002 7401 90 c3");
     let t = translate(&code, 0x1000, &Options::default());
     validate(&t.wasm);
     assert_eq!(t.blocks, [0x1000, 0x1008, 0x100d, 0x100e]);

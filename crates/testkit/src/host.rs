@@ -1,8 +1,10 @@
-//! A wasmtime host for translated modules (ABI v3, `docs/design/abi.md`):
+//! A wasmtime host for translated modules (ABI v4, `docs/design/abi.md`):
 //! one memory64 guest memory, the process-wide funcref table, the
 //! `table_base`/`lookup`/`depth` globals, the lookup table in guest memory
-//! (in pages added after the machine's memory), and `run(state)`. Shared by
-//! the spike tests and the oracle replay so both exercise the same ABI.
+//! (in pages added after the machine's memory), the `fp` namespace (the
+//! soft-float helpers of `x64wasm-fp`, defined natively with the status
+//! kept per store), and `run(state)`. Shared by the spike tests and the
+//! oracle replay so both exercise the same ABI.
 
 use std::sync::Arc;
 
@@ -36,6 +38,164 @@ impl Module {
     fn same(&self, other: &Module) -> bool {
         wasmtime::Module::same(&self.module, &other.module)
     }
+}
+
+/// Per-store data: the status word of the last `fp` helper call, which
+/// `fp.status()` returns.
+#[derive(Default)]
+pub struct HostState {
+    fp_status: u32,
+    /// Calls of `fp` helpers other than `status` (slow paths taken).
+    fp_calls: u64,
+}
+
+/// Defines the `fp` helpers (`abi.md`, "Floating-point helper module") as
+/// host functions in `store`, in [`abi::FpFunc`] order.
+fn fp_funcs(store: &mut Store<HostState>) -> Vec<(&'static str, Func)> {
+    use x64wasm_fp as fp;
+    let mut out = Vec::new();
+    // `$f` returns (result, status); the status goes to the store.
+    macro_rules! def {
+        ($name:literal, |$($arg:ident: $t:ty),*| -> $r:ty { $f:expr }) => {
+            out.push((
+                $name,
+                Func::wrap(
+                    &mut *store,
+                    |mut caller: Caller<'_, HostState>, $($arg: $t),*| -> $r {
+                        let (r, status) = $f;
+                        let data = caller.data_mut();
+                        data.fp_status = status;
+                        data.fp_calls += 1;
+                        r as $r
+                    },
+                ),
+            ));
+        };
+    }
+    macro_rules! sse2 {
+        ($($name:literal => $func:ident, $t:ty;)*) => {$(
+            def!($name, |a: $t, b: $t, m: i32| -> $t { fp::$func(a as _, b as _, m as u32) });
+        )*};
+    }
+    sse2! {
+        "f32_add" => f32_add, i32;
+        "f32_sub" => f32_sub, i32;
+        "f32_mul" => f32_mul, i32;
+        "f32_div" => f32_div, i32;
+        "f32_min" => f32_min, i32;
+        "f32_max" => f32_max, i32;
+    }
+    def!("f32_sqrt", |a: i32, m: i32| -> i32 {
+        fp::f32_sqrt(a as u32, m as u32)
+    });
+    sse2! {
+        "f64_add" => f64_add, i64;
+        "f64_sub" => f64_sub, i64;
+        "f64_mul" => f64_mul, i64;
+        "f64_div" => f64_div, i64;
+        "f64_min" => f64_min, i64;
+        "f64_max" => f64_max, i64;
+    }
+    def!("f64_sqrt", |a: i64, m: i32| -> i64 {
+        fp::f64_sqrt(a as u64, m as u32)
+    });
+    def!("f32_cmp", |a: i32, b: i32, p: i32, m: i32| -> i32 {
+        fp::f32_cmp(a as u32, b as u32, p as u32, m as u32)
+    });
+    def!("f64_cmp", |a: i64, b: i64, p: i32, m: i32| -> i32 {
+        fp::f64_cmp(a as u64, b as u64, p as u32, m as u32)
+    });
+    def!("f32_comi", |a: i32, b: i32, s: i32, m: i32| -> i32 {
+        fp::f32_comi(a as u32, b as u32, s as u32, m as u32)
+    });
+    def!("f64_comi", |a: i64, b: i64, s: i32, m: i32| -> i32 {
+        fp::f64_comi(a as u64, b as u64, s as u32, m as u32)
+    });
+    def!("f32_to_f64", |a: i32, m: i32| -> i64 {
+        fp::f32_to_f64(a as u32, m as u32)
+    });
+    def!("f64_to_f32", |a: i64, m: i32| -> i32 {
+        fp::f64_to_f32(a as u64, m as u32)
+    });
+    def!("i32_to_f32", |a: i32, m: i32| -> i32 {
+        fp::i32_to_f32(a, m as u32)
+    });
+    def!("i64_to_f32", |a: i64, m: i32| -> i32 {
+        fp::i64_to_f32(a, m as u32)
+    });
+    def!("i64_to_f64", |a: i64, m: i32| -> i64 {
+        fp::i64_to_f64(a, m as u32)
+    });
+    def!("f32_to_i32", |a: i32, m: i32, t: i32| -> i32 {
+        fp::f32_to_i32(a as u32, m as u32, t as u32)
+    });
+    def!("f64_to_i32", |a: i64, m: i32, t: i32| -> i32 {
+        fp::f64_to_i32(a as u64, m as u32, t as u32)
+    });
+    def!("f32_to_i64", |a: i32, m: i32, t: i32| -> i64 {
+        fp::f32_to_i64(a as u32, m as u32, t as u32)
+    });
+    def!("f64_to_i64", |a: i64, m: i32, t: i32| -> i64 {
+        fp::f64_to_i64(a as u64, m as u32, t as u32)
+    });
+    macro_rules! x87_arith {
+        ($($name:literal => $func:ident;)*) => {$(
+            def!($name, |am: i64, ase: i32, bm: i64, bse: i32, bk: i32, cw: i32| -> i64 {
+                fp::$func(am as u64, ase as u32, bm as u64, bse as u32, bk as u32, cw as u32)
+            });
+        )*};
+    }
+    x87_arith! {
+        "f80_add" => f80_add;
+        "f80_sub" => f80_sub;
+        "f80_subr" => f80_subr;
+        "f80_mul" => f80_mul;
+        "f80_div" => f80_div;
+        "f80_divr" => f80_divr;
+    }
+    def!("f80_sqrt", |am: i64, ase: i32, cw: i32| -> i64 {
+        fp::f80_sqrt(am as u64, ase as u32, cw as u32)
+    });
+    def!("f80_round", |am: i64, ase: i32, cw: i32| -> i64 {
+        fp::f80_round(am as u64, ase as u32, cw as u32)
+    });
+    macro_rules! x87_pair {
+        ($($name:literal => $func:ident;)*) => {$(
+            def!($name, |am: i64, ase: i32, bm: i64, bse: i32, cw: i32| -> i64 {
+                fp::$func(am as u64, ase as u32, bm as u64, bse as u32, cw as u32)
+            });
+        )*};
+    }
+    x87_pair! {
+        "f80_scale" => f80_scale;
+        "f80_prem" => f80_prem;
+        "f80_prem1" => f80_prem1;
+    }
+    def!("f80_load", |bm: i64, bk: i32, cw: i32| -> i64 {
+        fp::f80_load(bm as u64, bk as u32, cw as u32)
+    });
+    def!("f80_store", |am: i64, ase: i32, k: i32, cw: i32| -> i64 {
+        fp::f80_store(am as u64, ase as u32, k as u32, cw as u32)
+    });
+    def!("f80_cmp", |am: i64,
+                     ase: i32,
+                     bm: i64,
+                     bse: i32,
+                     bk: i32,
+                     q: i32,
+                     cw: i32|
+     -> i32 {
+        fp::f80_cmp(
+            am as u64, ase as u32, bm as u64, bse as u32, bk as u32, q as u32, cw as u32,
+        )
+    });
+    out.push((
+        "status",
+        Func::wrap(&mut *store, |caller: Caller<'_, HostState>| -> i32 {
+            caller.data().fp_status as i32
+        }),
+    ));
+    out
 }
 
 impl Host {
@@ -81,7 +241,8 @@ impl Host {
     /// Creates a guest machine with `memory_bytes` of zeroed guest memory,
     /// followed by the pages that hold the lookup table.
     pub fn machine(&self, memory_bytes: u64) -> Result<Machine> {
-        let mut store = Store::new(&self.engine, ());
+        let mut store = Store::new(&self.engine, HostState::default());
+        let fp = fp_funcs(&mut store);
         let pages = memory_bytes.div_ceil(PAGE).max(1);
         let lookup = pages * PAGE;
         let memory = Memory::new(&mut store, MemoryType::new64(pages + 1, None))?;
@@ -108,6 +269,7 @@ impl Host {
             lookup_global,
             depth,
             lookup,
+            fp,
             next_alloc: lookup + SLOTS_OFFSET,
             instances: Vec::new(),
             linked: Vec::new(),
@@ -127,13 +289,15 @@ struct Linked {
 /// that owns them: a process of linked modules.
 pub struct Machine {
     engine: Engine,
-    store: Store<()>,
+    store: Store<HostState>,
     memory: Memory,
     table: Table,
     lookup_global: Global,
     depth: Global,
     /// Guest address of the lookup header.
     lookup: u64,
+    /// The `fp` namespace (v4).
+    fp: Vec<(&'static str, Func)>,
     /// Where the next slot array goes.
     next_alloc: u64,
     /// Instances of modules used on this machine. Each has its own table
@@ -297,6 +461,9 @@ impl Machine {
         linker.define(&self.store, env, abi::TABLE_BASE_NAME, base_global)?;
         linker.define(&self.store, env, abi::LOOKUP_NAME, self.lookup_global)?;
         linker.define(&self.store, env, abi::DEPTH_NAME, self.depth)?;
+        for &(name, func) in &self.fp {
+            linker.define(&self.store, abi::FP_MODULE, name, func)?;
+        }
         let instance = linker.instantiate(&mut self.store, &module.module)?;
         self.instances.push(Linked {
             module: module.clone(),
@@ -332,7 +499,7 @@ impl Machine {
         let memory = self.memory;
         let func = Func::wrap(
             &mut self.store,
-            move |mut caller: Caller<'_, ()>,
+            move |mut caller: Caller<'_, HostState>,
                   state: i64,
                   entry: i32,
                   ret: i64|
@@ -350,6 +517,12 @@ impl Machine {
         self.table
             .set(&mut self.store, index.into(), Ref::Func(Some(func)))?;
         Ok(index)
+    }
+
+    /// The number of `fp` helper calls (other than `status`) on this
+    /// machine so far: how often translated code took a slow path.
+    pub fn fp_calls(&self) -> u64 {
+        self.store.data().fp_calls
     }
 
     /// Calls `run(state_addr)` of `module`, which must be linked, without
@@ -464,4 +637,38 @@ fn checked_range(size: usize, addr: u64, len: usize) -> Result<std::ops::Range<u
         "guest access {addr:#x}+{len:#x} is outside memory of {size:#x} bytes"
     );
     Ok(start..end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The host defines every `fp` export with the signature of the
+    /// contract, in its order.
+    #[test]
+    fn fp_namespace_matches_the_abi() {
+        let host = Host::new().unwrap();
+        let mut store = Store::new(&host.engine, HostState::default());
+        let funcs = fp_funcs(&mut store);
+        let names: Vec<&str> = funcs.iter().map(|&(n, _)| n).collect();
+        let want: Vec<&str> = abi::FpFunc::ALL.iter().map(|f| f.name()).collect();
+        assert_eq!(names, want);
+        let val = |v: &abi::FpVal| match v {
+            abi::FpVal::I32 => "i32",
+            abi::FpVal::I64 => "i64",
+        };
+        let ty = |t: ValType| match t {
+            ValType::I32 => "i32",
+            ValType::I64 => "i64",
+            _ => "other",
+        };
+        for (&(name, func), want) in funcs.iter().zip(abi::FpFunc::ALL) {
+            let t = func.ty(&store);
+            let params: Vec<&str> = t.params().map(ty).collect();
+            let results: Vec<&str> = t.results().map(ty).collect();
+            let want_params: Vec<&str> = want.params().iter().map(val).collect();
+            let want_results: Vec<&str> = want.results().iter().map(val).collect();
+            assert_eq!((params, results), (want_params, want_results), "{name}");
+        }
+    }
 }

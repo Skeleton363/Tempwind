@@ -276,6 +276,87 @@ const SSE_FAMILIES: &[FamilySpec] = &[
     ),
 ];
 
+/// Cases per SSE floating-point form: two passes over the 40 edge pairs
+/// (`sse_fp::PAIRS`), then random ones.
+const FP_COUNT: usize = 112;
+/// Conversions: two passes over up to ~50 edge values, then random ones.
+const FP_CVT_COUNT: usize = 112;
+
+/// SSE and SSE2 floating point (`instruction-scope.md`, "M4 additions to
+/// the scope"); values from `sse_fp.rs`.
+const SSE_FP_FAMILIES: &[FamilySpec] = &[
+    fam(
+        "sse_fp_arith",
+        &[
+            M::Addps,
+            M::Addss,
+            M::Addpd,
+            M::Addsd,
+            M::Subps,
+            M::Subss,
+            M::Subpd,
+            M::Subsd,
+            M::Mulps,
+            M::Mulss,
+            M::Mulpd,
+            M::Mulsd,
+            M::Divps,
+            M::Divss,
+            M::Divpd,
+            M::Divsd,
+            M::Minps,
+            M::Minss,
+            M::Minpd,
+            M::Minsd,
+            M::Maxps,
+            M::Maxss,
+            M::Maxpd,
+            M::Maxsd,
+            M::Sqrtps,
+            M::Sqrtss,
+            M::Sqrtpd,
+            M::Sqrtsd,
+        ],
+        FP_COUNT,
+    ),
+    fam(
+        "sse_fp_cmp",
+        &[
+            M::Cmpps,
+            M::Cmpss,
+            M::Cmppd,
+            M::Cmpsd,
+            M::Comiss,
+            M::Ucomiss,
+            M::Comisd,
+            M::Ucomisd,
+        ],
+        FP_COUNT,
+    ),
+    fam(
+        "sse_fp_cvt",
+        &[
+            M::Cvtsi2ss,
+            M::Cvtsi2sd,
+            M::Cvtss2si,
+            M::Cvttss2si,
+            M::Cvtsd2si,
+            M::Cvttsd2si,
+            M::Cvtss2sd,
+            M::Cvtsd2ss,
+            M::Cvtps2pd,
+            M::Cvtpd2ps,
+            M::Cvtdq2ps,
+            M::Cvtps2dq,
+            M::Cvttps2dq,
+            M::Cvtdq2pd,
+            M::Cvtpd2dq,
+            M::Cvttpd2dq,
+        ],
+        FP_CVT_COUNT,
+    ),
+];
+
 const fn fam(name: &'static str, mnemonics: &'static [Mnemonic], count: usize) -> FamilySpec {
     FamilySpec {
         name,
@@ -401,6 +482,7 @@ pub(super) fn forms(out: &mut Vec<Form>, special: &mut dyn FnMut(&str, &mut Vec<
         .iter()
         .map(|f| (f, false))
         .chain(SSE_FAMILIES.iter().map(|f| (f, true)))
+        .chain(SSE_FP_FAMILIES.iter().map(|f| (f, true)))
     {
         for code in codes_of(f.mnemonics, sse) {
             push_code(out, f.name, f.count, code);
@@ -871,6 +953,16 @@ pub(super) fn case(
         .find_map(|&k| gpr_kind_bits(k))
         .unwrap_or_else(|| (mem_size(code) * 8).clamp(8, 64) as u32);
     let sse = slots.iter().any(|s| matches!(s, Slot::Xmm(_))) || kinds.contains(&K::xmm_or_mem);
+    // SSE floating point: two different registers, so that each edge pair
+    // reaches the instruction as planned; values from `sse_fp`.
+    let fp_plan = super::sse_fp::is_fp(code).then(|| {
+        if let [Slot::Xmm(a), Slot::Xmm(b), ..] = slots[..]
+            && a == b
+        {
+            slots[1] = Slot::Xmm(XMM[(xmm_index(b) + 1 + rng.below(15) as usize) % 16]);
+        }
+        super::sse_fp::plan(rng, idx, code)
+    });
 
     // Values. `role` numbers the operands that take the (a, v) pair.
     let count_op = is_shift(m).then(|| kinds.len() - 1);
@@ -893,6 +985,14 @@ pub(super) fn case(
     let mut count = None;
     for (i, (&slot, &k)) in slots.iter().zip(&kinds).enumerate() {
         let int_bits = gpr_kind_bits(k).unwrap_or(width);
+        if let Some(p) = &fp_plan {
+            values.push(match i {
+                0 => p.dst,
+                1 => p.src,
+                _ => u128::from(p.imm.context("an immediate without a predicate")?),
+            });
+            continue;
+        }
         let v: u128 = if Some(i) == count_op {
             let c = if k == K::imm8_const_1 {
                 1
@@ -1014,6 +1114,9 @@ pub(super) fn case(
     }
     if m == M::Stmxcsr {
         b.fp.mxcsr = (rng.next_u64() & 0xffff) as u32;
+    }
+    if let Some(p) = &fp_plan {
+        b.fp.mxcsr = p.mxcsr;
     }
     // setcc and cmovcc: the condition holds in every other case.
     let cc = bare(code).condition_code();

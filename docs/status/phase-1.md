@@ -1,6 +1,6 @@
 # Phase 1 status: Translator
 
-**M1, M2 and M3 (integer instructions and CRT startup) are done; next is M4 (SSE floating point, x87 and CoreMark).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**M1-M4 are done (M4, SSE floating point, x87 and CoreMark: PR #6, CI green at `22bece6`); next is M5 (7-Zip exactly like native).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
 - **Session 1, continued (2026-10-23/24):**
@@ -8,6 +8,7 @@
   - then M2 with three agents: the Rust side and the JS runtime (deep-worker each), and the test program and CI (builder);
   - paused once and resumed.
 - **Session 1, continued (2026-10-24/30):** M3 with the oracle, translator and CRT-runtime agents (deep-worker each) and the builder, paused twice to stay within the owner's weekly usage.
+- **Session 1, continued (2026-10-30/31):** M4 with the soft-float, fixtures, SSE-translator and x87-translator agents (deep-worker each) and the builder, paused twice for the owner's usage limits and once by a worker restart.
 
 ## Lessons for future sessions
 
@@ -36,6 +37,10 @@ Phase 0's lessons still hold. New ones from M1:
 - **Integer programs need SSE2 integer forms.** GCC -O2 vectorizes integer loops, and MinGW's CRT startup and printf execute `punpck*`, `pshufd`, `paddd` and `packuswb`. So the split between milestones is "exact integer results" against "floating-point arithmetic".
 - **Undefined bits are recorded as the input's values.** That keeps recordings identical across CPU models (the session VM and GitHub's runners).
 - **A fresh agent continues a WIP checkpoint well from the approved design docs.** Resuming a stopped agent reloads its whole transcript, about 1.6 MB here.
+- **Test against the CPU in-process for exact arithmetic.** `x64wasm-fp`'s inline-asm differential tests ran 850M cases, found the CPU's undocumented choices (C1 after fcomi, fprem's reduction), and made the fixtures pass on the first lowering.
+- **Name implementation-dependent behaviour early.** The fixtures and native tests must agree on every vendor CI may use, so mask or vendor-gate what the SDM leaves open before recording.
+- **A zeroed state block isn't a thread's state.** With MXCSR = 0 every SSE exception is unmasked; hosts must set the FP defaults a real thread starts with.
+- **A worker restart stops background agents, but their transcripts survive.** A message resumes them where they were; the coordinator commits their uncommitted files in the meantime.
 
 ## Decisions taken when planning (2026-10-22)
 
@@ -163,6 +168,36 @@ Phase 0's lessons still hold. New ones from M1:
   - `Sleep` returns at once, and `_amsg_exit` writes its message to stderr;
   - the `strerror` texts were written from memory, and only the four codes the L2 programs print are checked.
 
+## Decisions taken in M4
+
+- **Scope** (`instruction-scope.md`, "M4 additions to the scope"):
+  - every SSE/SSE2 floating-point form, scalar and packed, except the approximations `rcp*`/`rsqrt*` (they differ between Intel and AMD) and the conversions with MMX operands;
+  - x87: the census forms, which now include the float L2 program and MinGW's fenv and rounding functions, plus the control forms those use (`fnstcw`, `fldcw`, `fnstsw`, `fnstenv`, `fldenv`, `fnclex`, `fwait`). The transcendentals are excluded, because their results depend on the CPU model.
+  - **Why the whole SSE set:** Phase 2's Wine DLLs and later programs use it, and once the soft float and the generators exist, each form costs little. Coming back later costs more.
+- **`cpuid` moves from M5 to M4:** MinGW's `fesetround`, `feclearexcept` and `fetestexcept` call `__mingw_has_sse`, which executes it. It returns the profile with a vendor of our own, "TempwindVCPU" (values in `instruction-scope.md`).
+- **Exactness:** results, the MXCSR and FSW exception flags, C1 and the x87 tags are bit-exact under every rounding mode, FTZ/DAZ and x87 precision control. An exception that is unmasked and actually occurs exits with `EXIT_UNSUPPORTED`; #XM and #MF come with Windows exceptions in Phase 4.
+- **Soft float in a helper module** (`crates/x64wasm-fp`, `x64wasm_fp.wasm`, ABI v4): `no_std` integer-only Rust. Translated modules import the helpers they use as `fp.*`, and testkit links the same functions natively in wasmtime.
+  - Plain Rust can be checked natively against the CPU with inline asm on millions of cases. Hand-written wasm like `div128` would mean thousands of lines that only the fixtures check.
+- **Inline fast path** (`translator.md`, "Floating point and x87 (M4)"): the plain wasm instruction runs only when its result is provably exact and no flag can change. For arithmetic that means all exceptions masked, round to nearest, PE already set, no denormal operand and a normal result. Everything else calls the helper. x87 arithmetic always calls helpers.
+- **No new IR value types:** FP values travel in `VTemp`s.
+- **XMM stays in the state block:** caching it in locals waits for M6's liveness work, since every boundary already syncs about 80 values.
+- **Float formatting is guest code:** hello.exe, coremark.exe and the L2 programs print floats with MinGW's own printf (pformat and gdtoa), so the shim needs no float formatting. CoreMark needs only `QueryPerformanceCounter` and `QueryPerformanceFrequency` added.
+- **CoreMark tracking** follows the decision taken when Phase 1 was planned (`runtime.md`, "Benchmarks (M4)"):
+  - `bench.yml` runs it translated in Node 24 and natively under wine64 on the same runner, with a windows-2025 native run for the record;
+  - each run calibrates itself to at least 10 s, so it is validated;
+  - main appends one JSON line to the orphan `bench-data` branch, and PRs warn when the ratio is more than 10 % worse.
+
+- **A thread's FP state** starts as on Windows x64 (MXCSR 0x1F80, FCW 0x027F, empty x87 stack) and carries over between the host's calls on that thread (`runtime.md`). The runtime used to zero the whole state block, which unmasked every SSE exception.
+- **`l2_float` is built with `-ftree-vectorize`:** at plain `-O2`, GCC 13 vectorized none of its loops.
+- **Implementation-dependent results stay out of the checks:**
+  - which they are: fprem's partial reduction, the sign when two x87 NaNs tie, the reserved FCW bits, and the pointers, selectors and reserved halves that fnstenv stores;
+  - the fixtures mask them, and `x64wasm-fp`'s native tests compare them bit for bit only on GenuineIntel, the behaviour the soft float follows.
+- **Where this CPU differs from the SDM's text, the recordings win** (`translator.md`):
+  - fcomi, fucomi and fucomip leave C1 unchanged;
+  - fxch and fchs on an empty register give the indefinite;
+  - fnstenv stores ES and B as they were, then clears them.
+- **Neighbouring x87 forms come along:** the x87 lowering covers forms that share code with the scope but have no fixtures yet (fsub/fsubr, the fi* arithmetic, fst/fist without pop, fcom/fucom/fcompp, fld1, fstcw/fstsw/fclex/fstenv).
+
 ## What works
 
 | Item | Evidence |
@@ -186,6 +221,24 @@ Phase 0's lessons still hold. New ones from M1:
 | **M3 lowering:**<br>• every in-scope integer form<br>• SSE/SSE2 integer, bitwise and move forms<br>• `fninit`<br>• FS/GS and 67h addressing<br>• `lock`<br>• `rep` string ops<br>• #DE, #UD and #GP faults | Replay 44,256/44,256, with 0 unsupported. |
 | **CRT runtime:** nested guest calls, data imports, the msvcrt and kernel32 functions of the L2 programs | Node tests, including startup, TLS callbacks, `_initterm`, constructors and `atexit`, and `qsort` calling the guest comparator. |
 | **L2 programs** `l2_int.exe` and `l2_crt.exe`: integer code, MinGW CRT startup and printf | Translated in Node, both match their expected CRLF output and their exit codes (0 and 37). Under Wine 9 the native runs match too; Windows checks them natively in CI. |
+| **Soft float** (`crates/x64wasm-fp`, `x64wasm_fp.wasm`, 24,671 bytes): SSE f32/f64 and x87 80-bit arithmetic, compares and conversions, with exact flags, all rounding modes, FTZ/DAZ and x87 precision control | Native differential tests against the CPU: 10M cases in `cargo test`, 850M in the long runs, no mismatch. The Node test checks the wasm build on 32,800 vectors. |
+| **SSE/SSE2 floating point** (116 forms): inline fast path when provably exact, helpers otherwise, MXCSR flags, comis flags | Replay of `sse_fp_arith`, `sse_fp_cmp` and `sse_fp_cvt`: 12,992/12,992. |
+| **x87** (44 forms): stack, tags, stack faults, C1, the control forms, fcomi flags | Replay of the five `x87_*` families: 2,688/2,688. `x87_paths` checks that unmasked and pending exceptions exit before any change. |
+| **`cpuid`**: the profile, vendor "TempwindVCPU" | The dedicated test checks every leaf. |
+| **hello.exe, `l2_float.exe` and CoreMark** translated | Node: exact CRLF output and exit codes (hello 0, l2_float 23 with 401 lines); CoreMark's run type and CRCs as in `smoke.sh`. All programs translate with 0 unsupported sites. |
+| **Runtime for M4:** the `fp` namespace in every host, `run-pe --fp` and `-- ARGS`, `QueryPerformanceCounter`/`Frequency`, the thread's FP state | Node tests (152 in all). |
+| **CoreMark benchmark** (`tests/bench/coremark.mjs`, `bench.yml`) | Validated runs translated and under wine64 (measurements below). |
+
+### Test summary (local, M4, Node 24.22.0)
+
+- `cargo fmt --all --check`, workspace clippy, and the wasm32 builds of `x64wasm-rt` and `x64wasm-fp`: clean.
+- `cargo test --workspace`: 192 passed, 0 failed. That includes replay of 59,936/59,936 cases with 0 unsupported, the soft float's native tests, `cpuid`, `x87_paths` and the snapshots.
+- `record --check`: "75 fixture files match a fresh recording" (on the session's Intel Xeon).
+- `census --check`:
+  - basic.exe, coremark.exe, hello.exe and the three L2 programs: 426 of 426 forms;
+  - 7zz.exe: 482 of 483, missing only the gap-only `int1`.
+- `npm run test:node`: 152/152, including hello, l2_float, CoreMark and the fp vectors.
+- `npm run test:browser`: 4/4.
 
 ### Test summary (local, M3, Node 24.22.0)
 
@@ -304,6 +357,33 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
   - hello.exe, `l2_int.exe` and `l2_crt.exe`: 77 each.
 - **7zz.exe after M3:** 129,966 blocks (was 208,426: unsupported instructions no longer split blocks). The module is 27.6 MB, 2.9 MB gzipped, and translates in 1.4 s.
 
+**M4** (the session's 4-core Xeon @ 2.10 GHz, Node 24.22.0):
+- **Replay** of 59,936 cases in 75 families takes 41 s in a release build (M3: 27 s for 44,256). M4 adds 15,680 cases (8.5 MB); the fixtures total 26 MB.
+- **`EXIT_UNSUPPORTED` sites:**
+  - 7zz.exe: 1,202 → 907, all forms outside the Phase 1 scope (the CPUID-dispatched AVX, AES, SHA, SSSE3 and SSE4.1 paths);
+  - coremark.exe: 87 → 0;
+  - hello.exe and the L2 programs: 0.
+- **7zz.exe:** 129,683 blocks; the module is 27.6 MB (2.9 MB gzipped) and translates in 1.8 s.
+- **Sizes:**
+  - the run-time translator `x64wasm_rt.wasm`: 445,419 → 707,040 bytes;
+  - the fp module: 24,671 bytes (9,866 gzipped);
+  - an x87 instruction: 400-600 wasm bytes, so about 125 KB of `l2_float`'s 640 KB module.
+- **FP fast path:** a dot product of 10^7 doubles (movsd, mulsd, addsd), against native:
+
+  | Engine | Time | × native |
+  |---|---|---|
+  | V8 default | 88.3 ms | 6.9× |
+  | V8 TurboFan | 90.9 ms | 7.0× |
+  | V8 Liftoff only | 125.6 ms | 9.8× |
+  | wasmtime | 91 ms | 6.5× |
+  | native | 12.9 ms | |
+
+  The integer `sum_loop` runs at 1.0× in the same run. The cost is XMM in the state block (loads and stores around every operation), the MXCSR load and the operand tests: M6's work.
+- **CoreMark** (`tests/bench/coremark.mjs`, medians of 3 validated runs):
+  - translated in Node: 7,379 iterations/s;
+  - native under wine64: 24,684 iterations/s;
+  - ratio 0.30.
+
 **Census** (details in `docs/design/instruction-scope.md`):
 - Sizes:
   - functions: 6,289 / 134 / 95 in 7zz / coremark / hello;
@@ -318,17 +398,24 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 
 - **Calls are expensive** (10-20× native) until M6 syncs only live registers at boundaries.
 - **22 forms occur only in gap sweeps** (likely data read as code: `std`, `cmc`, `int1`, `loop`, …). The rule as decided counts them; the M5 gate decides whether to drop them.
-- **`testkit census --check` fails** on the targets: 484 of 509 forms have fixtures. The 25 left are M4's floating-point and x87 forms and `int1` (the M5 gate decides on gap-only forms). CI gates `tests/pe/basic.exe` only.
-- **`cpuid` has no lowering yet.** 7zz.exe executes it while probing features; it comes with M5, with the dedicated test that `instruction-scope.md` requires.
+- **`testkit census --check` on 7zz.exe** misses only the gap-only `int1`; the M5 gate decides on gap-only forms. CI gates basic.exe, coremark.exe, hello.exe and the L2 programs, which pass.
+- **Floating point is slow:** about 7× native in a dot product (XMM in the state block, an MXCSR load and operand tests per operation). x87 code is large (400-600 wasm bytes per instruction). Both are M6's.
+- **Unmasked floating-point exceptions** exit with `EXIT_UNSUPPORTED` until Windows exceptions (Phase 4).
+- **Checked only on Intel so far:**
+  - `record --check`;
+  - the soft float's native tests;
+  - fnstenv's ES/B recordings.
+
+  The implementation-dependent cases are masked or vendor-aware. CI may run on AMD, and its results decide.
+- **x87 forms lowered without fixtures** (the neighbours under "Decisions taken in M4") get fixtures when a census needs them.
 - **Shim gaps:**
   - `strerror` is verified only for EACCES, ENOENT, EINVAL and EEXIST;
-  - float printf conversions are missing (M4);
   - best-fit character mapping is missing;
   - `VirtualQuery` works only inside the image;
   - TLS callbacks don't get DLL_PROCESS_DETACH at exit.
 
   Each of these stops loudly.
-- **7zz.exe's module is large under Cranelift:** 27.6 MB after M3. M6 narrows the state syncs at boundaries.
+- **7zz.exe's module is large under Cranelift:** 27.6 MB after M4. M6 narrows the state syncs at boundaries.
 - **5 of 138 jump tables in 7zz.exe aren't recovered:** 4 load the table base earlier in the function, and 1 sits in a handler nothing reaches. Run-time translation covers them.
 - **The run-time translator compiles on first use** (about 24 ms). Compiling it while the image loads would hide that.
 - **Runtime limits in Phase 1:**
@@ -342,10 +429,11 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 - **One release publish failed with a transient 403.** The `targets` run of `6d4536c` was refused by the GitHub releases API with "Resource not accessible by integration", although its token had `contents: write`. `hello-7613c87` published 38 s later, and the same step published `targets-7613c87` on the next commit. If it recurs, re-run the job once, or retry the publish step.
 - **Phase 0's translator gaps remain until M3:** `lock` and atomics, FS/GS, the 67h prefix, precise faults.
 
-## Next step: M4 (SSE floating point, x87 and CoreMark)
+## Next step: M5 (7-Zip exactly like native)
 
-1. **IR value types** (f32, f64, v128). XMM registers move from the state block into locals, synced at boundaries.
-2. **Fixtures first, then lowering, for the in-scope SSE/SSE2 floating-point forms** (arithmetic, compares, conversions). They must follow x86 semantics for NaN, rounding (MXCSR), conversion results and the flags of `comisd`/`ucomisd`.
-3. **The in-scope x87 forms with exact 80-bit results:** `fld`/`fstp`/`fistp`/`fcomp`/`ficomp` and the others the census lists.
-4. **`hello.exe` and a float L2 program** run translated == native. The shim gains msvcrt's float formatting where programs use it.
-5. **CoreMark:** a harness, the run validated translated, and `bench.yml` tracking it on main.
+`docs/plan.md`: the command matrix (formats, methods, `t`, `l`, `x`, `h`) matches native Windows byte for byte, every in-scope form has fixtures with replay at 100 %, and `7z b` is tracked.
+
+1. **The gap-only forms:** decide whether the 22 forms seen only in gap sweeps (`int1`, `std`, `cmc`, `loop`, …) stay in scope. That closes `census --check` on 7zz.exe.
+2. **The shim for 7zz.exe's imports** (189 functions: kernel32 113, msvcrt 54, advapi32 14, oleaut32 6, user32 2), with an in-memory file system for archives and trees. It stays strict, following Microsoft's documentation and Wine's source.
+3. **The command matrix:** native outputs from windows-2025 in CI, translated runs in Node, compared byte for byte, with fixed timestamps so archives are deterministic.
+4. **`7zz b -mmt1`** in `bench.yml` next to CoreMark.

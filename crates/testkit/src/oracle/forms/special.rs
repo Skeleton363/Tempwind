@@ -25,6 +25,8 @@ pub(super) enum Special {
     /// push r/m64 with a register operand.
     PushRmReg,
     Fninit,
+    /// The x87 forms of M4 (`x87.rs`).
+    X87(super::x87::Spec),
 }
 
 const DIV_COUNT: usize = 40;
@@ -203,6 +205,7 @@ pub(super) fn after(after: &str, out: &mut Vec<Form>) {
                 Special::PushRmReg,
             );
         }
+        "sse_fp_cvt" => super::x87::forms(out),
         "sse_shuffle" => special(
             out,
             "Fninit/reg".into(),
@@ -237,6 +240,7 @@ pub(super) fn case(
             done(form, b, instr, None, FLAGS_MASK)
         }
         Special::Fninit => gen_fninit(rng, form, defaults),
+        Special::X87(spec) => super::x87::case(rng, form, idx, defaults, spec),
     }
 }
 

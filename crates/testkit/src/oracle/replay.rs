@@ -540,7 +540,15 @@ fn execute(host: &Host, module: &Module, case: &Case) -> Result<Outcome> {
         let off = (b.addr - DATA_ADDR) as usize;
         expected[off..off + b.bytes.len()].copy_from_slice(&b.bytes);
     }
-    let got = m.read(DATA_ADDR, DATA_SIZE as usize)?;
+    let mut got = m.read(DATA_ADDR, DATA_SIZE as usize)?;
+    // Bits under `undefined.mem` are not compared.
+    for u in &undef.mem {
+        let off = (u.addr - DATA_ADDR) as usize;
+        for (k, &mask) in u.bytes.iter().enumerate() {
+            let (g, e) = (&mut got[off + k], expected[off + k]);
+            *g = (*g & !mask) | (e & mask);
+        }
+    }
     mem_diffs(DATA_ADDR, &expected, &got, &mut diffs);
     let mut code = vec![0u8; CODE_SIZE as usize];
     code[..case.bytes.len()].copy_from_slice(&case.bytes);

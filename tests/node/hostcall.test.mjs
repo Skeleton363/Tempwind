@@ -174,7 +174,7 @@ test('shim lookup is case-insensitive in the DLL only', () => {
   assert.deepEqual(Object.keys(SHIM['kernel32.dll']).sort(), [
     'DeleteCriticalSection', 'EnterCriticalSection', 'ExitProcess', 'GetLastError', 'GetStdHandle',
     'InitializeCriticalSection', 'IsDBCSLeadByteEx', 'LeaveCriticalSection', 'MultiByteToWideChar',
-    'SetLastError', 'SetUnhandledExceptionFilter', 'Sleep', 'TlsGetValue', 'VirtualProtect', 'VirtualQuery',
+    'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'SetLastError', 'SetUnhandledExceptionFilter', 'Sleep', 'TlsGetValue', 'VirtualProtect', 'VirtualQuery',
     'WideCharToMultiByte', 'WriteFile',
   ]);
 });

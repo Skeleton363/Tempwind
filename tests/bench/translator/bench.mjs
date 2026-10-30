@@ -19,7 +19,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { cpus, loadavg } from 'node:os';
-import { deepest, load, timeCase } from './core.mjs';
+import { deepest, load, setFp, timeCase } from './core.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../../..');
@@ -43,6 +43,9 @@ const f1 = (x) => x.toFixed(1).padStart(8);
 if (args.includes('--child')) {
   // One configuration: print one JSON object.
   const cases = await load(dir, async (p) => new Uint8Array(readFileSync(p)));
+  const fpPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../target/wasm32-unknown-unknown/release/x64wasm_fp.wasm');
+  // Synchronous: an awaited compile never settles under --no-wasm-lazy-compilation.
+  setFp(new WebAssembly.Instance(new WebAssembly.Module(readFileSync(fpPath)), {}).exports);
   const out = { regions: [], timed: [], depth: {} };
   for (const [name, c] of Object.entries(cases)) {
     if (!name.startsWith('region_')) continue;
@@ -53,7 +56,7 @@ if (args.includes('--child')) {
     }
     out.regions.push({ name, bytes: c.bytes.length, chunks: c.spec.chunks, options: c.spec.options, ...best });
   }
-  for (const name of ['sum_loop', 'fib_rec', 'byte_calls']) {
+  for (const name of ['sum_loop', 'fib_rec', 'byte_calls', 'dot_product']) {
     const c = cases[name];
     const t = await timeCase(c.spec, c.bytes, Math.max(runs, 5));
     out.timed.push({ name, nativeMs: c.spec.nativeMs, ...t });

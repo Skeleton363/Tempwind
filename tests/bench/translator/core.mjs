@@ -9,6 +9,9 @@ import { hexToBytes, caseLookupLayout, assertV3, linkCase } from '../../../runti
 
 const now = () => performance.now();
 let uniq = 0;
+/** Exports of x64wasm_fp.wasm, for cases whose modules import `fp` (ABI v4). */
+let fpExports = null;
+export function setFp(exports) { fpExports = exports; }
 
 /**
  * The module bytes plus a custom section that differs on every call, so
@@ -26,7 +29,7 @@ export function freshBytes(bytes) {
 
 /**
  * A guest machine for one case: memory (with the lookup table in pages after
- * memoryBytes, as run.mjs places it), initial image, `run`. ABI v3 modules only.
+ * memoryBytes, as run.mjs places it), initial image, `run`. ABI v3 and v4 modules.
  */
 export class Machine {
   constructor(spec, module) {
@@ -40,7 +43,7 @@ export class Machine {
 
   /** Links the module (table, globals, lookup slots) and takes its `run`. */
   async instantiate(module) {
-    ({ run: this.run } = await linkCase(module, this.memory, this.layout));
+    ({ run: this.run } = await linkCase(module, this.memory, this.layout, fpExports));
   }
 
   /** Writes the initial memory and state; `regs` overrides registers. */
