@@ -79,17 +79,18 @@ fn falls_off_the_region_with_left_code() {
 
 #[test]
 fn unsupported_exits_before_the_instruction() {
-    // mov eax, imm32 (5 bytes); cmp rcx, rdx (3 bytes); ud2
-    let ud2_at = BASE + 8;
+    // mov eax, imm32 (5 bytes); cmp rcx, rdx (3 bytes); vzeroupper (AVX,
+    // outside the profile: it stays unsupported)
+    let unsupported_at = BASE + 8;
     let c = code(|a| {
         a.mov(eax, 5)?;
         a.cmp(rcx, rdx)?;
-        a.ud2()?;
+        a.db(&[0xc5, 0xf8, 0x77])?;
         a.mov(eax, 6)
     });
     let out = run(&c, &state(&[(RCX, 1), (RDX, 2)]));
     assert_eq!(out.exit, abi::EXIT_UNSUPPORTED);
-    assert_eq!(out.rip, ud2_at);
+    assert_eq!(out.rip, unsupported_at);
     assert_eq!(out.gpr[RAX], 5);
     // Flags of `cmp 1, 2`: CF, SF, AF, PF (0xff has even parity).
     let status = out.rflags & flags::STATUS;
@@ -100,17 +101,15 @@ fn unsupported_exits_before_the_instruction() {
 #[test]
 fn unsupported_forms() {
     let cases: Vec<(&str, Vec<u8>)> = vec![
-        ("fs segment", code(|a| a.mov(rax, qword_ptr(0x10).fs()))),
-        ("gs segment", code(|a| a.add(qword_ptr(rbx).gs(), 1))),
-        ("lock prefix", code(|a| a.lock().add(qword_ptr(rbx), rax))),
-        ("address size prefix", vec![0x67, 0x48, 0x8d, 0x04, 0x08]), // lea rax, [eax+ecx]
         ("push r16", vec![0x66, 0x50]),
         ("pop r16", vec![0x66, 0x58]),
         ("push imm16", vec![0x66, 0x6a, 0x01]),
         ("mov from segment register", vec![0x8c, 0xd8]), // mov eax, ds
-        ("invalid opcode", vec![0x06, 0x90]),            // push es: invalid in 64-bit mode
         ("retf", vec![0xcb]),
         ("int3", vec![0xcc]),
+        ("int1", vec![0xf1]),
+        ("address size prefix on jecxz", vec![0x67, 0xe3, 0x00]),
+        ("outside the profile (AVX)", vec![0xc5, 0xf8, 0x77]), // vzeroupper
     ];
     for (name, c) in cases {
         let input = state(&[(RAX, 0x1234), (RBX, 0x9000)]);
@@ -119,6 +118,43 @@ fn unsupported_forms() {
         assert_eq!(out.rip, BASE, "{name}");
         assert_eq!(out.gpr, input.gpr, "{name}: registers unchanged");
         assert_eq!(out.rflags, input.rflags, "{name}: flags unchanged");
+    }
+}
+
+#[test]
+fn m3_prefix_and_segment_forms_are_translated() {
+    // Unsupported up to M2; translated since M3 (abi.md, "Instruction
+    // semantics (Phase 1)"). FS and GS bases are zero in this state.
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("fs segment", code(|a| a.mov(rax, qword_ptr(0x10).fs()))),
+        ("gs segment", code(|a| a.add(qword_ptr(rbx).gs(), 1))),
+        ("lock prefix", code(|a| a.lock().add(qword_ptr(rbx), rax))),
+        ("address size prefix", vec![0x67, 0x48, 0x8d, 0x04, 0x08]), // lea rax, [eax+ecx]
+    ];
+    for (name, c) in cases {
+        let out = run(&c, &state(&[(RAX, 0x1234), (RBX, 0x9000)]));
+        assert_eq!(out.exit, abi::EXIT_LEFT_CODE, "{name}");
+        assert_eq!(out.rip, end(&c), "{name}");
+    }
+}
+
+#[test]
+fn undecodable_bytes_fault_invalid_opcode() {
+    // push es (invalid in 64-bit mode) and ud2: #UD at the instruction,
+    // before any side effect.
+    for (name, c) in [("push es", vec![0x06, 0x90]), ("ud2", vec![0x0f, 0x0b])] {
+        let input = state(&[(RAX, 0x1234), (RBX, 0x9000)]);
+        let r = run_with(&c, &[BASE], &input, &[]);
+        assert_eq!(r.out.exit, abi::EXIT_FAULT, "{name}");
+        assert_eq!(r.out.rip, BASE, "{name}");
+        assert_eq!(r.out.gpr, input.gpr, "{name}: registers unchanged");
+        assert_eq!(r.out.rflags, input.rflags, "{name}: flags unchanged");
+        let kind = r.machine.read(STATE + abi::STATE_FAULT_KIND, 4).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(kind.try_into().unwrap()),
+            abi::FAULT_INVALID_OPCODE,
+            "{name}"
+        );
     }
 }
 

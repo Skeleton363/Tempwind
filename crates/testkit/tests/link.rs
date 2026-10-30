@@ -362,9 +362,10 @@ fn run_time_translation_links_with_the_image() {
 
 #[test]
 fn unsupported_instructions_still_exit_with_later_code_translated() {
-    // mov eax, 1; movsxd rax, ecx (unsupported); add eax, 2; ret
+    // mov eax, 1; vzeroupper (AVX: outside the profile, so it stays
+    // unsupported); add eax, 2; ret
     let host = Host::new().unwrap();
-    let bytes = vec![0xb8, 1, 0, 0, 0, 0x48, 0x63, 0xc1, 0x83, 0xc0, 0x02, 0xc3];
+    let bytes = vec![0xb8, 1, 0, 0, 0, 0xc5, 0xf8, 0x77, 0x83, 0xc0, 0x02, 0xc3];
     let t = x64wasm::translate(
         CodeRegion {
             base: A,
