@@ -338,6 +338,12 @@ pub fn write(out: &Path) -> Result<()> {
             true,
         ),
         (
+            "dot_product".into(),
+            dot_product(10_000_000)?,
+            Options::default(),
+            true,
+        ),
+        (
             "deep_probe".into(),
             deep_probe(1000)?,
             no_guard.clone(),
