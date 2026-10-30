@@ -24,7 +24,9 @@ export class HostStop {
  * @typedef {{call: (target: bigint, args: bigint[]) => ({rax: bigint} | {exitCode: number} | {error: string}),
  *   alloc: (size: bigint, align: bigint) => bigint, dllState: (dll: string, init: () => object) => object,
  *   dataAddress: (dll: string, name: string) => bigint | undefined, argv: string[],
- *   image: {base: bigint, size: bigint, sizeOfHeaders: bigint, sections: object[]} | null}} HostServices
+ *   image: {base: bigint, size: bigint, sizeOfHeaders: bigint, sections: object[]} | null,
+ *   vfs?: import('./win32/vfs.mjs').Vfs, procAddress?: (dll: string, name: string) => bigint | undefined,
+ *   startTime?: bigint, programPath?: string}} HostServices
  */
 const unavailable = (what) => () => { throw new HostStop({ error: `${what} is not available in this context` }); };
 const NO_HOST = {
@@ -131,6 +133,27 @@ export class HostContext {
 
   /** The program's command line as argv strings (argv[0] = program name). */
   get argv() { return this.host.argv; }
+
+  /** The process's file system (win32/vfs.mjs). */
+  get vfs() {
+    if (!this.host.vfs) this.fail('the file system is not available in this context');
+    return this.host.vfs;
+  }
+
+  /**
+   * A callable address for shim function `dll!name` (GetProcAddress), or
+   * undefined if the shim lacks it.
+   */
+  procAddress(dll, name) {
+    if (!this.host.procAddress) this.fail('GetProcAddress thunks are not available in this context');
+    return this.host.procAddress(dll.toLowerCase(), name);
+  }
+
+  /** The FILETIME the process started at. */
+  get startTime() { return this.host.startTime ?? 0n; }
+
+  /** The program's path in the file system (GetModuleFileNameW(NULL)). */
+  get programPath() { return this.host.programPath ?? 'C:\\tempwind\\program.exe'; }
 
   /** Reads a NUL-terminated byte string (at most `max` bytes before the NUL). */
   readCString(addr, max = 1 << 20) {

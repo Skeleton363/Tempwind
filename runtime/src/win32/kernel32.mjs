@@ -1,4 +1,6 @@
-// kernel32.dll, shim v0 (docs/design/runtime.md, "Shim rules"). Each entry:
+// kernel32.dll: the M2-M4 functions (docs/design/runtime.md, "Shim rules");
+// files are in kernel32-files.mjs and the rest of M5 in kernel32-system.mjs,
+// merged in index.mjs. Each entry:
 // `args` (the Win64 argument count, for traces) and `fn(ctx)` returning the
 // value for RAX (undefined for none). Unsupported cases stop with ctx.fail.
 
@@ -121,30 +123,6 @@ export default {
     },
   },
 
-  // BOOL WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite,
-  //                LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped)
-  WriteFile: {
-    args: 5,
-    fn(ctx) {
-      const handle = ctx.arg(0);
-      const buffer = ctx.arg(1);
-      const count = ctx.arg32(2);
-      const written = ctx.arg(3);
-      const overlapped = ctx.arg(4);
-      if (overlapped !== 0n) ctx.fail(`lpOverlapped ${hex(overlapped)}: overlapped I/O is not supported`);
-      // Microsoft: lpNumberOfBytesWritten can be NULL only when lpOverlapped is not NULL.
-      if (written === 0n) ctx.fail('lpNumberOfBytesWritten is NULL without lpOverlapped');
-      let stream;
-      if (handle === STDOUT_HANDLE) stream = 'stdout';
-      else if (handle === STDERR_HANDLE) stream = 'stderr';
-      else ctx.fail(`hFile ${hex(handle)}: not a writable handle (only the standard output and error handles are)`);
-      const bytes = count ? ctx.read(buffer, count) : new Uint8Array(0);
-      ctx.write32(written, count);
-      ctx.output(stream, bytes);
-      return 1n;
-    },
-  },
-
   // DWORD GetLastError(void)
   GetLastError: { args: 0, fn: (ctx) => ctx.lastError() },
 
@@ -176,6 +154,20 @@ export default {
       ctx.write32(cs + CS_LOCK_COUNT, -2);
       ctx.write32(cs + CS_RECURSION_COUNT, n);
       ctx.write64(cs + CS_OWNING_THREAD, BigInt(THREAD_ID));
+    },
+  },
+
+  // BOOL TryEnterCriticalSection(LPCRITICAL_SECTION): with one thread it always succeeds.
+  TryEnterCriticalSection: {
+    args: 1,
+    fn(ctx) {
+      const cs = ctx.arg(0);
+      const n = criticalSection(ctx, cs, 'TryEnterCriticalSection') + 1;
+      k32(ctx).criticalSections.set(cs, n);
+      ctx.write32(cs + CS_LOCK_COUNT, -2);
+      ctx.write32(cs + CS_RECURSION_COUNT, n);
+      ctx.write64(cs + CS_OWNING_THREAD, BigInt(THREAD_ID));
+      return 1;
     },
   },
 
