@@ -1,6 +1,6 @@
 # Phase 1 status: Translator
 
-**M1, M2 and M3 are done. M4 (SSE floating point, x87 and CoreMark) is done locally; its draft PR's CI decides. Next is M5 (7-Zip exactly like native).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**M1-M4 are done (M4, SSE floating point, x87 and CoreMark: PR #6, CI green at `22bece6`); next is M5 (7-Zip exactly like native).** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
 - **Session 1, continued (2026-10-23/24):**
