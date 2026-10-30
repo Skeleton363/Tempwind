@@ -23,13 +23,55 @@ impl Rng {
 
 /// Positive f32 edges; the tests add the negatives.
 pub const F32_EDGES: &[u32] = &[
-    0x0000_0000, 0x0000_0001, 0x0000_0002, 0x0000_0003, 0x003F_FFFF, 0x0040_0000, 0x0040_0001,
-    0x007F_FFFE, 0x007F_FFFF, 0x0080_0000, 0x0080_0001, 0x00FF_FFFF, 0x0100_0000, 0x0C00_0000,
-    0x1F80_0000, 0x3380_0000, 0x3380_0001, 0x3400_0000, 0x3E80_0000, 0x3F00_0000, 0x3F7F_FFFF,
-    0x3F80_0000, 0x3F80_0001, 0x3FC0_0000, 0x4000_0000, 0x4020_0000, 0x4040_0000, 0x4049_0FDB,
-    0x4B00_0000, 0x4B7F_FFFF, 0x4B80_0000, 0x4EFF_FFFF, 0x4F00_0000, 0x4F00_0001, 0x5EFF_FFFF,
-    0x5F00_0000, 0x5F80_0000, 0x7EFF_FFFF, 0x7F00_0000, 0x7F7F_FFFE, 0x7F7F_FFFF, 0x7F80_0000,
-    0x7F80_0001, 0x7FA0_0000, 0x7FBF_FFFF, 0x7FC0_0000, 0x7FC0_0001, 0x7FE0_0000, 0x7FFF_FFFF,
+    0x0000_0000,
+    0x0000_0001,
+    0x0000_0002,
+    0x0000_0003,
+    0x003F_FFFF,
+    0x0040_0000,
+    0x0040_0001,
+    0x007F_FFFE,
+    0x007F_FFFF,
+    0x0080_0000,
+    0x0080_0001,
+    0x00FF_FFFF,
+    0x0100_0000,
+    0x0C00_0000,
+    0x1F80_0000,
+    0x3380_0000,
+    0x3380_0001,
+    0x3400_0000,
+    0x3E80_0000,
+    0x3F00_0000,
+    0x3F7F_FFFF,
+    0x3F80_0000,
+    0x3F80_0001,
+    0x3FC0_0000,
+    0x4000_0000,
+    0x4020_0000,
+    0x4040_0000,
+    0x4049_0FDB,
+    0x4B00_0000,
+    0x4B7F_FFFF,
+    0x4B80_0000,
+    0x4EFF_FFFF,
+    0x4F00_0000,
+    0x4F00_0001,
+    0x5EFF_FFFF,
+    0x5F00_0000,
+    0x5F80_0000,
+    0x7EFF_FFFF,
+    0x7F00_0000,
+    0x7F7F_FFFE,
+    0x7F7F_FFFF,
+    0x7F80_0000,
+    0x7F80_0001,
+    0x7FA0_0000,
+    0x7FBF_FFFF,
+    0x7FC0_0000,
+    0x7FC0_0001,
+    0x7FE0_0000,
+    0x7FFF_FFFF,
 ];
 
 pub const F64_EDGES: &[u64] = &[
@@ -99,8 +141,23 @@ pub fn with_neg64(xs: &[u64]) -> Vec<u64> {
 }
 
 pub const I32_EDGES: &[i32] = &[
-    0, 1, -1, 2, 3, 0x7F, 0xFF_FFFF, 0x100_0000, 0x100_0001, 0x100_0003, 0x7FFF_FF80, 0x7FFF_FFC0,
-    0x7FFF_FFFF, -0x7FFF_FFFF, i32::MIN, -0x100_0001, 0x5555_5555,
+    0,
+    1,
+    -1,
+    2,
+    3,
+    0x7F,
+    0xFF_FFFF,
+    0x100_0000,
+    0x100_0001,
+    0x100_0003,
+    0x7FFF_FF80,
+    0x7FFF_FFC0,
+    0x7FFF_FFFF,
+    -0x7FFF_FFFF,
+    i32::MIN,
+    -0x100_0001,
+    0x5555_5555,
 ];
 pub const I64_EDGES: &[i64] = &[
     0,
@@ -125,7 +182,11 @@ pub const I64_EDGES: &[i64] = &[
 pub fn rand_f32(r: &mut Rng) -> u32 {
     match r.below(4) {
         0 => r.next() as u32,
-        1 => r.pick(F32_EDGES) ^ ((r.next() as u32) & r.pick(&[1, 3, 0xFF, 0x7F_FFFF])) ^ ((r.below(2) as u32) << 31),
+        1 => {
+            r.pick(F32_EDGES)
+                ^ ((r.next() as u32) & r.pick(&[1, 3, 0xFF, 0x7F_FFFF]))
+                ^ ((r.below(2) as u32) << 31)
+        }
         _ => {
             let e = match r.below(4) {
                 0 => r.below(8) as u32,
@@ -146,7 +207,11 @@ pub fn rand_f32(r: &mut Rng) -> u32 {
 pub fn rand_f64(r: &mut Rng) -> u64 {
     match r.below(4) {
         0 => r.next(),
-        1 => r.pick(F64_EDGES) ^ (r.next() & r.pick(&[1, 3, 0xFFFF, 0xF_FFFF_FFFF_FFFF, 0x1FFF_FFFF])) ^ (r.below(2) << 63),
+        1 => {
+            r.pick(F64_EDGES)
+                ^ (r.next() & r.pick(&[1, 3, 0xFFFF, 0xF_FFFF_FFFF_FFFF, 0x1FFF_FFFF]))
+                ^ (r.below(2) << 63)
+        }
         _ => {
             let e = match r.below(5) {
                 0 => r.below(8),
@@ -183,12 +248,20 @@ pub fn rand_i64(r: &mut Rng) -> i64 {
 /// MXCSR with all exceptions masked, the given RC/FTZ/DAZ combination
 /// (0..16) and the given sticky flags.
 pub fn mxcsr(mode: u32, sticky: u32) -> u32 {
-    0x1F80 | ((mode & 3) << 13) | if mode & 4 != 0 { 0x8000 } else { 0 } | if mode & 8 != 0 { 0x40 } else { 0 } | (sticky & 0x3F)
+    0x1F80
+        | ((mode & 3) << 13)
+        | if mode & 4 != 0 { 0x8000 } else { 0 }
+        | if mode & 8 != 0 { 0x40 } else { 0 }
+        | (sticky & 0x3F)
 }
 
 /// Random sticky flags: none half the time.
 pub fn sticky(r: &mut Rng) -> u32 {
-    if r.below(2) == 0 { 0 } else { r.below(64) as u32 }
+    if r.below(2) == 0 {
+        0
+    } else {
+        r.below(64) as u32
+    }
 }
 
 // ---- x87 ----
@@ -218,7 +291,7 @@ pub const F80_EDGES: &[(u64, u32)] = &[
     (0x8000_0000_0000_0C00, 0x3FFF),
     (0xFFFF_FF80_0000_0000, 0x3FFF),
     (0xFFFF_FFFF_FFFF_FC00, 0x3FFF),
-    (0xC90F_DAA2_2168_C235, 0x4000), // pi
+    (0xC90F_DAA2_2168_C235, 0x4000),      // pi
     (0x8000_0000_0000_0000, 0x3FFF + 15), // 2^15
     (0xFFFE_0000_0000_0000, 0x3FFF + 14), // 32767
     (0xFFFF_0000_0000_0000, 0x3FFF + 14), // 32767.5
@@ -255,7 +328,9 @@ pub const F80_EDGES: &[(u64, u32)] = &[
 ];
 
 pub fn with_neg80(xs: &[(u64, u32)]) -> Vec<(u64, u32)> {
-    xs.iter().flat_map(|&(m, se)| [(m, se), (m, se | 0x8000)]).collect()
+    xs.iter()
+        .flat_map(|&(m, se)| [(m, se), (m, se | 0x8000)])
+        .collect()
 }
 
 pub fn rand_f80(r: &mut Rng) -> (u64, u32) {
@@ -264,14 +339,23 @@ pub fn rand_f80(r: &mut Rng) -> (u64, u32) {
         0 => (r.next(), r.next() as u32 & 0xFFFF),
         1 => {
             let (m, se) = r.pick(F80_EDGES);
-            (m ^ (r.next() & r.pick(&[1, 3, 0xFF, 0xFF_FFFF_FFFF, u64::MAX >> 1])), se ^ sign)
+            (
+                m ^ (r.next() & r.pick(&[1, 3, 0xFF, 0xFF_FFFF_FFFF, u64::MAX >> 1])),
+                se ^ sign,
+            )
         }
         2 => {
             // An exact f32 or f64 value, so x87 results meet ties.
             let (m, se) = if r.below(2) == 0 {
-                (r.next() & !((1 << 40) - 1), 0x3FFF + r.below(64) as u32 - 32)
+                (
+                    r.next() & !((1 << 40) - 1),
+                    0x3FFF + r.below(64) as u32 - 32,
+                )
             } else {
-                (r.next() & !((1 << 11) - 1), 0x3FFF + r.below(256) as u32 - 128)
+                (
+                    r.next() & !((1 << 11) - 1),
+                    0x3FFF + r.below(256) as u32 - 128,
+                )
             };
             (m | (1 << 63), se | sign)
         }
@@ -289,7 +373,11 @@ pub fn rand_f80(r: &mut Rng) -> (u64, u32) {
                 _ => !(r.next() >> r.below(63)),
             };
             // Mostly normalized (J set unless the exponent is 0).
-            let m = if e != 0 && r.below(16) != 0 { m | (1 << 63) } else { m };
+            let m = if e != 0 && r.below(16) != 0 {
+                m | (1 << 63)
+            } else {
+                m
+            };
             (m, e | sign)
         }
     }

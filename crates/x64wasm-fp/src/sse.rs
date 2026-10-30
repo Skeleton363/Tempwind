@@ -17,8 +17,16 @@ pub(crate) struct Ieee {
     fmt: Fmt,
 }
 
-pub(crate) const S: Ieee = Ieee { frac: 23, ebits: 8, fmt: F32 };
-pub(crate) const D: Ieee = Ieee { frac: 52, ebits: 11, fmt: F64 };
+pub(crate) const S: Ieee = Ieee {
+    frac: 23,
+    ebits: 8,
+    fmt: F32,
+};
+pub(crate) const D: Ieee = Ieee {
+    frac: 52,
+    ebits: 11,
+    fmt: F64,
+};
 
 impl Ieee {
     const fn bias(&self) -> i32 {
@@ -36,20 +44,48 @@ impl Ieee {
         let f = bits & ((1 << self.frac) - 1);
         if e == self.emask() {
             if f == 0 {
-                return Val { sign, class: Class::Inf, exp: 0, sig: 0, denormal: false };
+                return Val {
+                    sign,
+                    class: Class::Inf,
+                    exp: 0,
+                    sig: 0,
+                    denormal: false,
+                };
             }
-            let class = if f >> (self.frac - 1) != 0 { Class::QNan } else { Class::SNan };
-            return Val { sign, class, exp: 0, sig: J | (f << (63 - self.frac)), denormal: false };
+            let class = if f >> (self.frac - 1) != 0 {
+                Class::QNan
+            } else {
+                Class::SNan
+            };
+            return Val {
+                sign,
+                class,
+                exp: 0,
+                sig: J | (f << (63 - self.frac)),
+                denormal: false,
+            };
         }
         if e == 0 {
             if f == 0 || daz {
                 return Val::zero(sign);
             }
             let exp = 1 - self.bias() - self.frac as i32;
-            return Val { sign, class: Class::Finite, exp, sig: f, denormal: true };
+            return Val {
+                sign,
+                class: Class::Finite,
+                exp,
+                sig: f,
+                denormal: true,
+            };
         }
         let exp = e as i32 - self.bias() - self.frac as i32;
-        Val { sign, class: Class::Finite, exp, sig: f | (1 << self.frac), denormal: false }
+        Val {
+            sign,
+            class: Class::Finite,
+            exp,
+            sig: f | (1 << self.frac),
+            denormal: false,
+        }
     }
     fn signed(&self, sign: bool, mag: u64) -> u64 {
         if sign { mag | self.sign_bit() } else { mag }
@@ -94,7 +130,11 @@ fn unmasked(fl: u32, mxcsr: u32) -> bool {
 
 fn status(mxcsr: u32, fl: u32) -> u32 {
     let s = (mxcsr & !FP_UNMASKED) | fl;
-    if unmasked(fl, mxcsr) { s | FP_UNMASKED } else { s }
+    if unmasked(fl, mxcsr) {
+        s | FP_UNMASKED
+    } else {
+        s
+    }
 }
 
 /// Rounds a `Pre` to `t` under `mxcsr` (RC, FTZ, UM): (bits, flags).
@@ -132,7 +172,11 @@ pub(crate) fn arith(t: &Ieee, a: u64, b: u64, mxcsr: u32, op: Op) -> (u64, u32) 
     let daz = mxcsr & DAZ != 0;
     let (va, vb) = (t.unpack(a, daz), t.unpack(b, daz));
     if va.is_nan() || vb.is_nan() {
-        let fl = if va.class == Class::SNan || vb.class == Class::SNan { IE } else { 0 };
+        let fl = if va.class == Class::SNan || vb.class == Class::SNan {
+            IE
+        } else {
+            0
+        };
         let n = if va.is_nan() { va } else { vb };
         return (t.nan(n.sign, n.sig | QUIET), status(mxcsr, fl));
     }
@@ -163,13 +207,27 @@ pub(crate) fn minmax(t: &Ieee, a: u64, b: u64, mxcsr: u32, max: bool) -> (u64, u
     let daz = mxcsr & DAZ != 0;
     let (va, vb) = (t.unpack(a, daz), t.unpack(b, daz));
     // The operand returned is the one DAZ read: a denormal becomes zero.
-    let pick = |v: &Val, bits: u64| if v.class == Class::Zero { t.zero(v.sign) } else { bits };
+    let pick = |v: &Val, bits: u64| {
+        if v.class == Class::Zero {
+            t.zero(v.sign)
+        } else {
+            bits
+        }
+    };
     if va.is_nan() || vb.is_nan() {
         return (pick(&vb, b), status(mxcsr, IE));
     }
     let fl = if va.denormal || vb.denormal { DE } else { 0 };
-    let want = if max { Ordering::Greater } else { Ordering::Less };
-    let r = if cmp(&va, &vb) == want { pick(&va, a) } else { pick(&vb, b) };
+    let want = if max {
+        Ordering::Greater
+    } else {
+        Ordering::Less
+    };
+    let r = if cmp(&va, &vb) == want {
+        pick(&va, a)
+    } else {
+        pick(&vb, b)
+    };
     (r, status(mxcsr, fl))
 }
 
@@ -233,7 +291,11 @@ pub(crate) fn convert(from: &Ieee, to: &Ieee, a: u64, mxcsr: u32) -> (u64, u32) 
 }
 
 pub(crate) fn from_int(t: &Ieee, i: i64, mxcsr: u32) -> (u64, u32) {
-    let pre = if i == 0 { Pre::Zero(false) } else { Pre::Num(i < 0, 0, i.unsigned_abs() as u128) };
+    let pre = if i == 0 {
+        Pre::Zero(false)
+    } else {
+        Pre::Num(i < 0, 0, i.unsigned_abs() as u128)
+    };
     let (r, fl) = finish(t, pre, 0, mxcsr);
     (r, status(mxcsr, fl))
 }
@@ -248,7 +310,11 @@ pub(crate) fn to_int_(t: &Ieee, a: u64, mxcsr: u32, trunc: bool, bits: u32) -> (
         Class::Zero => (0, 0),
         Class::Finite => match to_int(&va, rc) {
             Some((k, inexact, _)) if k <= (1u64 << (bits - 1)) - (!va.sign) as u64 => {
-                let v = if va.sign { (k as i64).wrapping_neg() } else { k as i64 };
+                let v = if va.sign {
+                    (k as i64).wrapping_neg()
+                } else {
+                    k as i64
+                };
                 (v, if inexact { PE } else { 0 })
             }
             _ => (indef, IE),

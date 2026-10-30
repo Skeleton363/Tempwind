@@ -160,11 +160,17 @@ fn check<A: Copy + Debug, R: PartialEq + Debug>(
         if s != h {
             nbad += 1;
             if bad.len() < 12 {
-                bad.push(format!("  {name}({a:x?}, mxcsr {m:#x}): soft {s:x?}, cpu {h:x?}"));
+                bad.push(format!(
+                    "  {name}({a:x?}, mxcsr {m:#x}): soft {s:x?}, cpu {h:x?}"
+                ));
             }
         }
     }
-    assert!(nbad == 0, "{name}: {nbad} of {n} cases differ:\n{}", bad.join("\n"));
+    assert!(
+        nbad == 0,
+        "{name}: {nbad} of {n} cases differ:\n{}",
+        bad.join("\n")
+    );
     n
 }
 
@@ -182,7 +188,10 @@ fn pairs<T: Copy>(xs: &[T], modes: &[u32], seed: u64) -> Vec<((T, T), u32)> {
 }
 fn singles<T: Copy>(xs: &[T], modes: &[u32], seed: u64) -> Vec<(T, u32)> {
     let mut r = Rng(seed);
-    xs.iter().flat_map(|&a| modes.iter().map(move |&m| (a, m))).map(|(a, m)| (a, mxcsr(m, sticky(&mut r)))).collect()
+    xs.iter()
+        .flat_map(|&a| modes.iter().map(move |&m| (a, m)))
+        .map(|(a, m)| (a, mxcsr(m, sticky(&mut r))))
+        .collect()
 }
 fn random_mode(r: &mut Rng) -> u32 {
     let m = r.below(16) as u32;
@@ -222,7 +231,12 @@ fn run_bin(random: usize, seed: u64, edges: bool) -> usize {
     for (i, (name, soft, hw)) in bin32().into_iter().enumerate() {
         if edges {
             let c = pairs(&e32, &ALL_MODES, seed + i as u64);
-            n += check(name, c.into_iter(), |(a, b), m| soft(a, b, m), |(a, b), m| hw(a, b, m));
+            n += check(
+                name,
+                c.into_iter(),
+                |(a, b), m| soft(a, b, m),
+                |(a, b), m| hw(a, b, m),
+            );
         }
         let mut r = Rng(seed ^ (i as u64 + 100));
         let c = (0..random).map(|_| ((rand_f32(&mut r), rand_f32(&mut r)), random_mode(&mut r)));
@@ -231,7 +245,12 @@ fn run_bin(random: usize, seed: u64, edges: bool) -> usize {
     for (i, (name, soft, hw)) in bin64().into_iter().enumerate() {
         if edges {
             let c = pairs(&e64, &ALL_MODES, seed + 50 + i as u64);
-            n += check(name, c.into_iter(), |(a, b), m| soft(a, b, m), |(a, b), m| hw(a, b, m));
+            n += check(
+                name,
+                c.into_iter(),
+                |(a, b), m| soft(a, b, m),
+                |(a, b), m| hw(a, b, m),
+            );
         }
         let mut r = Rng(seed ^ (i as u64 + 200));
         let c = (0..random).map(|_| ((rand_f64(&mut r), rand_f64(&mut r)), random_mode(&mut r)));
@@ -248,30 +267,77 @@ fn run_cmp(random: usize, seed: u64, edges: bool) -> usize {
     for pred in 0..8u32 {
         if edges {
             let c = pairs(&e32, &modes, seed + pred as u64);
-            n += check("f32_cmp", c.into_iter(), |(a, b), m| fp::f32_cmp(a, b, pred, m), |(a, b), m| hw_cmpss(a, b, pred, m));
+            n += check(
+                "f32_cmp",
+                c.into_iter(),
+                |(a, b), m| fp::f32_cmp(a, b, pred, m),
+                |(a, b), m| hw_cmpss(a, b, pred, m),
+            );
             let c = pairs(&e64, &modes, seed + pred as u64);
-            n += check("f64_cmp", c.into_iter(), |(a, b), m| fp::f64_cmp(a, b, pred, m), |(a, b), m| hw_cmpsd(a, b, pred, m));
+            n += check(
+                "f64_cmp",
+                c.into_iter(),
+                |(a, b), m| fp::f64_cmp(a, b, pred, m),
+                |(a, b), m| hw_cmpsd(a, b, pred, m),
+            );
         }
         let mut r = Rng(seed ^ (pred as u64 + 300));
-        let c = (0..random / 8).map(|_| ((rand_f32(&mut r), rand_f32(&mut r)), random_mode(&mut r)));
-        n += check("f32_cmp", c, |(a, b), m| fp::f32_cmp(a, b, pred, m), |(a, b), m| hw_cmpss(a, b, pred, m));
-        let c = (0..random / 8).map(|_| ((rand_f64(&mut r), rand_f64(&mut r)), random_mode(&mut r)));
-        n += check("f64_cmp", c, |(a, b), m| fp::f64_cmp(a, b, pred, m), |(a, b), m| hw_cmpsd(a, b, pred, m));
+        let c =
+            (0..random / 8).map(|_| ((rand_f32(&mut r), rand_f32(&mut r)), random_mode(&mut r)));
+        n += check(
+            "f32_cmp",
+            c,
+            |(a, b), m| fp::f32_cmp(a, b, pred, m),
+            |(a, b), m| hw_cmpss(a, b, pred, m),
+        );
+        let c =
+            (0..random / 8).map(|_| ((rand_f64(&mut r), rand_f64(&mut r)), random_mode(&mut r)));
+        n += check(
+            "f64_cmp",
+            c,
+            |(a, b), m| fp::f64_cmp(a, b, pred, m),
+            |(a, b), m| hw_cmpsd(a, b, pred, m),
+        );
     }
     for sig in 0..2u32 {
-        let (h32, h64): (Bin32Cmp, Bin64Cmp) =
-            if sig == 1 { (hw_comiss, hw_comisd) } else { (hw_ucomiss, hw_ucomisd) };
+        let (h32, h64): (Bin32Cmp, Bin64Cmp) = if sig == 1 {
+            (hw_comiss, hw_comisd)
+        } else {
+            (hw_ucomiss, hw_ucomisd)
+        };
         if edges {
             let c = pairs(&e32, &modes, seed + 20 + sig as u64);
-            n += check("f32_comi", c.into_iter(), |(a, b), m| fp::f32_comi(a, b, sig, m), |(a, b), m| h32(a, b, m));
+            n += check(
+                "f32_comi",
+                c.into_iter(),
+                |(a, b), m| fp::f32_comi(a, b, sig, m),
+                |(a, b), m| h32(a, b, m),
+            );
             let c = pairs(&e64, &modes, seed + 20 + sig as u64);
-            n += check("f64_comi", c.into_iter(), |(a, b), m| fp::f64_comi(a, b, sig, m), |(a, b), m| h64(a, b, m));
+            n += check(
+                "f64_comi",
+                c.into_iter(),
+                |(a, b), m| fp::f64_comi(a, b, sig, m),
+                |(a, b), m| h64(a, b, m),
+            );
         }
         let mut r = Rng(seed ^ (sig as u64 + 400));
-        let c = (0..random / 2).map(|_| ((rand_f32(&mut r), rand_f32(&mut r)), random_mode(&mut r)));
-        n += check("f32_comi", c, |(a, b), m| fp::f32_comi(a, b, sig, m), |(a, b), m| h32(a, b, m));
-        let c = (0..random / 2).map(|_| ((rand_f64(&mut r), rand_f64(&mut r)), random_mode(&mut r)));
-        n += check("f64_comi", c, |(a, b), m| fp::f64_comi(a, b, sig, m), |(a, b), m| h64(a, b, m));
+        let c =
+            (0..random / 2).map(|_| ((rand_f32(&mut r), rand_f32(&mut r)), random_mode(&mut r)));
+        n += check(
+            "f32_comi",
+            c,
+            |(a, b), m| fp::f32_comi(a, b, sig, m),
+            |(a, b), m| h32(a, b, m),
+        );
+        let c =
+            (0..random / 2).map(|_| ((rand_f64(&mut r), rand_f64(&mut r)), random_mode(&mut r)));
+        n += check(
+            "f64_comi",
+            c,
+            |(a, b), m| fp::f64_comi(a, b, sig, m),
+            |(a, b), m| h64(a, b, m),
+        );
     }
     n
 }
@@ -286,9 +352,16 @@ fn run_unary(random: usize, seed: u64, edges: bool) -> usize {
     macro_rules! go {
         ($name:literal, $edges:expr, $gen:expr, $soft:expr, $hw:expr) => {{
             if edges {
-                n += check($name, singles(&$edges, &ALL_MODES, seed).into_iter(), $soft, $hw);
+                n += check(
+                    $name,
+                    singles(&$edges, &ALL_MODES, seed).into_iter(),
+                    $soft,
+                    $hw,
+                );
             }
-            let c: Vec<_> = (0..random).map(|_| ($gen(&mut r), random_mode(&mut r))).collect();
+            let c: Vec<_> = (0..random)
+                .map(|_| ($gen(&mut r), random_mode(&mut r)))
+                .collect();
             n += check($name, c.into_iter(), $soft, $hw);
         }};
     }
@@ -296,22 +369,102 @@ fn run_unary(random: usize, seed: u64, edges: bool) -> usize {
     go!("f64_sqrt", e64, rand_f64, fp::f64_sqrt, hw_sqrtsd);
     go!("f32_to_f64", e32, rand_f32, fp::f32_to_f64, hw_cvtss2sd);
     go!("f64_to_f32", e64, rand_f64, fp::f64_to_f32, hw_cvtsd2ss);
-    go!("i32_to_f32", I32_EDGES.iter().flat_map(|&x| [x, x.wrapping_neg()]).collect::<Vec<_>>(), rand_i32, fp::i32_to_f32, hw_cvtsi2ss32);
-    let i64e: Vec<i64> = I64_EDGES.iter().flat_map(|&x| [x, x.wrapping_neg()]).collect();
+    go!(
+        "i32_to_f32",
+        I32_EDGES
+            .iter()
+            .flat_map(|&x| [x, x.wrapping_neg()])
+            .collect::<Vec<_>>(),
+        rand_i32,
+        fp::i32_to_f32,
+        hw_cvtsi2ss32
+    );
+    let i64e: Vec<i64> = I64_EDGES
+        .iter()
+        .flat_map(|&x| [x, x.wrapping_neg()])
+        .collect();
     go!("i64_to_f32", i64e, rand_i64, fp::i64_to_f32, hw_cvtsi2ss64);
     go!("i64_to_f64", i64e, rand_i64, fp::i64_to_f64, hw_cvtsi2sd64);
-    let s32 = |f: fn(u32, u32, u32) -> (i32, u32), t| move |a, m| { let (x, s) = f(a, m, t); (x as u32 as u64, s) };
-    let d32 = |f: fn(u64, u32, u32) -> (i32, u32), t| move |a, m| { let (x, s) = f(a, m, t); (x as u32 as u64, s) };
-    let s64 = |f: fn(u32, u32, u32) -> (i64, u32), t| move |a, m| { let (x, s) = f(a, m, t); (x as u64, s) };
-    let d64 = |f: fn(u64, u32, u32) -> (i64, u32), t| move |a, m| { let (x, s) = f(a, m, t); (x as u64, s) };
-    go!("f32_to_i32", e32, rand_f32, s32(fp::f32_to_i32, 0), hw_cvtss2si32);
-    go!("f32_to_i32/t", e32, rand_f32, s32(fp::f32_to_i32, 1), hw_cvttss2si32);
-    go!("f64_to_i32", e64, rand_f64, d32(fp::f64_to_i32, 0), hw_cvtsd2si32);
-    go!("f64_to_i32/t", e64, rand_f64, d32(fp::f64_to_i32, 1), hw_cvttsd2si32);
-    go!("f32_to_i64", e32, rand_f32, s64(fp::f32_to_i64, 0), hw_cvtss2si64);
-    go!("f32_to_i64/t", e32, rand_f32, s64(fp::f32_to_i64, 1), hw_cvttss2si64);
-    go!("f64_to_i64", e64, rand_f64, d64(fp::f64_to_i64, 0), hw_cvtsd2si64);
-    go!("f64_to_i64/t", e64, rand_f64, d64(fp::f64_to_i64, 1), hw_cvttsd2si64);
+    let s32 = |f: fn(u32, u32, u32) -> (i32, u32), t| {
+        move |a, m| {
+            let (x, s) = f(a, m, t);
+            (x as u32 as u64, s)
+        }
+    };
+    let d32 = |f: fn(u64, u32, u32) -> (i32, u32), t| {
+        move |a, m| {
+            let (x, s) = f(a, m, t);
+            (x as u32 as u64, s)
+        }
+    };
+    let s64 = |f: fn(u32, u32, u32) -> (i64, u32), t| {
+        move |a, m| {
+            let (x, s) = f(a, m, t);
+            (x as u64, s)
+        }
+    };
+    let d64 = |f: fn(u64, u32, u32) -> (i64, u32), t| {
+        move |a, m| {
+            let (x, s) = f(a, m, t);
+            (x as u64, s)
+        }
+    };
+    go!(
+        "f32_to_i32",
+        e32,
+        rand_f32,
+        s32(fp::f32_to_i32, 0),
+        hw_cvtss2si32
+    );
+    go!(
+        "f32_to_i32/t",
+        e32,
+        rand_f32,
+        s32(fp::f32_to_i32, 1),
+        hw_cvttss2si32
+    );
+    go!(
+        "f64_to_i32",
+        e64,
+        rand_f64,
+        d32(fp::f64_to_i32, 0),
+        hw_cvtsd2si32
+    );
+    go!(
+        "f64_to_i32/t",
+        e64,
+        rand_f64,
+        d32(fp::f64_to_i32, 1),
+        hw_cvttsd2si32
+    );
+    go!(
+        "f32_to_i64",
+        e32,
+        rand_f32,
+        s64(fp::f32_to_i64, 0),
+        hw_cvtss2si64
+    );
+    go!(
+        "f32_to_i64/t",
+        e32,
+        rand_f32,
+        s64(fp::f32_to_i64, 1),
+        hw_cvttss2si64
+    );
+    go!(
+        "f64_to_i64",
+        e64,
+        rand_f64,
+        d64(fp::f64_to_i64, 0),
+        hw_cvtsd2si64
+    );
+    go!(
+        "f64_to_i64/t",
+        e64,
+        rand_f64,
+        d64(fp::f64_to_i64, 1),
+        hw_cvttsd2si64
+    );
     n
 }
 
@@ -339,7 +492,10 @@ fn sse_unary_vs_cpu() {
 #[test]
 #[ignore]
 fn sse_long_random() {
-    let k: usize = std::env::var("FP_LONG").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+    let k: usize = std::env::var("FP_LONG")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1_000_000);
     let seed = 0x5EED_0000 ^ std::process::id() as u64;
     let n = run_bin(k, seed, false) + run_cmp(k, seed, false) + run_unary(k, seed, false);
     eprintln!("sse long random (seed {seed:#x}): {n} cases");

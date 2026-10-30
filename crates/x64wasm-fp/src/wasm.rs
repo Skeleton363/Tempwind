@@ -41,19 +41,39 @@ pub extern "C" fn f64_sqrt(a: i64, mxcsr: i32) -> i64 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn f32_cmp(a: i32, b: i32, pred: i32, mxcsr: i32) -> i32 {
-    keep(crate::f32_cmp(a as u32, b as u32, pred as u32, mxcsr as u32)) as i32
+    keep(crate::f32_cmp(
+        a as u32,
+        b as u32,
+        pred as u32,
+        mxcsr as u32,
+    )) as i32
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn f64_cmp(a: i64, b: i64, pred: i32, mxcsr: i32) -> i32 {
-    keep(crate::f64_cmp(a as u64, b as u64, pred as u32, mxcsr as u32)) as i32
+    keep(crate::f64_cmp(
+        a as u64,
+        b as u64,
+        pred as u32,
+        mxcsr as u32,
+    )) as i32
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn f32_comi(a: i32, b: i32, signaling: i32, mxcsr: i32) -> i32 {
-    keep(crate::f32_comi(a as u32, b as u32, signaling as u32, mxcsr as u32)) as i32
+    keep(crate::f32_comi(
+        a as u32,
+        b as u32,
+        signaling as u32,
+        mxcsr as u32,
+    )) as i32
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn f64_comi(a: i64, b: i64, signaling: i32, mxcsr: i32) -> i32 {
-    keep(crate::f64_comi(a as u64, b as u64, signaling as u32, mxcsr as u32)) as i32
+    keep(crate::f64_comi(
+        a as u64,
+        b as u64,
+        signaling as u32,
+        mxcsr as u32,
+    )) as i32
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn f32_to_f64(a: i32, mxcsr: i32) -> i64 {

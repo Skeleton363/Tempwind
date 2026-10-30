@@ -28,6 +28,8 @@ pub enum Class {
     Inf,
     QNan,
     SNan,
+    // TODO(x87): constructed by the x87 functions (next commit).
+    #[allow(dead_code)]
     /// An x87 encoding the FPU doesn't support (unnormal, pseudo-NaN,
     /// pseudo-infinity): an invalid operand.
     Bad,
@@ -48,16 +50,29 @@ pub struct Val {
 
 impl Val {
     pub const fn zero(sign: bool) -> Val {
-        Val { sign, class: Class::Zero, exp: 0, sig: 0, denormal: false }
+        Val {
+            sign,
+            class: Class::Zero,
+            exp: 0,
+            sig: 0,
+            denormal: false,
+        }
     }
     pub const fn is_nan(&self) -> bool {
         matches!(self.class, Class::QNan | Class::SNan)
     }
+    #[allow(dead_code)]
     pub fn from_int(i: i64) -> Val {
         if i == 0 {
             Val::zero(false)
         } else {
-            Val { sign: i < 0, class: Class::Finite, exp: 0, sig: i.unsigned_abs(), denormal: false }
+            Val {
+                sign: i < 0,
+                class: Class::Finite,
+                exp: 0,
+                sig: i.unsigned_abs(),
+                denormal: false,
+            }
         }
     }
 }
@@ -89,10 +104,26 @@ pub struct Fmt {
     pub lsb_min: i32,
 }
 
-pub const F32: Fmt = Fmt { p: 24, emin: -126, emax: 127, lsb_min: -149 };
-pub const F64: Fmt = Fmt { p: 53, emin: -1022, emax: 1023, lsb_min: -1074 };
+pub const F32: Fmt = Fmt {
+    p: 24,
+    emin: -126,
+    emax: 127,
+    lsb_min: -149,
+};
+pub const F64: Fmt = Fmt {
+    p: 53,
+    emin: -1022,
+    emax: 1023,
+    lsb_min: -1074,
+};
+#[allow(dead_code)]
 pub const fn f80(p: u32) -> Fmt {
-    Fmt { p, emin: -16382, emax: 16383, lsb_min: -16445 }
+    Fmt {
+        p,
+        emin: -16382,
+        emax: 16383,
+        lsb_min: -16445,
+    }
 }
 
 /// A rounded result: value = sig * 2^exp (sig < 2^p; 0 means zero), or an
@@ -118,7 +149,11 @@ pub fn shr_round(sig: u128, shift: i32, sign: bool, rc: u32) -> (u128, bool, boo
         return (sig << (-shift) as u32, false, false);
     }
     let (k, half, sticky) = if shift >= 128 {
-        if shift == 128 { (0, sig >> 127 != 0, sig << 1 != 0) } else { (0, false, sig != 0) }
+        if shift == 128 {
+            (0, sig >> 127 != 0, sig << 1 != 0)
+        } else {
+            (0, false, sig != 0)
+        }
     } else {
         let s = shift as u32;
         let rem = sig & ((1u128 << s) - 1);
@@ -158,7 +193,15 @@ pub fn round(sign: bool, exp: i32, sig: u128, f: &Fmt, rc: u32, ue_unmasked: boo
     if tiny && (inexact || ue_unmasked) {
         flags |= UE;
     }
-    let mut r = Rounded { sign, sig: k as u64, exp: lsb, inf: false, flags, up, tiny };
+    let mut r = Rounded {
+        sign,
+        sig: k as u64,
+        exp: lsb,
+        inf: false,
+        flags,
+        up,
+        tiny,
+    };
     if k != 0 && lsb + 127 - k.leading_zeros() as i32 > f.emax {
         r.flags |= OE | PE;
         let to_inf = match rc {
@@ -205,8 +248,11 @@ pub fn add(sa: bool, a: &Val, sb: bool, b: &Val, rc: u32) -> Pre {
         _ => {
             let (ea, ma) = norm(a);
             let (eb, mb) = norm(b);
-            let ((sx, ex, mx), (sy, ey, my)) =
-                if (ea, ma) >= (eb, mb) { ((sa, ea, ma), (sb, eb, mb)) } else { ((sb, eb, mb), (sa, ea, ma)) };
+            let ((sx, ex, mx), (sy, ey, my)) = if (ea, ma) >= (eb, mb) {
+                ((sa, ea, ma), (sb, eb, mb))
+            } else {
+                ((sb, eb, mb), (sa, ea, ma))
+            };
             let d = (ex - ey) as u32;
             let x = (mx as u128) << 62;
             let y0 = (my as u128) << 62;
@@ -267,7 +313,11 @@ pub fn sqrt(a: &Val) -> Pre {
         Class::Inf => Pre::Inf(false),
         _ => {
             let (e, m) = norm(a);
-            let (e, m) = if e & 1 != 0 { (e - 1, (m as u128) << 1) } else { (e, m as u128) };
+            let (e, m) = if e & 1 != 0 {
+                (e - 1, (m as u128) << 1)
+            } else {
+                (e, m as u128)
+            };
             let n = m << 62;
             let mut r: u128 = 0;
             let mut rem: u128 = 0;
