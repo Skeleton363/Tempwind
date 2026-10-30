@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 
-use crate::abi;
+use crate::abi::{self, FpFunc};
 
 /// A general-purpose register in x86 encoding order (0 = RAX ... 15 = R15).
 pub type Gpr = u8;
@@ -471,6 +471,68 @@ pub enum VExtractOp {
     Bitmask(Lanes),
 }
 
+/// The format of an SSE floating-point value or lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FpFmt {
+    /// f32 (`ss`, `ps`)
+    S,
+    /// f64 (`sd`, `pd`)
+    D,
+}
+
+/// SSE floating-point arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FpArith {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Min,
+    Max,
+    /// Of the source (`b`) only.
+    Sqrt,
+}
+
+/// SSE conversions between vector registers (or a vector register and
+/// memory).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FpCvt {
+    /// cvtss2sd: lane 0, the rest of the destination kept.
+    Ss2Sd,
+    /// cvtsd2ss: lane 0, the rest of the destination kept.
+    Sd2Ss,
+    /// cvtps2pd: two f32 to two f64.
+    Ps2Pd,
+    /// cvtpd2ps: two f64 to two f32, the upper half zeroed.
+    Pd2Ps,
+    /// cvtdq2ps
+    Dq2Ps,
+    /// cvtdq2pd: two i32 to two f64 (always exact).
+    Dq2Pd,
+    /// cvtps2dq, cvttps2dq (`trunc`)
+    Ps2Dq { trunc: bool },
+    /// cvtpd2dq, cvttpd2dq: the upper half zeroed.
+    Pd2Dq { trunc: bool },
+}
+
+/// An SSE floating-point operation from vector to vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SseFp {
+    /// addss … sqrtpd: lane 0 (the rest of `a` kept) unless `packed`.
+    Arith {
+        op: FpArith,
+        fmt: FpFmt,
+        packed: bool,
+    },
+    /// cmpss … cmppd with predicate `pred` (imm8 bits 2:0): all ones or 0.
+    Cmp {
+        pred: u8,
+        fmt: FpFmt,
+        packed: bool,
+    },
+    Cvt(FpCvt),
+}
+
 /// String instructions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StrOp {
@@ -643,6 +705,45 @@ pub enum Op {
         op: VExtractOp,
         src: VTemp,
     },
+    /// An SSE floating-point operation (`translator.md`, "SSE: fast path
+    /// and helper"): `dst` = the destination's new value from `a` (its old
+    /// value) and `b` (the source). Reads MXCSR and writes its exception
+    /// flags; on an unmasked exception it exits with `EXIT_UNSUPPORTED`
+    /// before writing anything, so it comes before the instruction's other
+    /// side effects.
+    SseFp {
+        dst: VTemp,
+        op: SseFp,
+        a: VTemp,
+        b: VTemp,
+    },
+    /// cvtsi2ss, cvtsi2sd: `dst` = `a` with lane 0 = the integer `src`
+    /// (sign-extended from `width`) converted to `fmt`. As [`Op::SseFp`].
+    SseFromInt {
+        dst: VTemp,
+        fmt: FpFmt,
+        width: Width,
+        a: VTemp,
+        src: Value,
+    },
+    /// cvt(t)ss2si, cvt(t)sd2si: `dst` = lane 0 of `b` converted to a
+    /// `width` integer, zero-extended. As [`Op::SseFp`].
+    SseToInt {
+        dst: Temp,
+        fmt: FpFmt,
+        width: Width,
+        trunc: bool,
+        b: VTemp,
+    },
+    /// comis (`signaling`), ucomis: `dst` = ZF, PF and CF from lane 0 of
+    /// `a` and `b`. As [`Op::SseFp`].
+    SseComi {
+        dst: Temp,
+        fmt: FpFmt,
+        signaling: bool,
+        a: VTemp,
+        b: VTemp,
+    },
 }
 
 impl Op {
@@ -650,7 +751,10 @@ impl Op {
     pub fn is_partial_flags(&self) -> bool {
         match self {
             Op::Flags { op, when, .. } => op.is_partial() || when.is_some(),
-            Op::FlagsUpdate { .. } => true,
+            // Clearing every status flag without `when` replaces the record.
+            Op::FlagsUpdate { clear, when, .. } => {
+                when.is_some() || clear & abi::flags::STATUS != abi::flags::STATUS
+            }
             Op::RepString { op, rep, .. } => op.compares() && *rep != Rep::Once,
             _ => false,
         }
@@ -676,7 +780,70 @@ impl Op {
                 | Op::FlagsUpdate { .. }
                 | Op::RepString { .. }
                 | Op::VStore { .. }
+        ) || self.is_fp()
+    }
+
+    /// A floating-point op: it may call `fp` helpers, write MXCSR or exit.
+    pub fn is_fp(&self) -> bool {
+        matches!(
+            self,
+            Op::SseFp { .. } | Op::SseFromInt { .. } | Op::SseToInt { .. } | Op::SseComi { .. }
         )
+    }
+
+    /// Calls `use_func` with every `fp` helper this op's code may call.
+    pub fn fp_funcs(&self, use_func: &mut dyn FnMut(FpFunc)) {
+        use FpFunc as F;
+        let (s, d) = (FpFmt::S, FpFmt::D);
+        let func = match *self {
+            Op::SseFp { op, .. } => match op {
+                SseFp::Arith { op, fmt, .. } => match (op, fmt == s) {
+                    (FpArith::Add, true) => F::F32Add,
+                    (FpArith::Sub, true) => F::F32Sub,
+                    (FpArith::Mul, true) => F::F32Mul,
+                    (FpArith::Div, true) => F::F32Div,
+                    (FpArith::Min, true) => F::F32Min,
+                    (FpArith::Max, true) => F::F32Max,
+                    (FpArith::Sqrt, true) => F::F32Sqrt,
+                    (FpArith::Add, false) => F::F64Add,
+                    (FpArith::Sub, false) => F::F64Sub,
+                    (FpArith::Mul, false) => F::F64Mul,
+                    (FpArith::Div, false) => F::F64Div,
+                    (FpArith::Min, false) => F::F64Min,
+                    (FpArith::Max, false) => F::F64Max,
+                    (FpArith::Sqrt, false) => F::F64Sqrt,
+                },
+                SseFp::Cmp { fmt, .. } if fmt == s => F::F32Cmp,
+                SseFp::Cmp { .. } => F::F64Cmp,
+                SseFp::Cvt(cvt) => match cvt {
+                    FpCvt::Ss2Sd | FpCvt::Ps2Pd => F::F32ToF64,
+                    FpCvt::Sd2Ss | FpCvt::Pd2Ps => F::F64ToF32,
+                    FpCvt::Dq2Ps => F::I32ToF32,
+                    // Always exact: no helper.
+                    FpCvt::Dq2Pd => return,
+                    FpCvt::Ps2Dq { .. } => F::F32ToI32,
+                    FpCvt::Pd2Dq { .. } => F::F64ToI32,
+                },
+            },
+            Op::SseFromInt { fmt, width, .. } => match (fmt, width) {
+                (FpFmt::S, Width::W64) => F::I64ToF32,
+                (FpFmt::S, _) => F::I32ToF32,
+                (FpFmt::D, Width::W64) => F::I64ToF64,
+                // cvtsi2sd r/m32 is always exact.
+                (FpFmt::D, _) => return,
+            },
+            Op::SseToInt { fmt, width, .. } => match (fmt, width == Width::W64) {
+                (FpFmt::S, false) => F::F32ToI32,
+                (FpFmt::S, true) => F::F32ToI64,
+                (FpFmt::D, false) => F::F64ToI32,
+                (FpFmt::D, true) => F::F64ToI64,
+            },
+            Op::SseComi { fmt, .. } if fmt == d => F::F64Comi,
+            Op::SseComi { .. } => F::F32Comi,
+            _ => return,
+        };
+        use_func(func);
+        use_func(F::Status);
     }
 }
 
@@ -980,6 +1147,15 @@ impl fmt::Display for VLoc {
     }
 }
 
+impl fmt::Display for FpFmt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            FpFmt::S => "s",
+            FpFmt::D => "d",
+        })
+    }
+}
+
 impl fmt::Display for VWidth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -1089,6 +1265,61 @@ impl fmt::Display for Op {
             Op::VConst { dst, value } => write!(f, "{dst} = {value:#x}"),
             Op::VFromGpr { dst, value } => write!(f, "{dst} = from64 {value}"),
             Op::VExtract { dst, op, src } => write!(f, "t{} = {op:?} {src}", dst.0),
+            Op::SseFp { dst, op, a, b } => {
+                let fmt_name = |fmt: &FpFmt, packed: bool| match (fmt, packed) {
+                    (FpFmt::S, false) => "ss",
+                    (FpFmt::D, false) => "sd",
+                    (FpFmt::S, true) => "ps",
+                    (FpFmt::D, true) => "pd",
+                };
+                match op {
+                    SseFp::Arith { op, fmt, packed } => write!(
+                        f,
+                        "{dst} = fp.{}{} {a}, {b}",
+                        format!("{op:?}").to_lowercase(),
+                        fmt_name(fmt, *packed)
+                    ),
+                    SseFp::Cmp { pred, fmt, packed } => {
+                        write!(
+                            f,
+                            "{dst} = fp.cmp{} {pred} {a}, {b}",
+                            fmt_name(fmt, *packed)
+                        )
+                    }
+                    SseFp::Cvt(c) => write!(f, "{dst} = fp.cvt {c:?} {a}, {b}"),
+                }
+            }
+            Op::SseFromInt {
+                dst,
+                fmt,
+                width,
+                a,
+                src,
+            } => write!(f, "{dst} = fp.cvtsi{width}2s{fmt} {a}, {src}"),
+            Op::SseToInt {
+                dst,
+                fmt,
+                width,
+                trunc,
+                b,
+            } => write!(
+                f,
+                "t{} = fp.cvt{}s{fmt}2si{width} {b}",
+                dst.0,
+                if *trunc { "t" } else { "" }
+            ),
+            Op::SseComi {
+                dst,
+                fmt,
+                signaling,
+                a,
+                b,
+            } => write!(
+                f,
+                "t{} = fp.{}comis{fmt} {a}, {b}",
+                dst.0,
+                if *signaling { "" } else { "u" }
+            ),
         }
     }
 }

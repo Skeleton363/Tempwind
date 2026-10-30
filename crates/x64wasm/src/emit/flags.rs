@@ -203,7 +203,7 @@ impl ChunkEmitter<'_> {
         f.local_get(L_CC_A);
         f.local_get(L_CC_B);
         f.local_get(L_CC_R);
-        f.call(F_FLAGS);
+        f.call(self.fbase + F_FLAGS);
     }
 
     /// Pushes the current flags (i64; bits other than the status flags may

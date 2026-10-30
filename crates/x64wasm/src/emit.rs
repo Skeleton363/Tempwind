@@ -1,21 +1,24 @@
 //! IR -> WebAssembly (memory64) code generation, one wasm function per
-//! chunk (ABI v3, `docs/design/abi.md`; design in `docs/design/translator.md`).
+//! chunk (ABI v4, `docs/design/abi.md`; design in `docs/design/translator.md`).
 //!
 //! Module layout:
 //! - imports, in order: `env.memory` (memory64), `env.table` (the
 //!   process-wide funcref table), the globals `env.table_base` (i32),
 //!   `env.lookup` (i64, the lookup header's address) and `env.depth`
-//!   (mutable i32, nested guest calls); exports `run(state: i64) -> i32`;
-//! - function 0 `run`: the trampoline. Looks up `state.rip`, calls the chunk
+//!   (mutable i32, nested guest calls), then the k floating-point helpers
+//!   the module calls (`fp.*`, in [`abi::FpFunc`] order, functions 0..k);
+//!   exports `run(state: i64) -> i32`;
+//! - function k `run`: the trampoline. Looks up `state.rip`, calls the chunk
 //!   through the table, and loops on `STATUS_UNWIND`;
-//! - function 1 `lookup(rip: i64) -> (i32, i32)`: guest address -> (table
+//! - function k + 1 `lookup(rip: i64) -> (i32, i32)`: guest address -> (table
 //!   index, entry), a probe of the hash table in guest memory; (-1, 0) if
 //!   there is no block;
-//! - function 2 `flags(op, a, b, r) -> i64`: materializes the status flags of
-//!   a lazy flag record;
-//! - functions 3.. : one per chunk, `(state: i64, entry: i32, ret: i64) -> i32`,
-//!   at table index `table_base` + function index - 3 (an active element
-//!   segment at `global.get table_base`);
+//! - function k + 2 `flags(op, a, b, r) -> i64`: materializes the status
+//!   flags of a lazy flag record;
+//! - functions k + 3.. : one per chunk, `(state: i64, entry: i32, ret: i64)
+//!   -> i32`, at table index `table_base` + function index - (k + 3) (an
+//!   active element segment at `global.get table_base`), then the helpers
+//!   (`div128`) the module uses;
 //! - the custom section `x64wasm.blocks` lists every block for the host.
 //!
 //! Transfers to addresses outside the module, and all indirect ones, probe
@@ -59,7 +62,7 @@ use wasm_encoder::{
 };
 
 use crate::Options;
-use crate::abi;
+use crate::abi::{self, FpFunc, FpVal};
 use crate::func::Partition;
 use crate::ir::{
     BinOp, Block, CC_EAGER, CallTarget, Op, Program, Temp, Term, UnOp, VTemp, Value, Width,
@@ -68,6 +71,7 @@ use crate::ir::{
 use crate::link::{BlockEntry, encode_blocks};
 
 mod flags;
+mod fp;
 mod helpers;
 mod simd;
 mod string;
@@ -88,10 +92,13 @@ const L_CC_R: u32 = 22;
 const L_SCRATCH: u32 = 23;
 const L_TEMP0: u32 = 24;
 
+// Function indices relative to the first own function (k, the number of
+// `fp` imports).
 const F_RUN: u32 = 0;
 const F_LOOKUP: u32 = 1;
 const F_FLAGS: u32 = 2;
-/// Function index of chunk 0.
+/// Function index of chunk 0 in a module without `fp` imports; see
+/// [`first_chunk_index`].
 pub const F_CHUNK0: u32 = 3;
 
 const T_RUN: u32 = 0;
@@ -150,6 +157,13 @@ struct ChunkEmitter<'p> {
     l_v0: u32,
     /// Function index of the `div128` helper, if the module has it.
     f_div128: Option<u32>,
+    /// Index of the first own function (`run`): the number of `fp` imports.
+    fbase: u32,
+    /// The `fp` imports and their function indices.
+    fp: &'p FpImports,
+    /// Scratch locals of the floating-point lowering (an i32 for MXCSR and
+    /// a v128), present when the chunk has floating-point ops.
+    l_fp: Option<(u32, u32)>,
     /// Address of the instruction being emitted.
     cur_addr: u64,
     /// Something branches to `$leave`.
@@ -389,14 +403,19 @@ impl ChunkEmitter<'_> {
                     return;
                 }
                 self.begin_when(f, when);
-                self.current_flags(f);
-                if clear != 0 {
-                    f.i64_const(!clear as i64);
-                    f.i64_and();
-                }
-                if set != Value::Imm(0) {
+                if clear & abi::flags::STATUS == abi::flags::STATUS {
+                    // Nothing of the previous record is kept.
                     self.value(f, set);
-                    f.i64_or();
+                } else {
+                    self.current_flags(f);
+                    if clear != 0 {
+                        f.i64_const(!clear as i64);
+                        f.i64_and();
+                    }
+                    if set != Value::Imm(0) {
+                        self.value(f, set);
+                        f.i64_or();
+                    }
                 }
                 if flip != 0 {
                     f.i64_const(flip as i64);
@@ -450,6 +469,9 @@ impl ChunkEmitter<'_> {
             | Op::VConst { .. }
             | Op::VFromGpr { .. }
             | Op::VExtract { .. } => self.vector_op(f, op),
+            Op::SseFp { .. } | Op::SseFromInt { .. } | Op::SseToInt { .. } | Op::SseComi { .. } => {
+                self.fp_op(f, op)
+            }
         }
     }
 
@@ -590,7 +612,7 @@ impl ChunkEmitter<'_> {
                 f.local_get(P_STATE);
                 f.i32_const(j as i32);
                 f.local_get(P_RET);
-                f.return_call(F_CHUNK0 + c);
+                f.return_call(self.fbase + F_CHUNK0 + c);
             }
             None => {
                 // Outside the module: through the lookup table.
@@ -606,7 +628,7 @@ impl ChunkEmitter<'_> {
     /// `entry` and `func` hold the slot; on a miss, unwinds to it.
     fn probe(&mut self, f: &mut InstructionSink<'_>) {
         f.local_get(L_RIP);
-        f.call(F_LOOKUP);
+        f.call(self.fbase + F_LOOKUP);
         f.local_set(P_ENTRY);
         f.local_tee(self.l_func);
         f.i32_const(0);
@@ -698,7 +720,7 @@ impl ChunkEmitter<'_> {
                 f.local_get(P_STATE);
                 f.i32_const(j as i32);
                 f.i64_const(ret as i64);
-                f.call(F_CHUNK0 + c);
+                f.call(self.fbase + F_CHUNK0 + c);
             }
             CallTarget::Indirect(v) => {
                 self.value(f, v);
@@ -795,7 +817,7 @@ impl ChunkEmitter<'_> {
             Term::Indirect(v) => {
                 self.value(f, v);
                 f.local_tee(L_RIP);
-                f.call(F_LOOKUP);
+                f.call(self.fbase + F_LOOKUP);
                 f.local_set(P_ENTRY);
                 // A hit in this chunk is a local dispatch.
                 f.local_tee(self.l_func);
@@ -954,7 +976,11 @@ fn operands(op: &Op) -> [Option<Value>; 4] {
         } => [Some(a), None, None, None],
         Op::VShift { count, .. } => [Some(count), None, None, None],
         Op::VFromGpr { value, .. } => [Some(value), None, None, None],
+        Op::SseFromInt { src, .. } => [Some(src), None, None, None],
         Op::LoadState { .. }
+        | Op::SseFp { .. }
+        | Op::SseToInt { .. }
+        | Op::SseComi { .. }
         | Op::Cond { .. }
         | Op::VLoad { .. }
         | Op::VStore { .. }
@@ -1050,7 +1076,7 @@ fn emit_lookup() -> Function {
 }
 
 /// `run(state: i64) -> i32`: the trampoline (`docs/design/abi.md`).
-fn emit_run() -> Function {
+fn emit_run(fbase: u32) -> Function {
     const STATE: u32 = 0;
     const FUNC: u32 = 1;
     const ENTRY: u32 = 2;
@@ -1072,7 +1098,7 @@ fn emit_run() -> Function {
     f.loop_(BlockType::Empty); // $next
     f.local_get(STATE);
     f.i64_load(mem(abi::STATE_RIP));
-    f.call(F_LOOKUP);
+    f.call(fbase + F_LOOKUP);
     f.local_set(ENTRY);
     f.local_tee(FUNC);
     f.i32_const(0);
@@ -1122,7 +1148,7 @@ fn emit_run() -> Function {
         f.local_get(STATE);
         f.i64_load(mem(offset));
     }
-    f.call(F_FLAGS);
+    f.call(fbase + F_FLAGS);
     f.i64_or();
     f.i64_store(mem(abi::STATE_RFLAGS));
     f.local_get(STATE);
@@ -1189,10 +1215,64 @@ pub fn helpers_test_module() -> Vec<u8> {
     module.finish()
 }
 
+/// The `fp` helpers a module imports, in import order, with their function
+/// indices (0..k).
+pub(crate) struct FpImports {
+    funcs: Vec<FpFunc>,
+}
+
+impl FpImports {
+    /// The helpers `prog`'s ops call, in [`FpFunc`] order.
+    fn of(prog: &Program) -> FpImports {
+        let mut used = vec![false; FpFunc::ALL.len()];
+        for op in prog
+            .blocks
+            .iter()
+            .flat_map(|b| b.insns.iter().flat_map(|i| i.ops.iter()))
+        {
+            op.fp_funcs(&mut |func| used[func as usize] = true);
+        }
+        FpImports {
+            funcs: FpFunc::ALL
+                .iter()
+                .copied()
+                .filter(|&func| used[func as usize])
+                .collect(),
+        }
+    }
+
+    /// The function index of an imported helper.
+    fn index(&self, func: FpFunc) -> u32 {
+        self.funcs
+            .iter()
+            .position(|&g| g == func)
+            .unwrap_or_else(|| panic!("fp.{} is not imported", func.name())) as u32
+    }
+
+    fn len(&self) -> u32 {
+        self.funcs.len() as u32
+    }
+}
+
+/// The wasm function index of chunk 0 of the module [`emit`] makes for
+/// `prog`: 3 plus the number of `fp` imports.
+pub fn first_chunk_index(prog: &Program) -> u32 {
+    FpImports::of(prog).len() + F_CHUNK0
+}
+
+fn val_type(v: FpVal) -> ValType {
+    match v {
+        FpVal::I32 => ValType::I32,
+        FpVal::I64 => ValType::I64,
+    }
+}
+
 /// Encodes `prog`, partitioned as `part`, as a module following the ABI.
 pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
     let mut module = Module::new();
     let n_chunks = part.chunks.len() as u32;
+    let fp = FpImports::of(prog);
+    let fbase = fp.len();
 
     let mut types = TypeSection::new();
     types.ty().function([ValType::I64], [ValType::I32]); // T_RUN
@@ -1217,7 +1297,25 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             [ValType::I64, ValType::I64, ValType::I32],
         ); // T_DIV128
     }
-    let f_div128 = uses_div128.then_some(F_CHUNK0 + n_chunks);
+    let f_div128 = uses_div128.then_some(fbase + F_CHUNK0 + n_chunks);
+    // One type per distinct helper signature, after the fixed ones.
+    let mut fp_sigs: Vec<(&[FpVal], &[FpVal])> = Vec::new();
+    let mut fp_types = Vec::with_capacity(fp.funcs.len());
+    for &func in &fp.funcs {
+        let sig = (func.params(), func.results());
+        let i = match fp_sigs.iter().position(|&s| s == sig) {
+            Some(i) => i,
+            None => {
+                fp_sigs.push(sig);
+                types.ty().function(
+                    sig.0.iter().map(|&v| val_type(v)),
+                    sig.1.iter().map(|&v| val_type(v)),
+                );
+                fp_sigs.len() - 1
+            }
+        };
+        fp_types.push(T_DIV128 + uses_div128 as u32 + i as u32);
+    }
     module.section(&types);
 
     let mut imports = ImportSection::new();
@@ -1258,6 +1356,9 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             }),
         );
     }
+    for (&func, &ty) in fp.funcs.iter().zip(&fp_types) {
+        imports.import(abi::FP_MODULE, func.name(), EntityType::Function(ty));
+    }
     module.section(&imports);
 
     let mut funcs = FunctionSection::new();
@@ -1273,12 +1374,12 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
     module.section(&funcs);
 
     let mut exports = ExportSection::new();
-    exports.export(abi::RUN_EXPORT, ExportKind::Func, F_RUN);
+    exports.export(abi::RUN_EXPORT, ExportKind::Func, fbase + F_RUN);
     module.section(&exports);
 
     // Chunk i goes to table index table_base + i.
     let mut elements = ElementSection::new();
-    let chunk_funcs: Vec<u32> = (0..n_chunks).map(|c| F_CHUNK0 + c).collect();
+    let chunk_funcs: Vec<u32> = (0..n_chunks).map(|c| fbase + F_CHUNK0 + c).collect();
     elements.active(
         Some(TABLE),
         &ConstExpr::global_get(G_TABLE_BASE),
@@ -1288,29 +1389,31 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
 
     let index = prog.index_map();
     let mut code = CodeSection::new();
-    code.function(&emit_run());
+    code.function(&emit_run(fbase));
     code.function(&emit_lookup());
     code.function(&emit_flags());
     let mut temps = Vec::with_capacity(part.chunks.len());
     for (c, chunk) in part.chunks.iter().enumerate() {
-        let t = chunk
-            .blocks
-            .iter()
-            .flat_map(|&b| prog.blocks[b].insns.iter().map(|i| i.temps))
-            .max()
-            .unwrap_or(0);
-        let vt = chunk
-            .blocks
-            .iter()
-            .flat_map(|&b| prog.blocks[b].insns.iter().map(|i| i.vtemps))
-            .max()
-            .unwrap_or(0);
-        temps.push((t, vt));
+        let insns = || {
+            chunk
+                .blocks
+                .iter()
+                .flat_map(|&b| prog.blocks[b].insns.iter())
+        };
+        let t = insns().map(|i| i.temps).max().unwrap_or(0);
+        let vt = insns().map(|i| i.vtemps).max().unwrap_or(0);
+        let uses_fp = insns().flat_map(|i| i.ops.iter()).any(Op::is_fp);
+        temps.push((t, vt, uses_fp));
         let l_cc_op = L_TEMP0 + t;
         let mut locals = vec![(L_TEMP0 - L_GPR0 + t, ValType::I64), (3, ValType::I32)];
         if vt > 0 {
             locals.push((vt, ValType::V128));
         }
+        let l_fp = uses_fp.then(|| {
+            locals.push((1, ValType::I32));
+            locals.push((1, ValType::V128));
+            (l_cc_op + 3 + vt, l_cc_op + 4 + vt)
+        });
         let mut func = Function::new(locals);
         let mut emitter = ChunkEmitter {
             prog,
@@ -1328,6 +1431,9 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             l_func: l_cc_op + 2,
             l_v0: l_cc_op + 3,
             f_div128,
+            fbase,
+            fp: &fp,
+            l_fp,
             cur_addr: 0,
             leave_used: false,
         };
@@ -1355,23 +1461,28 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
         data: Cow::Owned(encode_blocks(n_chunks, &blocks)),
     });
 
-    module.section(&names(prog, part, &temps, f_div128));
+    module.section(&names(prog, part, &temps, &fp, f_div128));
     module.finish()
 }
 
 fn names(
     prog: &Program,
     part: &Partition,
-    temps: &[(u32, u32)],
+    temps: &[(u32, u32, bool)],
+    fp: &FpImports,
     f_div128: Option<u32>,
 ) -> NameSection {
+    let fbase = fp.len();
     let mut names = NameSection::new();
     let mut funcs = NameMap::new();
-    funcs.append(F_RUN, "run");
-    funcs.append(F_LOOKUP, "lookup");
-    funcs.append(F_FLAGS, "flags");
+    for (i, func) in fp.funcs.iter().enumerate() {
+        funcs.append(i as u32, &format!("fp.{}", func.name()));
+    }
+    funcs.append(fbase + F_RUN, "run");
+    funcs.append(fbase + F_LOOKUP, "lookup");
+    funcs.append(fbase + F_FLAGS, "flags");
     for c in 0..part.chunks.len() {
-        funcs.append(F_CHUNK0 + c as u32, &part.chunk_name(prog, c));
+        funcs.append(fbase + F_CHUNK0 + c as u32, &part.chunk_name(prog, c));
     }
     if let Some(i) = f_div128 {
         funcs.append(i, "div128");
@@ -1383,7 +1494,7 @@ fn names(
     for (i, n) in ["state", "func", "entry", "status"].iter().enumerate() {
         run.append(i as u32, n);
     }
-    locals.append(F_RUN, &run);
+    locals.append(fbase + F_RUN, &run);
     let mut lookup = NameMap::new();
     for (i, n) in ["rip", "slots", "mask", "i", "at", "key"]
         .iter()
@@ -1391,13 +1502,13 @@ fn names(
     {
         lookup.append(i as u32, n);
     }
-    locals.append(F_LOOKUP, &lookup);
+    locals.append(fbase + F_LOOKUP, &lookup);
     let mut flags = NameMap::new();
     for (i, n) in ["op", "a", "b", "r", "sign", "cf_of"].iter().enumerate() {
         flags.append(i as u32, n);
     }
-    locals.append(F_FLAGS, &flags);
-    for (c, &(t, vt)) in temps.iter().enumerate() {
+    locals.append(fbase + F_FLAGS, &flags);
+    for (c, &(t, vt, uses_fp)) in temps.iter().enumerate() {
         let mut chunk = NameMap::new();
         chunk.append(P_STATE, "state");
         chunk.append(P_ENTRY, "entry");
@@ -1419,7 +1530,11 @@ fn names(
         for i in 0..vt {
             chunk.append(L_TEMP0 + t + 3 + i, &format!("v{i}"));
         }
-        locals.append(F_CHUNK0 + c as u32, &chunk);
+        if uses_fp {
+            chunk.append(L_TEMP0 + t + 3 + vt, "mxcsr");
+            chunk.append(L_TEMP0 + t + 4 + vt, "fpv");
+        }
+        locals.append(fbase + F_CHUNK0 + c as u32, &chunk);
     }
     if let Some(i) = f_div128 {
         let mut div = NameMap::new();

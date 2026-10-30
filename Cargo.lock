@@ -897,6 +897,7 @@ dependencies = [
  "serde_json",
  "wasmtime",
  "x64wasm",
+ "x64wasm-fp",
 ]
 
 [[package]]

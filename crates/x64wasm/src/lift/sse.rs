@@ -1,8 +1,10 @@
-//! SSE and SSE2 without floating-point arithmetic: moves, bitwise ops,
-//! packed integer arithmetic, compares, shifts, shuffles, unpacks, packs,
-//! extracts and inserts, `ldmxcsr`/`stmxcsr` (`docs/design/translator.md`,
-//! "SSE and SSE2 without floating-point arithmetic"). The XMM registers
-//! live in the state block; lane i of every wasm shape is element i.
+//! SSE and SSE2: moves, bitwise ops, packed integer arithmetic, compares,
+//! shifts, shuffles, unpacks, packs, extracts and inserts, `ldmxcsr`/
+//! `stmxcsr` (`docs/design/translator.md`, "SSE and SSE2 without
+//! floating-point arithmetic"), and the floating-point forms: arithmetic,
+//! compares, comis/ucomis and conversions ("Floating point and x87 (M4)",
+//! emitted by `emit/fp.rs`). The XMM registers live in the state block;
+//! lane i of every wasm shape is element i.
 
 use iced_x86::{Code, Mnemonic, OpKind, Register};
 
@@ -10,7 +12,8 @@ use super::lower::Lower;
 use super::{Flow, Lowered, Unsupported};
 use crate::abi::{self, FAULT_GENERAL_PROTECTION};
 use crate::ir::{
-    BinOp, Lanes, Op, VBinOp, VExtractOp, VLoc, VShiftOp, VTemp, VWidth, Value, Width,
+    BinOp, FpArith, FpCvt, FpFmt, Lanes, Op, SseFp, VBinOp, VExtractOp, VLoc, VShiftOp, VTemp,
+    VWidth, Value, Width,
 };
 
 /// Interleaves the low (`high` false) or high halves of two vectors in
@@ -156,7 +159,75 @@ pub(super) fn is_sse(m: Mnemonic) -> bool {
             | M::Movmskpd
             | M::Ldmxcsr
             | M::Stmxcsr
+    ) || is_sse_fp(m)
+}
+
+/// The SSE/SSE2 floating-point mnemonics (M4).
+fn is_sse_fp(m: Mnemonic) -> bool {
+    use Mnemonic as M;
+    matches!(
+        m,
+        M::Addss
+            | M::Addsd
+            | M::Addps
+            | M::Addpd
+            | M::Subss
+            | M::Subsd
+            | M::Subps
+            | M::Subpd
+            | M::Mulss
+            | M::Mulsd
+            | M::Mulps
+            | M::Mulpd
+            | M::Divss
+            | M::Divsd
+            | M::Divps
+            | M::Divpd
+            | M::Minss
+            | M::Minsd
+            | M::Minps
+            | M::Minpd
+            | M::Maxss
+            | M::Maxsd
+            | M::Maxps
+            | M::Maxpd
+            | M::Sqrtss
+            | M::Sqrtsd
+            | M::Sqrtps
+            | M::Sqrtpd
+            | M::Cmpss
+            | M::Cmpsd
+            | M::Cmpps
+            | M::Cmppd
+            | M::Comiss
+            | M::Comisd
+            | M::Ucomiss
+            | M::Ucomisd
+            | M::Cvtsi2ss
+            | M::Cvtsi2sd
+            | M::Cvtss2si
+            | M::Cvttss2si
+            | M::Cvtsd2si
+            | M::Cvttsd2si
+            | M::Cvtss2sd
+            | M::Cvtsd2ss
+            | M::Cvtps2pd
+            | M::Cvtpd2ps
+            | M::Cvtdq2ps
+            | M::Cvtps2dq
+            | M::Cvttps2dq
+            | M::Cvtdq2pd
+            | M::Cvtpd2dq
+            | M::Cvttpd2dq
     )
+}
+
+/// The memory width of a scalar operand of `fmt`.
+fn scalar_width(fmt: FpFmt) -> VWidth {
+    match fmt {
+        FpFmt::S => VWidth::W32,
+        FpFmt::D => VWidth::W64,
+    }
 }
 
 impl Lower<'_> {
@@ -241,6 +312,9 @@ impl Lower<'_> {
     pub(super) fn sse(&mut self, m: Mnemonic) -> Lowered<Flow> {
         use Mnemonic as M;
         use VBinOp as V;
+        if is_sse_fp(m) {
+            return self.sse_fp(m);
+        }
         let bin = match m {
             M::Pand | M::Andps | M::Andpd => Some(V::And),
             M::Por | M::Orps | M::Orpd => Some(V::Or),
@@ -585,6 +659,174 @@ impl Lower<'_> {
         let dst = self.vtemp();
         self.push_op(Op::VShift { dst, op, a, count });
         self.vstore(VLoc::State(slot as u32), VWidth::W128, dst);
+        Ok(Flow::Next)
+    }
+}
+
+impl Lower<'_> {
+    /// The SSE/SSE2 floating-point forms.
+    fn sse_fp(&mut self, m: Mnemonic) -> Lowered<Flow> {
+        use FpArith as A;
+        use FpFmt::{D, S};
+        use Mnemonic as M;
+        let arith = |op, fmt, packed| SseFp::Arith { op, fmt, packed };
+        let op = match m {
+            M::Addss => arith(A::Add, S, false),
+            M::Addsd => arith(A::Add, D, false),
+            M::Addps => arith(A::Add, S, true),
+            M::Addpd => arith(A::Add, D, true),
+            M::Subss => arith(A::Sub, S, false),
+            M::Subsd => arith(A::Sub, D, false),
+            M::Subps => arith(A::Sub, S, true),
+            M::Subpd => arith(A::Sub, D, true),
+            M::Mulss => arith(A::Mul, S, false),
+            M::Mulsd => arith(A::Mul, D, false),
+            M::Mulps => arith(A::Mul, S, true),
+            M::Mulpd => arith(A::Mul, D, true),
+            M::Divss => arith(A::Div, S, false),
+            M::Divsd => arith(A::Div, D, false),
+            M::Divps => arith(A::Div, S, true),
+            M::Divpd => arith(A::Div, D, true),
+            M::Minss => arith(A::Min, S, false),
+            M::Minsd => arith(A::Min, D, false),
+            M::Minps => arith(A::Min, S, true),
+            M::Minpd => arith(A::Min, D, true),
+            M::Maxss => arith(A::Max, S, false),
+            M::Maxsd => arith(A::Max, D, false),
+            M::Maxps => arith(A::Max, S, true),
+            M::Maxpd => arith(A::Max, D, true),
+            M::Sqrtss => arith(A::Sqrt, S, false),
+            M::Sqrtsd => arith(A::Sqrt, D, false),
+            M::Sqrtps => arith(A::Sqrt, S, true),
+            M::Sqrtpd => arith(A::Sqrt, D, true),
+            M::Cmpss | M::Cmpsd | M::Cmpps | M::Cmppd => {
+                if self.insn.op_count() != 3 || self.insn.op_kind(2) != OpKind::Immediate8 {
+                    return Err(Unsupported);
+                }
+                // Legacy-SSE predicates are imm8 0-7; bits 7:3 are reserved.
+                let pred = self.insn.immediate8();
+                if pred > 7 {
+                    return Err(Unsupported);
+                }
+                let (fmt, packed) = match m {
+                    M::Cmpss => (S, false),
+                    M::Cmpsd => (D, false),
+                    M::Cmpps => (S, true),
+                    _ => (D, true),
+                };
+                SseFp::Cmp { pred, fmt, packed }
+            }
+            M::Comiss | M::Ucomiss => return self.sse_comi(S, m == M::Comiss),
+            M::Comisd | M::Ucomisd => return self.sse_comi(D, m == M::Comisd),
+            M::Cvtsi2ss => return self.sse_from_int(S),
+            M::Cvtsi2sd => return self.sse_from_int(D),
+            M::Cvtss2si => return self.sse_to_int(S, false),
+            M::Cvttss2si => return self.sse_to_int(S, true),
+            M::Cvtsd2si => return self.sse_to_int(D, false),
+            M::Cvttsd2si => return self.sse_to_int(D, true),
+            M::Cvtss2sd => SseFp::Cvt(FpCvt::Ss2Sd),
+            M::Cvtsd2ss => SseFp::Cvt(FpCvt::Sd2Ss),
+            M::Cvtps2pd => SseFp::Cvt(FpCvt::Ps2Pd),
+            M::Cvtpd2ps => SseFp::Cvt(FpCvt::Pd2Ps),
+            M::Cvtdq2ps => SseFp::Cvt(FpCvt::Dq2Ps),
+            M::Cvtdq2pd => SseFp::Cvt(FpCvt::Dq2Pd),
+            M::Cvtps2dq => SseFp::Cvt(FpCvt::Ps2Dq { trunc: false }),
+            M::Cvttps2dq => SseFp::Cvt(FpCvt::Ps2Dq { trunc: true }),
+            M::Cvtpd2dq => SseFp::Cvt(FpCvt::Pd2Dq { trunc: false }),
+            M::Cvttpd2dq => SseFp::Cvt(FpCvt::Pd2Dq { trunc: true }),
+            _ => return Err(Unsupported),
+        };
+        if !matches!(op, SseFp::Cmp { .. }) && self.insn.op_count() != 2 {
+            return Err(Unsupported);
+        }
+        // The source's width: scalar m32/m64 and the m64 of cvtps2pd and
+        // cvtdq2pd have no alignment requirement; m128 must be aligned.
+        let width = match op {
+            SseFp::Arith { fmt, packed, .. } | SseFp::Cmp { fmt, packed, .. } => {
+                if packed {
+                    VWidth::W128
+                } else {
+                    scalar_width(fmt)
+                }
+            }
+            SseFp::Cvt(FpCvt::Ss2Sd) => VWidth::W32,
+            SseFp::Cvt(FpCvt::Sd2Ss | FpCvt::Ps2Pd | FpCvt::Dq2Pd) => VWidth::W64,
+            SseFp::Cvt(_) => VWidth::W128,
+        };
+        let slot = VLoc::State(self.xmm(0)? as u32);
+        let b = self.vsrc(1, width, false)?;
+        let a = self.vload(VWidth::W128, slot);
+        let dst = self.vtemp();
+        self.push_op(Op::SseFp { dst, op, a, b });
+        self.vstore(slot, VWidth::W128, dst);
+        Ok(Flow::Next)
+    }
+
+    /// comiss/comisd (`signaling`), ucomiss/ucomisd: an eager flag record
+    /// with ZF, PF and CF (OF, SF and AF 0).
+    fn sse_comi(&mut self, fmt: FpFmt, signaling: bool) -> Lowered<Flow> {
+        if self.insn.op_count() != 2 {
+            return Err(Unsupported);
+        }
+        let a_slot = self.xmm(0)?;
+        let b = self.vsrc(1, scalar_width(fmt), true)?;
+        let a = self.vload(VWidth::W128, VLoc::State(a_slot as u32));
+        let dst = self.temp();
+        self.push_op(Op::SseComi {
+            dst,
+            fmt,
+            signaling,
+            a,
+            b,
+        });
+        self.flags_update(abi::flags::STATUS, Value::Temp(dst), 0, None);
+        Ok(Flow::Next)
+    }
+
+    /// cvtsi2ss, cvtsi2sd xmm, r/m32 or r/m64.
+    fn sse_from_int(&mut self, fmt: FpFmt) -> Lowered<Flow> {
+        if self.insn.op_count() != 2 {
+            return Err(Unsupported);
+        }
+        let slot = VLoc::State(self.xmm(0)? as u32);
+        let width = self.width_of(1)?;
+        if !matches!(width, Width::W32 | Width::W64) {
+            return Err(Unsupported);
+        }
+        let v = self.read(1, width)?;
+        let src = self.sext(v, width);
+        let a = self.vload(VWidth::W128, slot);
+        let dst = self.vtemp();
+        self.push_op(Op::SseFromInt {
+            dst,
+            fmt,
+            width,
+            a,
+            src,
+        });
+        self.vstore(slot, VWidth::W128, dst);
+        Ok(Flow::Next)
+    }
+
+    /// cvt(t)ss2si, cvt(t)sd2si r32/r64, xmm/m32 or xmm/m64.
+    fn sse_to_int(&mut self, fmt: FpFmt, trunc: bool) -> Lowered<Flow> {
+        if self.insn.op_count() != 2 || self.insn.op_kind(0) != OpKind::Register {
+            return Err(Unsupported);
+        }
+        let width = self.width_of(0)?;
+        if !matches!(width, Width::W32 | Width::W64) {
+            return Err(Unsupported);
+        }
+        let b = self.vsrc(1, scalar_width(fmt), true)?;
+        let dst = self.temp();
+        self.push_op(Op::SseToInt {
+            dst,
+            fmt,
+            width,
+            trunc,
+            b,
+        });
+        self.write(0, width, Value::Temp(dst))?;
         Ok(Flow::Next)
     }
 }
