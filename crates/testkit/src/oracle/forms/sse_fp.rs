@@ -26,7 +26,7 @@ pub(super) enum Fmt {
 }
 
 impl Fmt {
-    fn bits(self) -> u32 {
+    pub(super) fn bits(self) -> u32 {
         match self {
             Fmt::S => 32,
             Fmt::D => 64,
@@ -55,12 +55,12 @@ impl Fmt {
         (1 << self.mant()) - 1
     }
 
-    fn make(self, neg: bool, exp: u64, frac: u64) -> u64 {
+    pub(super) fn make(self, neg: bool, exp: u64, frac: u64) -> u64 {
         (u64::from(neg) << (self.bits() - 1)) | (exp << self.mant()) | (frac & self.frac_mask())
     }
 
     /// `x` in this format (rounded to nearest for binary32).
-    fn encode_f64(self, x: f64) -> u64 {
+    pub(super) fn encode_f64(self, x: f64) -> u64 {
         match self {
             Fmt::S => u64::from((x as f32).to_bits()),
             Fmt::D => x.to_bits(),
@@ -70,7 +70,7 @@ impl Fmt {
 
 /// Named edge values.
 #[derive(Clone, Copy, Debug)]
-enum V {
+pub(super) enum V {
     Z,
     NZ,
     DMin,
@@ -109,7 +109,7 @@ enum V {
     NSNanP,
 }
 
-const ALL_V: [V; 28] = [
+pub(super) const ALL_V: [V; 28] = [
     V::Z,
     V::NZ,
     V::DMin,
@@ -140,7 +140,7 @@ const ALL_V: [V; 28] = [
     V::NSNanP,
 ];
 
-fn v(f: Fmt, x: V) -> u64 {
+pub(super) fn v(f: Fmt, x: V) -> u64 {
     let (b, e, m) = (f.bias(), f.emax(), f.mant());
     let all = f.frac_mask();
     match x {
@@ -225,7 +225,7 @@ const PAIRS: [(V, V); 40] = [
 
 /// A random value: any finite magnitude, near 1, denormals, extremes,
 /// small integers, NaNs with random payloads, and the edges.
-fn rand_fp(rng: &mut Rng, f: Fmt) -> u64 {
+pub(super) fn rand_fp(rng: &mut Rng, f: Fmt) -> u64 {
     let neg = rng.chance(1, 2);
     let frac = rng.next_u64();
     let e = f.emax();
@@ -245,7 +245,7 @@ fn rand_fp(rng: &mut Rng, f: Fmt) -> u64 {
 }
 
 /// A source value related to `a`: equal, negated, or a few ulps away.
-fn related(rng: &mut Rng, f: Fmt, a: u64) -> u64 {
+pub(super) fn related(rng: &mut Rng, f: Fmt, a: u64) -> u64 {
     let sign = 1u64 << (f.bits() - 1);
     match rng.below(4) {
         0 => a,
