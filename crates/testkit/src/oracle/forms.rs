@@ -1627,9 +1627,9 @@ fn gen_case(
 /// The M3 and M4 fixture groups, in commit order: each lands in one "Fixtures:
 /// <group>" commit (`docs/design/fixtures.md`). The Phase 0 forms belong to
 /// no group and are always recorded.
-pub const GROUPS: [&str; 14] = [
+pub const GROUPS: [&str; 13] = [
     "alu", "ext", "cc", "shift", "muldiv", "bit", "xchg", "string", "loop", "misc", "sse",
-    "fninit", "sse_fp", "x87",
+    "fninit", "sse_fp",
 ];
 
 /// How many of `GROUPS` `testkit record` records: the groups whose fixtures
@@ -1657,7 +1657,6 @@ fn group(form: &Form) -> Option<usize> {
         f if f.starts_with("sse_fp_") => "sse_fp",
         f if f.starts_with("sse_") => "sse",
         "fninit" => "fninit",
-        f if f.starts_with("x87_") => "x87",
         f => panic!("{}: family {f} has no group", form.id),
     };
     GROUPS.iter().position(|&g| g == name)

@@ -60,7 +60,7 @@ impl Fmt {
     }
 
     /// `x` in this format (rounded to nearest for binary32).
-    fn from_f64(self, x: f64) -> u64 {
+    fn encode_f64(self, x: f64) -> u64 {
         match self {
             Fmt::S => u64::from((x as f32).to_bits()),
             Fmt::D => x.to_bits(),
@@ -237,7 +237,7 @@ fn rand_fp(rng: &mut Rng, f: Fmt) -> u64 {
         6 => f.make(neg, e - 1 - rng.below(4), frac),
         7 => {
             let n = rng.range_i64(-1000, 1000) as f64;
-            f.from_f64(n)
+            f.encode_f64(n)
         }
         8 => f.make(neg, e, frac | 1),
         _ => f.make(neg, 1 + rng.below(e - 1), frac),
@@ -403,7 +403,7 @@ fn dom_edges(d: Dom) -> Vec<u64> {
                 -1e10,
                 123456.75,
             ] {
-                push(f.from_f64(x));
+                push(f.encode_f64(x));
             }
             for x in [
                 V::DMin,
@@ -506,14 +506,14 @@ fn rand_dom(rng: &mut Rng, d: Dom) -> u64 {
             2 => {
                 // Halves and quarters of small integers: ties and roundings.
                 let x = rng.range_i64(-64, 64) as f64 / 4.0;
-                f.from_f64(x)
+                f.encode_f64(x)
             }
             _ => {
                 // Any magnitude up to just past the limit.
                 let k = rng.below(u64::from(n) + 2) as i32;
                 let r = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
                 let x = 2f64.powi(k) * (1.0 + r);
-                f.from_f64(if rng.chance(1, 2) { -x } else { x })
+                f.encode_f64(if rng.chance(1, 2) { -x } else { x })
             }
         },
         Dom::Narrow => match rng.below(5) {

@@ -108,6 +108,7 @@ The format needs no change for SSE floating point and x87: v2 already carries XM
   - plus seeded random values.
 
   Packed forms mix classes across lanes.
+- **SSE families (`forms/sse_fp.rs`):** `sse_fp_arith`, `sse_fp_cmp` and `sse_fp_cvt`, 112 cases per form. The first cases make two passes over the edges (40 operand pairs for the two-operand forms, the domain's edge values for the others), each pass under a different RC; packed forms take a different edge in each lane. The rest are random, with equal and nearly equal operands in 2 of 5 two-operand cases. cmp\* cases cycle through the eight predicates. Packed m128 operands are aligned, except two cases per memory form that expect #GP.
 - **x87 stack states:** TOP in every position; tags consistent with the contents (as above); empty and full stacks, so that pushes overflow and empty operands underflow.
 - **Undefined:** the condition codes the SDM leaves undefined per instruction (for example C0, C2 and C3 after `fadd`) go into `undefined` as an `fsw` mask.
 
