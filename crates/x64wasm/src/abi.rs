@@ -1,5 +1,8 @@
-//! The ABI between translated modules and their hosts (v3). See
+//! The ABI between translated modules and their hosts (v4). See
 //! `docs/design/abi.md` and `docs/design/translator.md`.
+//!
+//! From v4, a module also imports the soft-float helpers it calls from the
+//! `fp` namespace ([`FpFunc`]), before its own functions.
 //!
 //! A translated module imports `env.memory` (memory64), the process-wide
 //! funcref table `env.table`, and the globals `env.table_base`, `env.lookup`
@@ -29,6 +32,101 @@ pub const DEPTH_NAME: &str = "depth";
 
 /// Maximum memory64 size browsers allow, in 64 KiB pages (16 GiB).
 pub const MAX_MEMORY_PAGES: u64 = 262_144;
+
+/// Module name of the floating-point helper imports (v4).
+pub const FP_MODULE: &str = "fp";
+/// Status bit of the SSE helpers: a raised exception is unmasked; the
+/// result is meaningless and translated code exits with `EXIT_UNSUPPORTED`.
+pub const FP_UNMASKED: u32 = 1 << 31;
+
+/// A value type in a helper signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FpVal {
+    I32,
+    I64,
+}
+
+macro_rules! fp_funcs {
+    ($($variant:ident $name:literal ($($p:ident),*) -> $($r:ident)?;)*) => {
+        /// The exports of the floating-point helper module, in the order of
+        /// `abi.md`'s tables ("Floating-point helper module"), which is the
+        /// order a module imports the ones it uses in.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum FpFunc {
+            $($variant,)*
+        }
+
+        impl FpFunc {
+            pub const ALL: &'static [FpFunc] = &[$(FpFunc::$variant,)*];
+
+            /// The export name.
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(FpFunc::$variant => $name,)*
+                }
+            }
+
+            /// Parameter types.
+            pub const fn params(self) -> &'static [FpVal] {
+                match self {
+                    $(FpFunc::$variant => &[$(FpVal::$p),*],)*
+                }
+            }
+
+            /// Result types.
+            pub const fn results(self) -> &'static [FpVal] {
+                match self {
+                    $(FpFunc::$variant => &[$(FpVal::$r)?],)*
+                }
+            }
+        }
+    };
+}
+
+fp_funcs! {
+    F32Add "f32_add" (I32, I32, I32) -> I32;
+    F32Sub "f32_sub" (I32, I32, I32) -> I32;
+    F32Mul "f32_mul" (I32, I32, I32) -> I32;
+    F32Div "f32_div" (I32, I32, I32) -> I32;
+    F32Min "f32_min" (I32, I32, I32) -> I32;
+    F32Max "f32_max" (I32, I32, I32) -> I32;
+    F32Sqrt "f32_sqrt" (I32, I32) -> I32;
+    F64Add "f64_add" (I64, I64, I32) -> I64;
+    F64Sub "f64_sub" (I64, I64, I32) -> I64;
+    F64Mul "f64_mul" (I64, I64, I32) -> I64;
+    F64Div "f64_div" (I64, I64, I32) -> I64;
+    F64Min "f64_min" (I64, I64, I32) -> I64;
+    F64Max "f64_max" (I64, I64, I32) -> I64;
+    F64Sqrt "f64_sqrt" (I64, I32) -> I64;
+    F32Cmp "f32_cmp" (I32, I32, I32, I32) -> I32;
+    F64Cmp "f64_cmp" (I64, I64, I32, I32) -> I32;
+    F32Comi "f32_comi" (I32, I32, I32, I32) -> I32;
+    F64Comi "f64_comi" (I64, I64, I32, I32) -> I32;
+    F32ToF64 "f32_to_f64" (I32, I32) -> I64;
+    F64ToF32 "f64_to_f32" (I64, I32) -> I32;
+    I32ToF32 "i32_to_f32" (I32, I32) -> I32;
+    I64ToF32 "i64_to_f32" (I64, I32) -> I32;
+    I64ToF64 "i64_to_f64" (I64, I32) -> I64;
+    F32ToI32 "f32_to_i32" (I32, I32, I32) -> I32;
+    F64ToI32 "f64_to_i32" (I64, I32, I32) -> I32;
+    F32ToI64 "f32_to_i64" (I32, I32, I32) -> I64;
+    F64ToI64 "f64_to_i64" (I64, I32, I32) -> I64;
+    F80Add "f80_add" (I64, I32, I64, I32, I32, I32) -> I64;
+    F80Sub "f80_sub" (I64, I32, I64, I32, I32, I32) -> I64;
+    F80Subr "f80_subr" (I64, I32, I64, I32, I32, I32) -> I64;
+    F80Mul "f80_mul" (I64, I32, I64, I32, I32, I32) -> I64;
+    F80Div "f80_div" (I64, I32, I64, I32, I32, I32) -> I64;
+    F80Divr "f80_divr" (I64, I32, I64, I32, I32, I32) -> I64;
+    F80Sqrt "f80_sqrt" (I64, I32, I32) -> I64;
+    F80Round "f80_round" (I64, I32, I32) -> I64;
+    F80Scale "f80_scale" (I64, I32, I64, I32, I32) -> I64;
+    F80Prem "f80_prem" (I64, I32, I64, I32, I32) -> I64;
+    F80Prem1 "f80_prem1" (I64, I32, I64, I32, I32) -> I64;
+    F80Load "f80_load" (I64, I32, I32) -> I64;
+    F80Store "f80_store" (I64, I32, I32, I32) -> I64;
+    F80Cmp "f80_cmp" (I64, I32, I64, I32, I32, I32, I32) -> I32;
+    Status "status" () -> I32;
+}
 
 /// Offset of the 16 general-purpose registers (x86 encoding order, u64 each).
 pub const STATE_GPR: u64 = 0x000;
