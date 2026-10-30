@@ -9,6 +9,7 @@ import {
   STDIN_HANDLE, STDOUT_HANDLE, STDERR_HANDLE, INVALID_HANDLE_VALUE, ERROR_INVALID_HANDLE, THREAD_ID,
 } from '../abi.mjs';
 import { CP1252_TO_UNICODE, UNICODE_TO_CP1252 } from './cp1252.mjs';
+import { CP437_TO_UNICODE, UNICODE_TO_CP437 } from './cp437.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
 
@@ -38,7 +39,9 @@ export const TLS_EXPANSION_SLOTS = 1024;
 export const CRITICAL_SECTION_SIZE = 40;
 const CS_DEBUG_INFO = 0n, CS_LOCK_COUNT = 8n, CS_RECURSION_COUNT = 12n, CS_OWNING_THREAD = 16n, CS_LOCK_SEMAPHORE = 24n, CS_SPIN_COUNT = 32n;
 
-const CP_ACP = 0, CP_THREAD_ACP = 3, CP_1252 = 1252;
+const CP_ACP = 0, CP_OEMCP = 1, CP_THREAD_ACP = 3, CP_437 = 437, CP_1252 = 1252;
+const CP1252 = { toUnicode: CP1252_TO_UNICODE, fromUnicode: UNICODE_TO_CP1252 };
+const CP437 = { toUnicode: CP437_TO_UNICODE, fromUnicode: UNICODE_TO_CP437 };
 const MB_PRECOMPOSED = 0x1, MB_ERR_INVALID_CHARS = 0x8;
 const WC_NO_BEST_FIT_CHARS = 0x400;
 
@@ -58,10 +61,14 @@ const k32 = (ctx) => ctx.dllState('kernel32.dll', () => ({
   unhandledExceptionFilter: 0n,
 }));
 
-/** The code pages the shim converts: the ANSI code page is 1252 (runtime.md, "Locale"). */
+/**
+ * The code pages the shim converts (runtime.md, "Locale"): the ANSI code
+ * page 1252 and the OEM code page 437, both single-byte.
+ */
 function codePage(ctx, cp) {
-  if (cp === CP_ACP || cp === CP_THREAD_ACP || cp === CP_1252) return CP_1252;
-  ctx.fail(`code page ${cp} is not supported (only the ANSI code page, 1252)`);
+  if (cp === CP_ACP || cp === CP_THREAD_ACP || cp === CP_1252) return CP1252;
+  if (cp === CP_OEMCP || cp === CP_437) return CP437;
+  ctx.fail(`code page ${cp} is not supported (only the ANSI code page 1252 and the OEM code page 437)`);
 }
 
 /** Page protections of the image: headers read-only, sections by their characteristics, as Windows maps an image. */
@@ -322,14 +329,14 @@ export default {
       const cp = ctx.arg32(0), flags = ctx.arg32(1), src = ctx.arg(2), srcLen = ctx.argI32(3);
       const dst = ctx.arg(4), dstLen = ctx.argI32(5);
       if (src === 0n || srcLen === 0 || (dst === 0n && dstLen) || dstLen < 0) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0; }
-      codePage(ctx, cp);
+      const table = codePage(ctx, cp);
       if (flags & ~(MB_PRECOMPOSED | MB_ERR_INVALID_CHARS)) ctx.fail(`dwFlags ${hex(flags)} is not supported`);
       const bytes = srcLen < 0 ? [...ctx.readCString(src), 0] : ctx.read(src, srcLen);
       if (dstLen === 0) return bytes.length;
       if (dstLen < bytes.length) { ctx.setLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
       const out = new Uint8Array(2 * bytes.length);
       const dv = new DataView(out.buffer);
-      Array.from(bytes).forEach((b, i) => dv.setUint16(2 * i, CP1252_TO_UNICODE[b], true));
+      Array.from(bytes).forEach((b, i) => dv.setUint16(2 * i, table.toUnicode[b], true));
       ctx.write(dst, out);
       return bytes.length;
     },
@@ -343,7 +350,7 @@ export default {
       const cp = ctx.arg32(0), flags = ctx.arg32(1), src = ctx.arg(2), srcLen = ctx.argI32(3);
       const dst = ctx.arg(4), dstLen = ctx.argI32(5), defChar = ctx.arg(6), used = ctx.arg(7);
       if (src === 0n || srcLen === 0 || (dst === 0n && dstLen) || dstLen < 0) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0; }
-      codePage(ctx, cp);
+      const table = codePage(ctx, cp);
       if (flags & ~WC_NO_BEST_FIT_CHARS) ctx.fail(`dwFlags ${hex(flags)} is not supported`);
       let units;
       if (srcLen < 0) units = [...ctx.readWString(src), 0];
@@ -354,7 +361,7 @@ export default {
       const def = defChar === 0n ? 0x3f : ctx.read(defChar, 1)[0];
       let usedDefault = false;
       const out = Uint8Array.from(units, (u) => {
-        const b = UNICODE_TO_CP1252.get(u);
+        const b = table.fromUnicode.get(u);
         if (b !== undefined) return b;
         if (!(flags & WC_NO_BEST_FIT_CHARS)) {
           ctx.fail(`U+${u.toString(16).padStart(4, '0')} needs a best-fit mapping, which is not supported`);

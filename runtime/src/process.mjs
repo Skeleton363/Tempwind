@@ -7,7 +7,7 @@ import {
   PAGE_SIZE, STATE_RIP, STATE_RFLAGS, STATE_EXIT, STATE_SIZE, STATE_GS_BASE, STATE_FS_BASE,
   STATE_FAULT_ADDR, STATE_FAULT_KIND, EXIT_LEFT_CODE, EXIT_UNSUPPORTED, EXIT_FAULT, EXIT_HOST,
   FAULT_READ, FAULT_WRITE, FAULT_EXECUTE, SENTINEL_RET, LOOKUP_HEADER_ADDR, MAIN_STATE_ADDR,
-  THUNK_BASE, THUNK_SIZE, THUNK_BYTES, HOST_FUNC_INDEX, MIN_LOOKUP_SLOTS, LOOKUP_SLOT_SIZE,
+  THUNK_BASE, THUNK_SIZE, THUNK_BYTES, HOST_FUNC_INDEX, MAX_THUNKS, MIN_LOOKUP_SLOTS, LOOKUP_SLOT_SIZE,
   PEB_ADDR, TEB_ADDR, PROCESS_ID, THREAD_ID, RFLAGS_INIT, GUEST_CALL_FRAME, DLL_PROCESS_ATTACH,
   STATE_XMM, STATE_MXCSR, STATE_FCW, STATE_FTW, STATE_FP_END, MXCSR_INIT, FCW_INIT, FTW_EMPTY,
   TEB_STACK_BASE, TEB_STACK_LIMIT, TEB_SELF, TEB_CLIENT_ID_PROCESS, TEB_CLIENT_ID_THREAD,
@@ -20,6 +20,7 @@ import { Linker, moduleBlockCount } from './link.mjs';
 import { makeHostCall, HostStop } from './hostcall.mjs';
 import { parsePlan, checkPlan, executableSection, hex } from './plan.mjs';
 import { findShim, SHIM } from './win32/index.mjs';
+import { Vfs, hostNow } from './win32/vfs.mjs';
 
 const RCX = 1, RDX = 2, RSP = 4, R8 = 8, R9 = 9;
 const ARG_REGS = [RCX, RDX, R8, R9];
@@ -67,7 +68,7 @@ export class Process {
     return p;
   }
 
-  constructor({ rt = null, trace = {}, log = () => {}, onOutput = () => {}, shim = SHIM, argv = null, fp = null }) {
+  constructor({ rt = null, trace = {}, log = () => {}, onOutput = () => {}, shim = SHIM, argv = null, fp = null, vfs = null }) {
     this.rt = rt;
     this.fp = fp;
     this.trace = { api: false, translate: false, exits: false, ...trace };
@@ -84,6 +85,11 @@ export class Process {
     this.dllStates = new Map();
     /** Data import storage by `dll!name` (DLL lower-cased). */
     this.dataImports = new Map();
+    /** The file system (runtime.md, "The file system"). */
+    this.vfs = vfs ?? new Vfs();
+    this.startTime = hostNow();
+    /** GetProcAddress thunks by `dll!name`. */
+    this.procThunks = new Map();
     this.translations = 0;
     /** Total milliseconds of run-time translation: translate, compile, link. */
     this.translateMs = 0;
@@ -98,6 +104,9 @@ export class Process {
     this.plan = parsePlan(plan);
     this.map = await checkPlan(this.plan, exe);
     this.argv = this.argvOption ?? [this.plan.file];
+    /** The program in the file system, read-only: the plan's file name in C:\\tempwind. */
+    this.programPath = `C:\\tempwind\\${this.plan.file}`;
+    this.vfs.addFile(this.programPath, exe, { attrs: 0x21 }).dirty = false;
     lap('check');
     let aotModule, aotBlocks;
     try {
@@ -180,12 +189,38 @@ export class Process {
         return p.dllStates.get(dll);
       },
       dataAddress: (dll, name) => p.dataAddress(dll, name),
+      procAddress: (dll, name) => p.procAddress(dll, name),
+      heapFree: () => p.guestHeap.limit - p.guestHeap.next,
+      get maxAppAddress() { return p.map.memoryBytes - 0x1_0001n; },
+      get vfs() { return p.vfs; },
+      get startTime() { return p.startTime; },
+      get programPath() { return p.programPath; },
       get argv() { return p.argv; },
       get image() {
         const { imageBase: base, sizeOfImage: size, sizeOfHeaders, sections } = p.plan;
         return { base, size, sizeOfHeaders, sections };
       },
     };
+  }
+
+  /**
+   * A thunk for shim function `dll!name` (GetProcAddress), created on first
+   * use like an import's: a host-call thunk with a lookup slot. Undefined if
+   * the shim lacks the function.
+   */
+  procAddress(dll, name) {
+    const key = `${dll.toLowerCase()}!${name}`;
+    if (this.procThunks.has(key)) return this.procThunks.get(key);
+    const impl = findShim(dll, name, this.shim);
+    if (!impl?.fn) return undefined;
+    const id = this.imports.length;
+    if (id >= MAX_THUNKS) throw new HostStop({ error: `more than ${MAX_THUNKS} import thunks` });
+    const thunk = THUNK_BASE + THUNK_SIZE * BigInt(id);
+    this.imports.push({ dll, name, thunk, impl, iat: 0n });
+    this.mem.write(thunk, THUNK_BYTES);
+    this.linker.insert(thunk, HOST_FUNC_INDEX, id);
+    this.procThunks.set(key, thunk);
+    return thunk;
   }
 
   /** The storage of data import `dll!name`, or undefined. */

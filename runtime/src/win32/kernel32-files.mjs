@@ -217,9 +217,9 @@ export default {
     const h = ctx.arg(0), buf = ctx.arg(1), count = ctx.arg32(2), readP = ctx.arg(3), ov = ctx.arg(4);
     if (ov !== 0n) ctx.fail('overlapped I/O is not supported');
     if (readP === 0n) ctx.fail('lpNumberOfBytesRead is NULL without lpOverlapped');
-    const obj = fileOf(ctx, h, 'ReadFile');
+    const obj = fileOf(ctx, h, 'hFile');
     if (obj.kind === 'std') {
-      if (obj.stream !== 'stdin') ctx.fail(`ReadFile from ${obj.stream}`);
+      if (obj.stream !== 'stdin') ctx.fail(`hFile ${hex(h)}: not a readable handle (${obj.stream})`);
       ctx.write32(readP, 0); // stdin is empty
       return 1;
     }
@@ -240,10 +240,10 @@ export default {
     if (ov !== 0n) ctx.fail(`lpOverlapped ${hex(ov)}: overlapped I/O is not supported`);
     // Microsoft: lpNumberOfBytesWritten can be NULL only when lpOverlapped is not NULL.
     if (written === 0n) ctx.fail('lpNumberOfBytesWritten is NULL without lpOverlapped');
-    const obj = fileOf(ctx, h, 'WriteFile');
+    const obj = fileOf(ctx, h, 'hFile');
+    if (obj.kind === 'std' && obj.stream === 'stdin') ctx.fail(`hFile ${hex(h)}: not a writable handle (stdin)`);
     const bytes = count ? ctx.read(buf, count) : new Uint8Array(0);
     if (obj.kind === 'std') {
-      if (obj.stream === 'stdin') ctx.fail('WriteFile to stdin');
       ctx.write32(written, count);
       ctx.output(obj.stream, bytes);
       return 1;
@@ -260,7 +260,7 @@ export default {
   // DWORD SetFilePointer(HANDLE, LONG lDistanceToMove, PLONG lpDistanceToMoveHigh, DWORD dwMoveMethod)
   SetFilePointer: fn(4, (ctx) => {
     const h = ctx.arg(0), low = ctx.arg32(1), highP = ctx.arg(2), method = ctx.arg32(3);
-    const obj = getHandle(ctx, h, 'SetFilePointer', 'file');
+    const obj = getHandle(ctx, h, 'hFile', 'file');
     const f = obj.file;
     const dist = highP === 0n ? BigInt(ctx.argI32(1)) : (BigInt(ctx.read32(highP) | 0) << 32n) | BigInt(low);
     let pos;
@@ -279,7 +279,7 @@ export default {
 
   // DWORD GetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh)
   GetFileSize: fn(2, (ctx) => {
-    const obj = getHandle(ctx, ctx.arg(0), 'GetFileSize', 'file');
+    const obj = getHandle(ctx, ctx.arg(0), 'hFile', 'file');
     const highP = ctx.arg(1);
     const n = obj.file.node;
     const size = n.isDir ? 0 : n.size;
@@ -291,7 +291,7 @@ export default {
 
   // BOOL SetEndOfFile(HANDLE hFile): the file ends at the file pointer.
   SetEndOfFile: fn(1, (ctx) => {
-    const f = getHandle(ctx, ctx.arg(0), 'SetEndOfFile', 'file').file;
+    const f = getHandle(ctx, ctx.arg(0), 'hFile', 'file').file;
     if (f.node.isDir) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0; }
     if (!f.canWrite) { ctx.setLastError(ERROR_ACCESS_DENIED); return 0; }
     if (f.pos >= 1n << 32n) ctx.fail(`a file of ${f.pos} bytes is too large`);
@@ -303,7 +303,7 @@ export default {
 
   // BOOL SetFileTime(HANDLE, const FILETIME *lpCreationTime, const FILETIME *lpLastAccessTime, const FILETIME *lpLastWriteTime)
   SetFileTime: fn(4, (ctx) => {
-    const f = getHandle(ctx, ctx.arg(0), 'SetFileTime', 'file').file;
+    const f = getHandle(ctx, ctx.arg(0), 'hFile', 'file').file;
     if (!(f.access & (FILE_WRITE_ATTRIBUTES | GENERIC_WRITE | GENERIC_ALL))) { ctx.setLastError(ERROR_ACCESS_DENIED); return 0; }
     const times = [ctx.arg(1), ctx.arg(2), ctx.arg(3)].map((p) => (p === 0n ? 0n : ctx.read64(p)));
     const n = f.node;
@@ -322,7 +322,7 @@ export default {
 
   // BOOL GetFileInformationByHandle(HANDLE, LPBY_HANDLE_FILE_INFORMATION)
   GetFileInformationByHandle: fn(2, (ctx) => {
-    const n = getHandle(ctx, ctx.arg(0), 'GetFileInformationByHandle', 'file').file.node;
+    const n = getHandle(ctx, ctx.arg(0), 'hFile', 'file').file.node;
     const out = ctx.arg(1);
     const b = new Uint8Array(BY_HANDLE_FILE_INFORMATION_SIZE);
     const dv = new DataView(b.buffer);
@@ -409,7 +409,7 @@ export default {
 
   // BOOL FindNextFileW(HANDLE hFindFile, LPWIN32_FIND_DATAW lpFindFileData)
   FindNextFileW: fn(2, (ctx) => {
-    const f = getHandle(ctx, ctx.arg(0), 'FindNextFileW', 'find');
+    const f = getHandle(ctx, ctx.arg(0), 'hFindFile', 'find');
     if (!f.entries) ctx.fail('FindNextFileW on a stream search handle');
     if (f.next >= f.entries.length) { ctx.setLastError(ERROR_NO_MORE_FILES); return 0; }
     ctx.write(ctx.arg(1), f.entries[f.next++]);
@@ -418,7 +418,7 @@ export default {
 
   // BOOL FindClose(HANDLE hFindFile)
   FindClose: fn(1, (ctx) => {
-    getHandle(ctx, ctx.arg(0), 'FindClose', 'find');
+    getHandle(ctx, ctx.arg(0), 'hFindFile', 'find');
     handleTable(ctx).map.delete(BigInt.asUintN(64, ctx.arg(0)));
     return 1;
   }),
@@ -443,7 +443,7 @@ export default {
 
   // BOOL FindNextStreamW(HANDLE hFindStream, LPVOID lpFindStreamData)
   FindNextStreamW: fn(2, (ctx) => {
-    const f = getHandle(ctx, ctx.arg(0), 'FindNextStreamW', 'find');
+    const f = getHandle(ctx, ctx.arg(0), 'hFindStream', 'find');
     if (!f.streams) ctx.fail('FindNextStreamW on a file search handle');
     ctx.setLastError(ERROR_HANDLE_EOF);
     return 0;

@@ -304,9 +304,9 @@ export default {
     const h = BigInt.asUintN(64, ctx.arg(0));
     if (isStdHandle(h)) ctx.fail(`CloseHandle on standard handle ${hex(h)} is not supported`);
     if (h === CURRENT_PROCESS || h === CURRENT_THREAD) return 1;
-    const obj = getHandle(ctx, h, 'CloseHandle');
+    const obj = getHandle(ctx, h, 'hObject');
     if (obj.kind === 'find') ctx.fail(`CloseHandle on find handle ${hex(h)} (FindClose closes it)`);
-    removeHandle(ctx, h, 'CloseHandle');
+    removeHandle(ctx, h, 'hObject');
     if (obj.kind === 'file') ctx.vfs.close(obj.file);
     return 1;
   }),
@@ -423,6 +423,15 @@ export default {
     dv.setUint16(46, PROCESSOR_REVISION, true);
     ctx.write(ctx.arg(0), b);
   }),
+  // WORD GetActiveProcessorGroupCount(void)
+  GetActiveProcessorGroupCount: fn(0, () => 1),
+  // DWORD GetActiveProcessorCount(WORD GroupNumber): group 0 or ALL_PROCESSOR_GROUPS (0xFFFF).
+  GetActiveProcessorCount: fn(1, (ctx) => {
+    const g = ctx.arg32(0) & 0xffff;
+    if (g === 0 || g === 0xffff) return 1;
+    ctx.setLastError(ERROR_INVALID_PARAMETER);
+    return 0;
+  }),
   // BOOL GetProcessAffinityMask(HANDLE, PDWORD_PTR lpProcessAffinityMask, PDWORD_PTR lpSystemAffinityMask)
   GetProcessAffinityMask: fn(3, (ctx) => {
     if (BigInt.asUintN(64, ctx.arg(0)) !== CURRENT_PROCESS) ctx.fail('only the current process is supported');
@@ -538,9 +547,9 @@ export default {
     return addHandle(ctx, { kind: 'event', manual: ctx.arg32(1) !== 0, signaled: ctx.arg32(2) !== 0 });
   }),
   // BOOL SetEvent(HANDLE)
-  SetEvent: fn(1, (ctx) => { getHandle(ctx, ctx.arg(0), 'SetEvent', 'event').signaled = true; return 1; }),
+  SetEvent: fn(1, (ctx) => { getHandle(ctx, ctx.arg(0), 'hEvent', 'event').signaled = true; return 1; }),
   // BOOL ResetEvent(HANDLE)
-  ResetEvent: fn(1, (ctx) => { getHandle(ctx, ctx.arg(0), 'ResetEvent', 'event').signaled = false; return 1; }),
+  ResetEvent: fn(1, (ctx) => { getHandle(ctx, ctx.arg(0), 'hEvent', 'event').signaled = false; return 1; }),
   // HANDLE OpenEventW(DWORD, BOOL, LPCWSTR lpName): there are no named objects.
   OpenEventW: fn(3, (ctx) => { wstr(ctx, ctx.arg(2), 'lpName'); ctx.setLastError(ERROR_FILE_NOT_FOUND); return 0; }),
   // HANDLE OpenFileMappingW(DWORD, BOOL, LPCWSTR lpName)
@@ -555,7 +564,7 @@ export default {
   }),
   // BOOL ReleaseSemaphore(HANDLE, LONG lReleaseCount, LPLONG lpPreviousCount)
   ReleaseSemaphore: fn(3, (ctx) => {
-    const s = getHandle(ctx, ctx.arg(0), 'ReleaseSemaphore', 'semaphore');
+    const s = getHandle(ctx, ctx.arg(0), 'hSemaphore', 'semaphore');
     const n = ctx.argI32(1), prevP = ctx.arg(2);
     if (n <= 0) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0; }
     if (s.count + n > s.max) { ctx.setLastError(ERROR_TOO_MANY_POSTS); return 0; }
@@ -565,7 +574,7 @@ export default {
   }),
   // DWORD WaitForSingleObject(HANDLE, DWORD dwMilliseconds)
   WaitForSingleObject: fn(2, (ctx) => {
-    const obj = getHandle(ctx, ctx.arg(0), 'WaitForSingleObject', 'event', 'semaphore');
+    const obj = getHandle(ctx, ctx.arg(0), 'hHandle', 'event', 'semaphore');
     const ms = ctx.arg32(1);
     if (signaled(ctx, obj, 'WaitForSingleObject')) { consume(obj); return WAIT_OBJECT_0; }
     if (ms === 0) return WAIT_TIMEOUT;
@@ -575,7 +584,7 @@ export default {
   WaitForMultipleObjects: fn(4, (ctx) => {
     const n = ctx.arg32(0), arr = ctx.arg(1), all = ctx.arg32(2) !== 0, ms = ctx.arg32(3);
     if (n === 0 || n > 64) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0xffff_ffff; }
-    const objs = Array.from({ length: n }, (_, i) => getHandle(ctx, ctx.read64(arr + 8n * BigInt(i)), 'WaitForMultipleObjects', 'event', 'semaphore'));
+    const objs = Array.from({ length: n }, (_, i) => getHandle(ctx, ctx.read64(arr + 8n * BigInt(i)), 'lpHandles[i]', 'event', 'semaphore'));
     const ready = objs.map((o) => signaled(ctx, o, 'WaitForMultipleObjects'));
     if (all ? ready.every(Boolean) : ready.some(Boolean)) {
       if (all) { objs.forEach(consume); return WAIT_OBJECT_0; }
@@ -626,7 +635,9 @@ export default {
     const addr = ctx.arg(0), size = ctx.arg(1), type = ctx.arg32(2), protect = ctx.arg32(3);
     if (addr !== 0n) ctx.fail(`VirtualAlloc at a given address ${hex(addr)} is not supported`);
     if (protect !== PAGE_READWRITE) ctx.fail(`flProtect ${hex(protect)} is not supported`);
-    if ((type & ~MEM_TOP_DOWN) !== (MEM_COMMIT | MEM_RESERVE)) ctx.fail(`flAllocationType ${hex(type)} is not supported (only MEM_COMMIT | MEM_RESERVE)`);
+    // With lpAddress NULL, MEM_COMMIT alone reserves and commits too.
+    const t = type & ~MEM_TOP_DOWN;
+    if (t !== MEM_COMMIT && t !== (MEM_COMMIT | MEM_RESERVE)) ctx.fail(`flAllocationType ${hex(type)} is not supported (only MEM_COMMIT, with or without MEM_RESERVE)`);
     if (size === 0n) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0n; }
     try {
       return vmAlloc(ctx, size);
@@ -688,19 +699,19 @@ export default {
   // --- the console: stdout and stderr are redirected ---
   // BOOL GetConsoleMode(HANDLE, LPDWORD)
   GetConsoleMode: fn(2, (ctx) => {
-    getHandle(ctx, ctx.arg(0), 'GetConsoleMode', 'std', 'file');
+    getHandle(ctx, ctx.arg(0), 'hConsoleHandle', 'std', 'file');
     ctx.setLastError(ERROR_INVALID_HANDLE);
     return 0;
   }),
   // BOOL SetConsoleMode(HANDLE, DWORD)
   SetConsoleMode: fn(2, (ctx) => {
-    getHandle(ctx, ctx.arg(0), 'SetConsoleMode', 'std', 'file');
+    getHandle(ctx, ctx.arg(0), 'hConsoleHandle', 'std', 'file');
     ctx.setLastError(ERROR_INVALID_HANDLE);
     return 0;
   }),
   // BOOL GetConsoleScreenBufferInfo(HANDLE, PCONSOLE_SCREEN_BUFFER_INFO)
   GetConsoleScreenBufferInfo: fn(2, (ctx) => {
-    getHandle(ctx, ctx.arg(0), 'GetConsoleScreenBufferInfo', 'std', 'file');
+    getHandle(ctx, ctx.arg(0), 'hConsoleOutput', 'std', 'file');
     ctx.setLastError(ERROR_INVALID_HANDLE);
     return 0;
   }),

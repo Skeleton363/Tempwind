@@ -26,15 +26,25 @@ export function addHandle(ctx, obj) {
   return h;
 }
 
+/** The table's object for `h`, or undefined (also where the context has no shim state, so no handles). */
+function lookup(ctx, h) {
+  const std = STD.get(h);
+  if (std) return std;
+  let table;
+  try { table = handleTable(ctx); } catch { return undefined; }
+  return table.map.get(h);
+}
+
 /**
- * The object behind handle `h`, which must be one of `kinds` ('std', 'file',
- * 'find', 'event', 'semaphore', 'mapping'); any other handle stops.
+ * The object behind handle `h` (the argument named `param`), which must be
+ * one of `kinds` ('std', 'file', 'find', 'event', 'semaphore', 'mapping',
+ * 'token'); any other handle stops.
  */
-export function getHandle(ctx, h, api, ...kinds) {
+export function getHandle(ctx, h, param, ...kinds) {
   h = BigInt.asUintN(64, BigInt(h));
-  const obj = STD.get(h) ?? handleTable(ctx).map.get(h);
-  if (!obj) ctx.fail(`${api}: unknown handle ${hex(h)}`);
-  if (kinds.length && !kinds.includes(obj.kind)) ctx.fail(`${api}: handle ${hex(h)} is a ${obj.kind} handle, not ${kinds.join(' or ')}`);
+  const obj = lookup(ctx, h);
+  if (!obj) ctx.fail(`${param} ${hex(h)}: unknown handle`);
+  if (kinds.length && !kinds.includes(obj.kind)) ctx.fail(`${param} ${hex(h)}: a ${obj.kind} handle, not ${kinds.join(' or ')}`);
   return obj;
 }
 
@@ -43,7 +53,7 @@ export function removeHandle(ctx, h, api) {
   h = BigInt.asUintN(64, BigInt(h));
   const t = handleTable(ctx);
   const obj = t.map.get(h);
-  if (!obj) ctx.fail(`${api}: unknown handle ${hex(h)}`);
+  if (!obj) ctx.fail(`${api} ${hex(h)}: unknown handle`);
   t.map.delete(h);
   return obj;
 }

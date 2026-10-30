@@ -17,6 +17,8 @@ export const FILE_FLAG = 24n;
 export const FILE_FILE = 28n;
 export const _IOREAD = 0x1;
 export const _IOWRT = 0x2;
+export const _IOEOF = 0x10;
+export const _IOERR = 0x20;
 export const _O_TEXT = 0x4000;
 export const EOF = 0xffff_ffff; // (int)-1 as the u32 a function returns in EAX
 
@@ -505,9 +507,49 @@ export default {
     return i < 0 ? 0n : s + BigInt(i);
   }),
 
+  strstr: fn(2, (ctx) => {
+    const s = ctx.arg(0);
+    const hay = ctx.readCString(s), needle = ctx.readCString(ctx.arg(1));
+    if (!needle.length) return s;
+    outer: for (let i = 0; i + needle.length <= hay.length; i++) {
+      for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+      return s + BigInt(i);
+    }
+    return 0n;
+  }),
+  wcscmp: fn(2, (ctx) => {
+    const a = ctx.readWString(ctx.arg(0)), b = ctx.readWString(ctx.arg(1));
+    for (let i = 0; ; i++) {
+      const x = a[i] ?? 0, y = b[i] ?? 0;
+      if (x !== y || x === 0) return x > y ? 1 : x < y ? -1 : 0;
+    }
+  }),
+  wcsstr: fn(2, (ctx) => {
+    const s = ctx.arg(0);
+    const hay = ctx.readWString(s), needle = ctx.readWString(ctx.arg(1));
+    if (!needle.length) return s;
+    outer: for (let i = 0; i + needle.length <= hay.length; i++) {
+      for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+      return s + 2n * BigInt(i);
+    }
+    return 0n;
+  }),
+
+  // --- environment: empty (runtime.md, "Environment and registry") ---
+  getenv: fn(1, (ctx) => { ctx.readCString(ctx.arg(0)); return 0n; }),
+
   // --- numbers ---
   strtol: fn(3, (ctx) => strtoX(ctx, false, { max: 0x7fff_ffffn, min: -0x8000_0000n }) & 0xffff_ffffn),
   _strtoi64: fn(3, (ctx) => strtoX(ctx, false, null)),
+  // Wine's _strtoul_l: _strtoi64, then ULONG_MAX above the range and 1 below -ULONG_MAX, both with ERANGE.
+  strtoul: fn(3, (ctx) => {
+    const nptr = ctx.arg(0), endptr = ctx.arg(1), base = ctx.argI32(2);
+    let { value, end, overflow } = parseInteger(ctx, nptr, base, false);
+    if (value > 0xffff_ffffn) { value = 0xffff_ffffn; overflow = true; } else if (value < -0xffff_ffffn) { value = 1n; overflow = true; }
+    if (overflow) setErrno(ctx, ERANGE);
+    if (endptr !== 0n) ctx.write64(endptr, end);
+    return BigInt.asUintN(32, value);
+  }),
   _strtoui64: fn(3, (ctx) => strtoX(ctx, true, null)),
   // msvcrt.dll's own atoi: optional sign, decimal digits, int wrap-around, no errno.
   atoi: fn(1, (ctx) => {
@@ -543,6 +585,38 @@ export default {
 
   // --- stdio ---
   __iob_func: fn(0, (ctx) => crt(ctx).iob),
+
+  // Low-level I/O: descriptors 0-2 are the standard handles, redirected (not consoles).
+  _fileno: fn(1, (ctx) => streamIndex(ctx, ctx.arg(0))),
+  _get_osfhandle: fn(1, (ctx) => {
+    const fd = ctx.argI32(0);
+    if (fd >= 0 && fd <= 2) return [0x3n, 0x7n, 0xbn][fd];
+    ctx.fail(`_get_osfhandle(${fd}): only descriptors 0-2 are open`);
+  }),
+  _isatty: fn(1, (ctx) => {
+    const fd = ctx.argI32(0);
+    if (fd < 0 || fd > 2) ctx.fail(`_isatty(${fd}): only descriptors 0-2 are open`);
+    return 0;
+  }),
+  // int fflush(FILE *): output is written through, so there is nothing to flush.
+  fflush: fn(1, (ctx) => { if (ctx.arg(0) !== 0n) streamIndex(ctx, ctx.arg(0)); return 0; }),
+  feof: fn(1, (ctx) => {
+    const f = ctx.arg(0);
+    streamIndex(ctx, f);
+    return ctx.read32(f + FILE_FLAG) & _IOEOF;
+  }),
+  ferror: fn(1, (ctx) => {
+    const f = ctx.arg(0);
+    streamIndex(ctx, f);
+    return ctx.read32(f + FILE_FLAG) & _IOERR;
+  }),
+  // int fgetc(FILE *): stdin is empty, so the first read hits the end.
+  fgetc: fn(1, (ctx) => {
+    const f = ctx.arg(0);
+    if (streamIndex(ctx, f) !== 0) ctx.fail('fgetc from an output stream');
+    ctx.write32(f + FILE_FLAG, ctx.read32(f + FILE_FLAG) | _IOEOF);
+    return EOF;
+  }),
 
   // FILE *fopen(const char *path, const char *mode): Phase 1 has an empty file system.
   fopen: fn(2, (ctx) => {

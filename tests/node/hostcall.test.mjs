@@ -122,7 +122,7 @@ test('WriteFile to stdout and stderr appends the bytes and sets *lpNumberOfBytes
 for (const [label, args, re] of [
   ['an OVERLAPPED', { overlapped: 0x1_2c00n }, /^kernel32.dll!WriteFile: lpOverlapped 0x12c00: overlapped I\/O is not supported$/],
   ['a NULL lpNumberOfBytesWritten', { written: 0n }, /lpNumberOfBytesWritten is NULL/],
-  ['an unknown handle', { handle: 0x44n }, /hFile 0x44: not a writable handle/],
+  ['an unknown handle', { handle: 0x44n }, /hFile 0x44: unknown handle/],
   ['the stdin handle', { handle: STDIN_HANDLE }, /hFile 0x3: not a writable handle/],
   ['a NULL buffer', { buf: 0n }, /bad pointer 0x0 \(6 bytes\)/],
   ['a buffer past memory', { buf: 0x3_fffen }, /bad pointer 0x3fffe/],
