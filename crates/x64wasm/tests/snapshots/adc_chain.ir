@@ -1,0 +1,30 @@
+function 0x1000: wasm function 3 (fn_0x1000)
+
+block 0x1000:
+  0x1000: add rax,rbx
+    t0 = add rax, rbx
+    flags.add64 rax, rbx, t0
+    rax = t0
+  0x1003: adc rdx,rcx
+    t0 = add rdx, rcx
+    t1 = cond.b
+    t2 = add t0, t1
+    flags.adc64 rdx, rcx, t2
+    rdx = t2
+  0x1006: adc esi,0
+    t0 = and rsi, 0xffffffff
+    t1 = add t0, 0x0
+    t2 = cond.b
+    t3 = add t1, t2
+    t4 = and t3, 0xffffffff
+    flags.adc32 t0, 0x0, t4
+    rsi = t4
+  0x1009: inc rdi
+    t0 = add rdi, 0x1
+    flags.inc64 rdi, 0x0, t0
+    rdi = t0
+  0x100c: ret
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

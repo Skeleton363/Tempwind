@@ -393,9 +393,9 @@ fn known_addresses_are_never_decoded() {
 
 #[test]
 fn discovery_continues_after_unsupported_instructions() {
-    // 0x1000: mov eax, 1; movsxd rax, ecx (unsupported); add eax, 2;
+    // 0x1000: mov eax, 1; rex.w cpuid (unsupported); add eax, 2;
     // jz 0x100e; nop; ret
-    let code = hex("b801000000 4863c1 83c002 7401 90 c3");
+    let code = hex("b801000000 480fa2 83c002 7401 90 c3");
     let t = translate(&code, 0x1000, &Options::default());
     validate(&t.wasm);
     assert_eq!(t.blocks, [0x1000, 0x1008, 0x100d, 0x100e]);
@@ -426,8 +426,8 @@ fn discovery_continues_after_unsupported_instructions() {
     );
     assert_eq!(prog.blocks[0].after_exit, Some(0x1008));
 
-    // An unsupported instruction that doesn't continue (ud2, int3, an
-    // invalid encoding) ends discovery there.
+    // An instruction that doesn't continue (ud2 and an invalid encoding,
+    // which fault, and unsupported int3) ends discovery there.
     for stop in ["0f0b", "cc", "06"] {
         let code = hex(&format!("b801000000 {stop} 90 c3"));
         let t = translate(&code, 0x1000, &Options::default());

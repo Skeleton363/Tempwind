@@ -36,6 +36,9 @@ export const EXIT_HOST = 4;
 export const FAULT_READ = 1;
 export const FAULT_WRITE = 2;
 export const FAULT_EXECUTE = 3;
+export const FAULT_DIVIDE = 4;
+export const FAULT_INVALID_OPCODE = 5;
+export const FAULT_GENERAL_PROTECTION = 6;
 
 export const STATUS_RETURNED = 0;
 export const STATUS_UNWIND = 1;

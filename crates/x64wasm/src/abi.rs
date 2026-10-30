@@ -92,6 +92,13 @@ pub const FAULT_READ: u32 = 1;
 pub const FAULT_WRITE: u32 = 2;
 /// Fault kind: execution (no executable code at the address).
 pub const FAULT_EXECUTE: u32 = 3;
+/// Fault kind: divide error (#DE): `div`/`idiv` by zero or with a quotient
+/// that doesn't fit.
+pub const FAULT_DIVIDE: u32 = 4;
+/// Fault kind: invalid opcode (#UD), e.g. `ud2`.
+pub const FAULT_INVALID_OPCODE: u32 = 5;
+/// Fault kind: general protection (#GP).
+pub const FAULT_GENERAL_PROTECTION: u32 = 6;
 
 /// Lookup header field: guest address of the slot array (u64).
 pub const LOOKUP_SLOTS: u64 = 0;

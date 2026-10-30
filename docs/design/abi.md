@@ -26,6 +26,7 @@ A translated module imports, in this order:
 - Functions:
   - function 0 is `run`, 1 `lookup`, 2 `flags`;
   - 3 + i is chunk i, at table index `table_base + i`, which an active element segment with offset `global.get $table_base` writes;
+  - helper functions such as `div128` (128-by-64-bit division) follow the chunks; they are emitted only when used and are not in the table;
   - guest functions (chunks) have the type `(state: i64, entry: i32, ret: i64) -> i32`. `entry` is the index of the block to start at, and every block is a valid entry. `ret` is the return address the caller expects: a `ret` that pops exactly this value returns to the wasm caller.
 - Globals 0-2 are the imported `table_base`, `lookup` and `depth`. Only `run` is exported.
 - The name section names every function, local, the table and the globals. A chunk is named after its guest function's entry: `fn_0x140001000`, or `fn_0x140001000_c1` and so on for the chunks of a large function that don't hold the entry.
@@ -136,18 +137,26 @@ All fields are little-endian. Size: `0x400` bytes. It must be 16-byte aligned; 6
 | `0x0b0` | 8 | FS base | Used by FS-relative addressing (M3). |
 | `0x0b8` | 8 | GS base | Used by GS-relative addressing (M3). The runtime sets it to the TEB. |
 | `0x0c0` | 8 | fault address | For `EXIT_FAULT`. |
-| `0x0c8` | 4 | fault kind | For `EXIT_FAULT`: `FAULT_READ` 1, `FAULT_WRITE` 2, `FAULT_EXECUTE` 3. |
+| `0x0c8` | 4 | fault kind | For `EXIT_FAULT`. Memory faults: `FAULT_READ` 1, `FAULT_WRITE` 2, `FAULT_EXECUTE` 3. Exceptions: `FAULT_DIVIDE` 4 (#DE), `FAULT_INVALID_OPCODE` 5 (#UD), `FAULT_GENERAL_PROTECTION` 6 (#GP). |
 | `0x0cc` | 0x34 | reserved, zero | |
-| `0x100` | 16 × 16 | XMM0-XMM15 | Reserved for M3/M4. |
-| `0x200` | 4 | MXCSR | Reserved for M3/M4. |
-| `0x204` | 2 | x87 FCW | Reserved for M3/M4. |
-| `0x206` | 2 | x87 FSW | Reserved; TOP in bits 11-13. |
-| `0x208` | 2 | x87 tag word (full, 2 bits per register) | Reserved. |
+| `0x100` | 16 × 16 | XMM0-XMM15 | From M3, the XMM registers live here while translated code runs, read and written with `v128` loads and stores. M4 may cache them in locals, synced at boundaries like the GPRs. |
+| `0x200` | 4 | MXCSR | Lives here from M3 (`ldmxcsr`, `stmxcsr`; M4's SSE arithmetic reads it). |
+| `0x204` | 2 | x87 FCW | Lives here from M3 (`fninit`, `fnstcw`, `fldcw`). |
+| `0x206` | 2 | x87 FSW | TOP in bits 11-13. `fninit` resets it from M3; M4 uses it. |
+| `0x208` | 2 | x87 tag word (full, 2 bits per register) | `fninit` sets it to empty (0xFFFF) from M3; M4 uses it. |
 | `0x20a` | 6 | reserved, zero | |
-| `0x210` | 8 × 16 | x87 physical registers R0-R7, 80 bits each in a 16-byte slot | Reserved. Physical order, not ST(i) order: ST(i) = R[(TOP + i) mod 8]. |
+| `0x210` | 8 × 16 | x87 physical registers R0-R7, 80 bits each in a 16-byte slot | Physical order, not ST(i) order: ST(i) = R[(TOP + i) mod 8]. From M3, translated code preserves them (`fninit` leaves their contents; replay compares them); M4 uses them. |
 | `0x290` | 0x170 | reserved, zero | Room for YMM upper halves and other state later. |
 
 Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
+
+## Instruction semantics (Phase 1)
+
+- **`lock`:** an ordinary read-modify-write, which is exact with one thread. Atomic lowering comes with threads (Phase 4).
+- **Segment overrides:** FS and GS add the base from the state block (`0x0b0`, `0x0b8`) to the effective address. CS, DS, ES and SS overrides change nothing in 64-bit mode.
+- **Address-size override (67h):** the effective address is computed in 32 bits and zero-extended.
+- **DF and the other non-status flags** live in the state block's RFLAGS while code runs. `std` and `cld` write it, and string instructions read it.
+- **Undefined results:** where the SDM leaves a flag or a register undefined, translated code may produce any value, and fixtures don't check it.
 
 ## Exit reasons
 
@@ -155,7 +164,7 @@ Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
 |---|---|---|
 | 1 | `EXIT_LEFT_CODE` | Control reached a guest address with no block in the lookup table: a fall-through past the code, a target nothing translated yet, or a `ret` to an unknown address. `rip` holds that address. Hosts translate more code (run-time translation) or stop. |
 | 2 | `EXIT_UNSUPPORTED` | The instruction at `rip` is not supported yet. Registers hold the state before it. |
-| 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. M2's runtime raises it for execution outside executable sections; translated code emits it from M3/M6 on (NULL and store checks). |
+| 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. RIP is the faulting instruction, and every register holds its value from before it. Translated code emits it from M3 for #DE (`div`, `idiv`), #UD (`ud2` and bytes that don't decode) and #GP, with fault address 0. An instruction that decodes but is outside the CPUID profile stays `EXIT_UNSUPPORTED`. M2's runtime raises it for execution outside executable sections. NULL and store checks come with M6. |
 | 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API, a shim error. The host knows why. |
 
 A test function returns to the host by `ret`ing to a sentinel return address that the host pushed (`SENTINEL_RET = 0x0000_7FFF_FFFF_0000`). The host then expects exit 1 with `rip == SENTINEL_RET`.

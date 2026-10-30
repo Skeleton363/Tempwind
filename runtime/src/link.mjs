@@ -290,10 +290,26 @@ export class Linker {
    *   chunks: number, blocks: number, inserted: number}>}
    */
   async link(module) {
-    const { chunks, count, dv: bdv } = readBlocks(blocksSection(module));
+    const tableBase = this.reserve(module);
+    return this.insertBlocks(module, tableBase, await WebAssembly.instantiate(module, this.imports(tableBase)));
+  }
+
+  /** link() for callers that cannot wait (a guest call from a host function). */
+  linkSync(module) {
+    const tableBase = this.reserve(module);
+    return this.insertBlocks(module, tableBase, new WebAssembly.Instance(module, this.imports(tableBase)));
+  }
+
+  /** Grows the table for the module's chunks; returns its table base. */
+  reserve(module) {
+    const { chunks } = readBlocks(blocksSection(module));
     const tableBase = this.table.length;
     this.table.grow(chunks);
-    const instance = await WebAssembly.instantiate(module, this.imports(tableBase));
+    return tableBase;
+  }
+
+  insertBlocks(module, tableBase, instance) {
+    const { chunks, count, dv: bdv } = readBlocks(blocksSection(module));
     const run = instance.exports.run;
     if (typeof run !== 'function') throw new Error('module lacks export "run"');
     let inserted = 0;

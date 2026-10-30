@@ -16,7 +16,7 @@ Runs unmodified 64-bit Windows programs in the browser: x86-64 to WebAssembly tr
 ## Commands
 Keep this section current; add each command when it first works.
 - Lint and unit/integration tests (includes L1 fixture replay, spike tests in wasmtime, L5 snapshots): `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
-- L1 oracle (x86-64 Linux only): `cargo run -p testkit --release -- record` re-records `crates/testkit/fixtures/l1/`; `-- record --check` diffs a fresh recording against them; `-- replay` prints a per-family summary.
+- L1 oracle (x86-64 Linux only; format: `docs/design/fixtures.md`): `cargo run -p testkit --release -- record` re-records `crates/testkit/fixtures/l1/`; `-- record --check` diffs a fresh recording against them; `-- replay` prints a per-family summary.
 - Spike programs for the JS hosts: `cargo run -p testkit --release -- spike --out target/spike`
 - Translator CLI: `cargo run -p x64wasm-cli -- translate|ir|wat --base 0x140001000 --hex "48 01 d8 c3" [-o out.wasm] [--shared] [--max-function-insns N] [--max-chunk-insns N] [--call-depth-limit N | --no-depth-guard]`
 - Whole PE images: `cargo run -p x64wasm-cli --release -- translate-pe FILE --out-dir DIR [--entries all|entry]` writes `DIR/<stem>.wasm` (ABI v3) and `DIR/<stem>.plan.json` (load plan). Run-time translator: `cargo build -p x64wasm-rt --release --target wasm32-unknown-unknown`.
@@ -27,11 +27,11 @@ Keep this section current; add each command when it first works.
 - Image measurements (needs `7zz.exe`, `coremark.exe` and `census.json` from the targets release in `target/targets/`): wasmtime `cargo test -p x64wasm-cli --release --test images -- --ignored --nocapture`; V8 `node tests/bench/translator/images.mjs [--runs N]`; linking speed `node tests/bench/translator/link.mjs` (after `spike --bench`).
 - Phase 1 targets (7zz.exe, coremark.exe, built in CI by `.github/workflows/targets.yml` from the sources pinned in `tests/targets/sources.json`): `scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe` (also `coremark.exe`, `census.json`, `census.md`, `build-info.json`). Mirrored sources: releases `src-7zip-25.01` and `src-coremark-1f483d5`.
 - Instruction census: `cargo run -p testkit --release -- census FILE... [--json PATH] [--md PATH] [--check]`; `--check` fails while in-scope forms lack L1 fixtures (scope rule: `docs/design/instruction-scope.md`).
-- JS (Node 24): `npm ci`, then `npm run test:node` and `npm run test:browser` (Playwright, headless Chromium). Both need `target/spike`; `test:node` also needs the outputs of `tests/pe/prepare.sh`. `CHROME_PATH=/path/to/chrome npm run test:browser` uses another browser. Never run `playwright install` in a session; the image already has Playwright's Chromium.
+- JS (Node 24): `npm ci`, then `npm run test:node` and `npm run test:browser` (Playwright, headless Chromium). Both need `target/spike`; `test:node` also needs the outputs of `tests/pe/prepare.sh` and `tests/native/prepare.sh`. `CHROME_PATH=/path/to/chrome npm run test:browser` uses another browser. Never run `playwright install` in a session; the image already has Playwright's Chromium.
 - Docker: `tools/start-dockerd.sh` (idempotent; the SessionStart hook runs it).
 - Emscripten probe (wasm64 vs x86_64-linux type sizes, pthreads): `native/spike/run.sh`; report in `native/spike/out/report.md`.
 - Environment setup script: `tools/cloud-setup.sh` (safe to rerun; always exits 0 and prints a per-step summary).
-- MinGW test program: `tests/native/build.sh` builds `target/native/hello.exe`; the expected output is `tests/native/hello.expected`.
+- MinGW test programs (L2): `tests/native/build.sh` builds `target/native/{hello,l2_int,l2_crt}.exe`. The expected outputs are `tests/native/<name>.expected`, with LF line ends; checks compare them as CRLF, because msvcrt's stdout is in text mode. The exit codes are in `<name>.exitcode`. `tests/native/prepare.sh` translates the L2 programs for `npm run test:node`.
 - Release assets: `scripts/fetch-artifact.sh TAG ASSET [DIR]` or `scripts/fetch-artifact.sh --latest PREFIX ASSET [DIR]` (sha256-verified). Releases are published by `.github/workflows/artifacts.yml` as `<artifact>-<sha7>`.
 
 ## How we work
@@ -71,5 +71,6 @@ Quality first: rework is the most expensive waste. Cut the rest:
 - Contracts and tests before code: design notes and ABI changes are committed before agents start; fixtures or a failing test come before a fix.
 - Read narrowly: Grep, then Read with offset/limit. Never read fixtures, `census.json`, snapshots or CI logs whole; save logs to a file and grep them.
 - Keep command output short (`cargo test -q`, `| tail -n 40`); full output only while diagnosing.
+- Split work into agents only along artifact boundaries (fixtures, ABI, separate files); never chain agents through summaries; small or tightly coupled work stays in the main loop.
 - Delegate large, self-contained work, not lookups one Grep answers. The brief names the files, the contract and the tests that decide "done"; agents report in about 150 words; the coordinator reviews diffs, not whole files.
 - Verify before pushing, including CI scripts that can run in the session. Wait for PR events instead of polling CI.

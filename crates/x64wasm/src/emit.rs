@@ -62,10 +62,17 @@ use crate::Options;
 use crate::abi;
 use crate::func::Partition;
 use crate::ir::{
-    BinOp, Block, CC_EAGER, CallTarget, Cond, FlagOp, Op, Program, Temp, Term, Value, Width,
+    BinOp, Block, CC_EAGER, CallTarget, Op, Program, Temp, Term, UnOp, VTemp, Value, Width,
     reg_name,
 };
 use crate::link::{BlockEntry, encode_blocks};
+
+mod flags;
+mod helpers;
+mod simd;
+mod string;
+
+use flags::{Known, emit_flags};
 
 // Parameters and locals of a chunk function.
 const P_STATE: u32 = 0;
@@ -91,6 +98,8 @@ const T_RUN: u32 = 0;
 const T_FLAGS: u32 = 1;
 const T_CHUNK: u32 = 2;
 const T_LOOKUP: u32 = 3;
+/// Only present when a helper uses it.
+const T_DIV128: u32 = 4;
 
 const TABLE: u32 = 0;
 const G_TABLE_BASE: u32 = 0;
@@ -113,6 +122,9 @@ enum Label {
     Miss,
     SelfLoop,
     If,
+    /// Labels of a string instruction's loop.
+    StrDone,
+    StrLoop,
 }
 
 struct ChunkEmitter<'p> {
@@ -126,7 +138,7 @@ struct ChunkEmitter<'p> {
     depth_limit: Option<u32>,
     labels: Vec<Label>,
     /// The lazy flag record kind known statically at this point, if any.
-    known_cc: Option<(FlagOp, Width)>,
+    known_cc: Option<Known>,
     /// The current op's result stays on the stack for the next op.
     keep: Option<Temp>,
     /// A temporary that is on top of the wasm stack instead of in its local.
@@ -134,6 +146,12 @@ struct ChunkEmitter<'p> {
     l_cc_op: u32,
     l_status: u32,
     l_func: u32,
+    /// The first v128 local (vector temporaries).
+    l_v0: u32,
+    /// Function index of the `div128` helper, if the module has it.
+    f_div128: Option<u32>,
+    /// Address of the instruction being emitted.
+    cur_addr: u64,
     /// Something branches to `$leave`.
     leave_used: bool,
 }
@@ -207,6 +225,7 @@ impl ChunkEmitter<'_> {
         // The value a terminator pushes first.
         let term_value = match term {
             Some(Term::Indirect(v) | Term::Ret(v)) => Some(*v),
+            Some(Term::BranchIf { value, .. }) => Some(*value),
             Some(Term::Call {
                 target: CallTarget::Indirect(v),
                 ..
@@ -218,9 +237,12 @@ impl ChunkEmitter<'_> {
         }
         for (i, op) in ops.iter().enumerate() {
             // Dead flag records emit nothing, so look past them.
-            let next = ops[i + 1..]
-                .iter()
-                .find(|o| !matches!(o, Op::Flags { live: false, .. }));
+            let next = ops[i + 1..].iter().find(|o| {
+                !matches!(
+                    o,
+                    Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. }
+                )
+            });
             let next_first = match next {
                 Some(next) => first_operand(next),
                 None => term_value,
@@ -253,32 +275,73 @@ impl ChunkEmitter<'_> {
                     BinOp::Xor => f.i64_xor(),
                     BinOp::Shl => f.i64_shl(),
                     BinOp::ShrU => f.i64_shr_u(),
+                    BinOp::ShrS => f.i64_shr_s(),
+                    BinOp::Rotl => f.i64_rotl(),
+                    BinOp::Rotr => f.i64_rotr(),
+                    BinOp::Mul => f.i64_mul(),
+                    BinOp::DivU => f.i64_div_u(),
+                    BinOp::DivS => f.i64_div_s(),
+                    BinOp::RemU => f.i64_rem_u(),
+                    BinOp::RemS => f.i64_rem_s(),
+                    BinOp::Eq => f.i64_eq().i64_extend_i32_u(),
+                    BinOp::Ne => f.i64_ne().i64_extend_i32_u(),
+                    BinOp::LtU => f.i64_lt_u().i64_extend_i32_u(),
+                    BinOp::LtS => f.i64_lt_s().i64_extend_i32_u(),
                 };
+                self.set_temp(f, dst);
+            }
+            Op::Un { dst, op, a } => {
+                self.value(f, a);
+                match op {
+                    UnOp::Clz => f.i64_clz(),
+                    UnOp::Ctz => f.i64_ctz(),
+                    UnOp::Sext8 => f.i64_extend8_s(),
+                    UnOp::Sext16 => f.i64_extend16_s(),
+                    UnOp::Sext32 => f.i64_extend32_s(),
+                };
+                self.set_temp(f, dst);
+            }
+            Op::Select { dst, cond, a, b } => {
+                self.value(f, a);
+                self.value(f, b);
+                self.value(f, cond);
+                f.i64_const(0);
+                f.i64_ne();
+                f.select();
                 self.set_temp(f, dst);
             }
             Op::Load { dst, width, addr } => {
                 self.value(f, addr);
-                match width {
-                    Width::W8 => f.i64_load8_u(mem(0)),
-                    Width::W16 => f.i64_load16_u(mem(0)),
-                    Width::W32 => f.i64_load32_u(mem(0)),
-                    Width::W64 => f.i64_load(mem(0)),
-                };
+                load(f, width, mem(0));
                 self.set_temp(f, dst);
             }
             Op::Store { width, addr, value } => {
                 self.value(f, addr);
                 self.value(f, value);
-                match width {
-                    Width::W8 => f.i64_store8(mem(0)),
-                    Width::W16 => f.i64_store16(mem(0)),
-                    Width::W32 => f.i64_store32(mem(0)),
-                    Width::W64 => f.i64_store(mem(0)),
-                };
+                store(f, width, mem(0));
             }
             Op::SetReg { reg, value } => {
                 self.value(f, value);
                 f.local_set(L_GPR0 + reg as u32);
+            }
+            Op::LoadState { dst, width, offset } => {
+                f.local_get(P_STATE);
+                load(f, width, mem(offset as u64));
+                self.set_temp(f, dst);
+            }
+            Op::StoreState {
+                width,
+                offset,
+                value,
+            } => {
+                f.local_get(P_STATE);
+                self.value(f, value);
+                store(f, width, mem(offset as u64));
+            }
+            Op::Cond { dst, cond } => {
+                self.cond(f, cond);
+                f.i64_extend_i32_u();
+                self.set_temp(f, dst);
             }
             Op::Flags {
                 op,
@@ -286,6 +349,7 @@ impl ChunkEmitter<'_> {
                 a,
                 b,
                 r,
+                when,
                 live,
             } => {
                 if !live {
@@ -294,159 +358,126 @@ impl ChunkEmitter<'_> {
                     self.known_cc = None;
                     return;
                 }
+                self.begin_when(f, when);
+                if op.is_partial() {
+                    // Inc/Dec keep CF: it goes to `cc_b`.
+                    self.current_cf(f);
+                    f.i64_extend_i32_u();
+                    f.local_set(L_CC_B);
+                }
                 f.i32_const(op.cc_op(width) as i32);
                 f.local_set(self.l_cc_op);
                 self.value(f, a);
                 f.local_set(L_CC_A);
-                self.value(f, b);
-                f.local_set(L_CC_B);
+                if !op.is_partial() {
+                    self.value(f, b);
+                    f.local_set(L_CC_B);
+                }
                 self.value(f, r);
                 f.local_set(L_CC_R);
-                self.known_cc = Some((op, width));
+                self.end_when(f, when, Known::Lazy(op, width));
             }
+            Op::FlagsUpdate {
+                clear,
+                set,
+                flip,
+                when,
+                live,
+            } => {
+                if !live {
+                    self.known_cc = None;
+                    return;
+                }
+                self.begin_when(f, when);
+                self.current_flags(f);
+                if clear != 0 {
+                    f.i64_const(!clear as i64);
+                    f.i64_and();
+                }
+                if set != Value::Imm(0) {
+                    self.value(f, set);
+                    f.i64_or();
+                }
+                if flip != 0 {
+                    f.i64_const(flip as i64);
+                    f.i64_xor();
+                }
+                f.local_set(L_CC_A);
+                f.i32_const(CC_EAGER as i32);
+                f.local_set(self.l_cc_op);
+                self.end_when(f, when, Known::Eager);
+            }
+            Op::FaultIf { cond, kind } => {
+                self.value(f, cond);
+                f.i64_const(0);
+                f.i64_ne();
+                f.if_(BlockType::Empty);
+                self.labels.push(Label::If);
+                self.fault(f, kind, self.cur_addr);
+                f.end();
+                self.labels.pop();
+            }
+            Op::DivWide {
+                q,
+                r,
+                fault,
+                hi,
+                lo,
+                d,
+                signed,
+            } => {
+                self.value(f, hi);
+                self.value(f, lo);
+                self.value(f, d);
+                f.i32_const(signed as i32);
+                f.call(self.f_div128.expect("div128 helper emitted"));
+                f.i64_extend_i32_u();
+                f.local_set(self.temp(fault));
+                f.local_set(self.temp(r));
+                f.local_set(self.temp(q));
+            }
+            Op::RepString {
+                op,
+                width,
+                rep,
+                delta,
+            } => self.rep_string(f, op, width, rep, delta),
+            Op::VLoad { .. }
+            | Op::VStore { .. }
+            | Op::VBin { .. }
+            | Op::VShuffle { .. }
+            | Op::VShift { .. }
+            | Op::VConst { .. }
+            | Op::VFromGpr { .. }
+            | Op::VExtract { .. } => self.vector_op(f, op),
         }
     }
 
-    /// Pushes the materialized status flags (i64) of the current record.
-    fn materialize_flags(&self, f: &mut InstructionSink<'_>) {
-        f.local_get(self.l_cc_op);
-        f.local_get(L_CC_A);
-        f.local_get(L_CC_B);
-        f.local_get(L_CC_R);
-        f.call(F_FLAGS);
-    }
-
-    /// Pushes `cond` as an i32 (0 or 1).
-    fn cond(&self, f: &mut InstructionSink<'_>, cond: Cond) {
-        let base = Cond::from_index(cond as u32 & !1);
-        match self.known_cc {
-            Some((op, w)) => self.static_cond(f, op, w, base),
-            None => {
-                self.materialize_flags(f);
-                f.local_set(L_SCRATCH);
-                dynamic_cond(f, base);
-            }
-        }
-        if cond.is_negated() {
-            f.i32_eqz();
+    /// Opens `if when != 0` for a conditional record.
+    fn begin_when(&mut self, f: &mut InstructionSink<'_>, when: Option<Value>) {
+        if let Some(w) = when {
+            self.value(f, w);
+            f.i64_const(0);
+            f.i64_ne();
+            f.if_(BlockType::Empty);
+            self.labels.push(Label::If);
         }
     }
 
-    fn zf(&self, f: &mut InstructionSink<'_>) {
-        f.local_get(L_CC_R);
-        f.i64_eqz();
-    }
-
-    fn sf(&self, f: &mut InstructionSink<'_>, w: Width) {
-        f.local_get(L_CC_R);
-        f.i64_const(w.sign_bit() as i64);
-        f.i64_ge_u();
-    }
-
-    fn cf(&self, f: &mut InstructionSink<'_>, op: FlagOp) {
-        match op {
-            FlagOp::Add => {
-                f.local_get(L_CC_R);
-                f.local_get(L_CC_A);
-            }
-            FlagOp::Sub => {
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_B);
-            }
+    /// Closes [`Self::begin_when`]; after a conditional record the kind is
+    /// unknown.
+    fn end_when(&mut self, f: &mut InstructionSink<'_>, when: Option<Value>, known: Known) {
+        if when.is_some() {
+            f.end();
+            self.labels.pop();
+            self.known_cc = None;
+        } else {
+            self.known_cc = Some(known);
         }
-        f.i64_lt_u();
     }
 
-    fn of(&self, f: &mut InstructionSink<'_>, op: FlagOp, w: Width) {
-        match op {
-            // (a ^ r) & (b ^ r)
-            FlagOp::Add => {
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_R);
-                f.i64_xor();
-                f.local_get(L_CC_B);
-                f.local_get(L_CC_R);
-                f.i64_xor();
-            }
-            // (a ^ b) & (a ^ r)
-            FlagOp::Sub => {
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_B);
-                f.i64_xor();
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_R);
-                f.i64_xor();
-            }
-        }
-        f.i64_and();
-        f.i64_const(w.sign_bit() as i64);
-        f.i64_and();
-        f.i64_const(0);
-        f.i64_ne();
-    }
-
-    fn pf(&self, f: &mut InstructionSink<'_>) {
-        f.local_get(L_CC_R);
-        f.i64_const(0xff);
-        f.i64_and();
-        f.i64_popcnt();
-        f.i64_const(1);
-        f.i64_and();
-        f.i64_eqz();
-    }
-
-    fn sext(f: &mut InstructionSink<'_>, local: u32, w: Width) {
-        f.local_get(local);
-        match w {
-            Width::W8 => f.i64_extend8_s(),
-            Width::W16 => f.i64_extend16_s(),
-            Width::W32 => f.i64_extend32_s(),
-            Width::W64 => f,
-        };
-    }
-
-    /// A non-negated condition for a statically known record kind.
-    fn static_cond(&self, f: &mut InstructionSink<'_>, op: FlagOp, w: Width, base: Cond) {
-        match (op, base) {
-            (_, Cond::O) => self.of(f, op, w),
-            (_, Cond::B) => self.cf(f, op),
-            (_, Cond::E) => self.zf(f),
-            (FlagOp::Sub, Cond::Be) => {
-                f.local_get(L_CC_A);
-                f.local_get(L_CC_B);
-                f.i64_le_u();
-            }
-            (_, Cond::Be) => {
-                self.cf(f, op);
-                self.zf(f);
-                f.i32_or();
-            }
-            (_, Cond::S) => self.sf(f, w),
-            (_, Cond::P) => self.pf(f),
-            (FlagOp::Sub, Cond::L) => {
-                Self::sext(f, L_CC_A, w);
-                Self::sext(f, L_CC_B, w);
-                f.i64_lt_s();
-            }
-            (FlagOp::Sub, Cond::Le) => {
-                Self::sext(f, L_CC_A, w);
-                Self::sext(f, L_CC_B, w);
-                f.i64_le_s();
-            }
-            (_, Cond::L) => {
-                self.sf(f, w);
-                self.of(f, op, w);
-                f.i32_ne();
-            }
-            (_, Cond::Le) => {
-                self.zf(f);
-                self.sf(f, w);
-                self.of(f, op, w);
-                f.i32_ne();
-                f.i32_or();
-            }
-            _ => unreachable!("negated condition"),
-        }
+    fn vtemp(&self, v: VTemp) -> u32 {
+        self.l_v0 + v.0
     }
 
     /// (chunk, entry) of the block at `addr`.
@@ -515,6 +546,17 @@ impl ChunkEmitter<'_> {
         f.i64_const(rip as i64);
         f.local_set(L_RIP);
         self.leave(f, abi::STATUS_EXIT);
+    }
+
+    /// Leaves with `EXIT_FAULT` at the instruction at `rip` (fault address 0).
+    fn fault(&mut self, f: &mut InstructionSink<'_>, kind: u32, rip: u64) {
+        f.local_get(P_STATE);
+        f.i32_const(kind as i32);
+        f.i32_store(mem(abi::STATE_FAULT_KIND));
+        f.local_get(P_STATE);
+        f.i64_const(0);
+        f.i64_store(mem(abi::STATE_FAULT_ADDR));
+        self.exit(f, abi::EXIT_FAULT, rip);
     }
 
     /// Transfers control to the block at `target`: inside the chunk, as a
@@ -675,6 +717,9 @@ impl ChunkEmitter<'_> {
             Term::Jump(t) => t == addr,
             Term::Branch {
                 taken, fallthrough, ..
+            }
+            | Term::BranchIf {
+                taken, fallthrough, ..
             } => taken == addr || fallthrough == addr,
             _ => false,
         };
@@ -684,6 +729,7 @@ impl ChunkEmitter<'_> {
         }
         for (i, insn) in block.insns.iter().enumerate() {
             let last = i + 1 == block.insns.len();
+            self.cur_addr = insn.addr;
             self.insn(f, &insn.ops, last.then_some(&block.term));
         }
         let next = (k + 1 < self.blocks.len()).then_some(k + 1);
@@ -703,6 +749,28 @@ impl ChunkEmitter<'_> {
                     (cond, taken, fallthrough)
                 };
                 self.cond(f, cond);
+                f.if_(BlockType::Empty);
+                self.labels.push(Label::If);
+                self.goto(f, taken, k, None);
+                f.end();
+                self.labels.pop();
+                self.goto(f, fallthrough, k, next);
+            }
+            Term::BranchIf {
+                value,
+                taken,
+                fallthrough,
+            } => {
+                let next_addr = next.map(|j| self.prog.blocks[self.blocks[j]].addr);
+                self.value(f, value);
+                let (taken, fallthrough) = if next_addr.is_some() && next_addr == Some(taken) {
+                    f.i64_eqz();
+                    (fallthrough, taken)
+                } else {
+                    f.i64_const(0);
+                    f.i64_ne();
+                    (taken, fallthrough)
+                };
                 f.if_(BlockType::Empty);
                 self.labels.push(Label::If);
                 self.goto(f, taken, k, None);
@@ -743,6 +811,7 @@ impl ChunkEmitter<'_> {
                 self.tail_call_indirect(f);
             }
             Term::Exit { reason, rip } => self.exit(f, reason, rip),
+            Term::Fault { kind, rip } => self.fault(f, kind, rip),
         }
         if self_loop {
             f.end();
@@ -801,76 +870,119 @@ impl ChunkEmitter<'_> {
     }
 }
 
-/// The temporary an op defines.
+/// The temporary an op defines (as its last action, so it may stay on the
+/// stack for the next op).
 fn defined(op: &Op) -> Option<Temp> {
     match *op {
-        Op::Mov { dst, .. } | Op::Bin { dst, .. } | Op::Load { dst, .. } => Some(dst),
+        Op::Mov { dst, .. }
+        | Op::Bin { dst, .. }
+        | Op::Un { dst, .. }
+        | Op::Select { dst, .. }
+        | Op::Load { dst, .. }
+        | Op::LoadState { dst, .. }
+        | Op::Cond { dst, .. }
+        | Op::VExtract { dst, .. } => Some(dst),
         _ => None,
     }
 }
 
-/// The operand an op pushes first (nothing before it stays on the stack).
+/// The operand an op consumes first from the stack, with nothing pushed
+/// above it before (only stack-neutral code may come first).
 fn first_operand(op: &Op) -> Option<Value> {
     match *op {
         Op::Mov { src, .. } => Some(src),
-        Op::Bin { a, .. } => Some(a),
+        Op::Bin { a, .. } | Op::Un { a, .. } | Op::Select { a, .. } => Some(a),
         Op::Load { addr, .. } | Op::Store { addr, .. } => Some(addr),
         Op::SetReg { value, .. } => Some(value),
-        Op::Flags { a, live: true, .. } => Some(a),
-        Op::Flags { live: false, .. } => None,
+        Op::FaultIf { cond, .. } => Some(cond),
+        Op::DivWide { hi, .. } => Some(hi),
+        Op::Flags {
+            when: Some(w),
+            live: true,
+            ..
+        }
+        | Op::FlagsUpdate {
+            when: Some(w),
+            live: true,
+            ..
+        } => Some(w),
+        Op::Flags {
+            a,
+            when: None,
+            live: true,
+            ..
+        } => Some(a),
+        _ => None,
     }
 }
 
 /// Every operand an op reads.
-fn operands(op: &Op) -> [Option<Value>; 3] {
+fn operands(op: &Op) -> [Option<Value>; 4] {
     match *op {
-        Op::Mov { src, .. } => [Some(src), None, None],
-        Op::Bin { a, b, .. } => [Some(a), Some(b), None],
-        Op::Load { addr, .. } => [Some(addr), None, None],
-        Op::Store { addr, value, .. } => [Some(addr), Some(value), None],
-        Op::SetReg { value, .. } => [Some(value), None, None],
+        Op::Mov { src, .. } => [Some(src), None, None, None],
+        Op::Bin { a, b, .. } => [Some(a), Some(b), None, None],
+        Op::Un { a, .. } => [Some(a), None, None, None],
+        Op::Select { cond, a, b, .. } => [Some(cond), Some(a), Some(b), None],
+        Op::Load { addr, .. } => [Some(addr), None, None, None],
+        Op::Store { addr, value, .. } => [Some(addr), Some(value), None, None],
+        Op::SetReg { value, .. } | Op::StoreState { value, .. } => [Some(value), None, None, None],
         Op::Flags {
             a,
             b,
             r,
+            when,
             live: true,
             ..
-        } => [Some(a), Some(b), Some(r)],
-        Op::Flags { live: false, .. } => [None; 3],
+        } => [Some(a), Some(b), Some(r), when],
+        Op::FlagsUpdate {
+            set,
+            when,
+            live: true,
+            ..
+        } => [Some(set), when, None, None],
+        Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. } => [None; 4],
+        Op::FaultIf { cond, .. } => [Some(cond), None, None, None],
+        Op::DivWide { hi, lo, d, .. } => [Some(hi), Some(lo), Some(d), None],
+        Op::RepString { delta, .. } => [Some(delta), None, None, None],
+        Op::VLoad {
+            loc: crate::ir::VLoc::Mem(a),
+            ..
+        }
+        | Op::VStore {
+            loc: crate::ir::VLoc::Mem(a),
+            ..
+        } => [Some(a), None, None, None],
+        Op::VShift { count, .. } => [Some(count), None, None, None],
+        Op::VFromGpr { value, .. } => [Some(value), None, None, None],
+        Op::LoadState { .. }
+        | Op::Cond { .. }
+        | Op::VLoad { .. }
+        | Op::VStore { .. }
+        | Op::VBin { .. }
+        | Op::VShuffle { .. }
+        | Op::VConst { .. }
+        | Op::VExtract { .. } => [None; 4],
     }
 }
 
-/// Pushes a non-negated condition from materialized flags in `L_SCRATCH`.
-fn dynamic_cond(f: &mut InstructionSink<'_>, base: Cond) {
-    use abi::flags::*;
-    let bit = |f: &mut InstructionSink<'_>, mask: u64| {
-        f.local_get(L_SCRATCH);
-        f.i64_const(mask as i64);
-        f.i64_and();
-        f.i64_const(0);
-        f.i64_ne();
+/// A zero-extending i64 load of `width`.
+fn load(f: &mut InstructionSink<'_>, width: Width, m: MemArg) {
+    match width {
+        Width::W8 => f.i64_load8_u(m),
+        Width::W16 => f.i64_load16_u(m),
+        Width::W32 => f.i64_load32_u(m),
+        Width::W64 => f.i64_load(m),
     };
-    match base {
-        Cond::O => bit(f, OF),
-        Cond::B => bit(f, CF),
-        Cond::E => bit(f, ZF),
-        Cond::Be => bit(f, CF | ZF),
-        Cond::S => bit(f, SF),
-        Cond::P => bit(f, PF),
-        Cond::L => {
-            bit(f, SF);
-            bit(f, OF);
-            f.i32_ne();
-        }
-        Cond::Le => {
-            bit(f, ZF);
-            bit(f, SF);
-            bit(f, OF);
-            f.i32_ne();
-            f.i32_or();
-        }
-        _ => unreachable!("negated condition"),
-    }
+}
+
+/// An i64 store of the low `width` bits.
+fn store(f: &mut InstructionSink<'_>, width: Width, m: MemArg) {
+    match width {
+        Width::W8 => f.i64_store8(m),
+        Width::W16 => f.i64_store16(m),
+        Width::W32 => f.i64_store32(m),
+        Width::W64 => f.i64_store(m),
+    };
 }
 
 /// `lookup(rip: i64) -> (func: i32, entry: i32)`: probes the process-wide
@@ -1021,136 +1133,60 @@ fn emit_run() -> Function {
     func
 }
 
-/// `flags(op: i32, a: i64, b: i64, r: i64) -> i64`: the status flags of a
-/// lazy record (operands zero-extended to the record's width).
-fn emit_flags() -> Function {
-    use abi::flags::*;
-    const OP: u32 = 0;
-    const A: u32 = 1;
-    const B: u32 = 2;
-    const R: u32 = 3;
-    const SIGN: u32 = 4;
-    const CF_OF: u32 = 5;
-    let mut func = Function::new([(2, ValType::I64)]);
-    let mut f = func.instructions();
-    // Eager: the flags themselves are in `a`.
-    f.local_get(OP);
-    f.i32_eqz();
-    f.if_(BlockType::Empty);
-    f.local_get(A);
-    f.i64_const(STATUS as i64);
-    f.i64_and();
-    f.return_();
-    f.end();
-    // sign = 1 << (8 << width) - 1, width = (op - 1) & 3
-    f.i64_const(1);
-    f.i64_const(8);
-    f.local_get(OP);
-    f.i32_const(1);
-    f.i32_sub();
-    f.i32_const(3);
-    f.i32_and();
-    f.i64_extend_i32_u();
-    f.i64_shl();
-    f.i64_const(1);
-    f.i64_sub();
-    f.i64_shl();
-    f.local_set(SIGN);
-    // kind = (op - 1) >> 2: 0 = add, 1 = sub. CF | OF:
-    f.local_get(OP);
-    f.i32_const(1);
-    f.i32_sub();
-    f.i32_const(2);
-    f.i32_shr_u();
-    f.if_(BlockType::Result(ValType::I64));
-    {
-        // sub: CF = a < b, OF = (a ^ b) & (a ^ r)
-        f.local_get(A);
-        f.local_get(B);
-        f.i64_lt_u();
-        f.i64_extend_i32_u();
-        f.local_get(A);
-        f.local_get(B);
-        f.i64_xor();
-        f.local_get(A);
-        f.local_get(R);
-        f.i64_xor();
-        f.i64_and();
-        f.local_get(SIGN);
-        f.i64_and();
-        f.i64_eqz();
-        f.i32_eqz();
-        f.i64_extend_i32_u();
-        f.i64_const(11);
-        f.i64_shl();
-        f.i64_or();
+/// A module that exports, for testing them against reference models, the
+/// `flags` function, the `div128` helper, and every condition through the
+/// static path (`s_{kind}_{width}_{cond}(a, b, r) -> i32`, kind and width as
+/// in `cc_op`, cond its encoding) and from materialized flags
+/// (`d_{cond}(flags) -> i32`). It has no imports.
+pub fn helpers_test_module() -> Vec<u8> {
+    use crate::ir::{Cond, FlagOp};
+    const WIDTHS: [Width; 4] = [Width::W8, Width::W16, Width::W32, Width::W64];
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(
+        [ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+        [ValType::I64],
+    );
+    types.ty().function(
+        [ValType::I64, ValType::I64, ValType::I64, ValType::I32],
+        [ValType::I64, ValType::I64, ValType::I32],
+    );
+    types
+        .ty()
+        .function([ValType::I64, ValType::I64, ValType::I64], [ValType::I32]);
+    types.ty().function([ValType::I64], [ValType::I32]);
+    module.section(&types);
+    let mut funcs = FunctionSection::new();
+    let mut exports = ExportSection::new();
+    let mut code = CodeSection::new();
+    funcs.function(0);
+    exports.export("flags", ExportKind::Func, 0);
+    code.function(&emit_flags());
+    funcs.function(1);
+    exports.export("div128", ExportKind::Func, 1);
+    code.function(&helpers::emit_div128());
+    let mut n = 2;
+    for op in FlagOp::ALL {
+        for w in WIDTHS {
+            for c in 0..16 {
+                funcs.function(2);
+                let name = format!("s_{}_{}_{c}", op.kind(), w.index());
+                exports.export(&name, ExportKind::Func, n);
+                code.function(&flags::static_cond_function(op, w, Cond::from_index(c)));
+                n += 1;
+            }
+        }
     }
-    f.else_();
-    {
-        // add: CF = r < a, OF = (a ^ r) & (b ^ r)
-        f.local_get(R);
-        f.local_get(A);
-        f.i64_lt_u();
-        f.i64_extend_i32_u();
-        f.local_get(A);
-        f.local_get(R);
-        f.i64_xor();
-        f.local_get(B);
-        f.local_get(R);
-        f.i64_xor();
-        f.i64_and();
-        f.local_get(SIGN);
-        f.i64_and();
-        f.i64_eqz();
-        f.i32_eqz();
-        f.i64_extend_i32_u();
-        f.i64_const(11);
-        f.i64_shl();
-        f.i64_or();
+    for c in 0..16 {
+        funcs.function(3);
+        exports.export(&format!("d_{c}"), ExportKind::Func, n);
+        code.function(&flags::dynamic_cond_function(Cond::from_index(c)));
+        n += 1;
     }
-    f.end();
-    f.local_set(CF_OF);
-    // PF
-    f.local_get(R);
-    f.i64_const(0xff);
-    f.i64_and();
-    f.i64_popcnt();
-    f.i64_const(1);
-    f.i64_and();
-    f.i64_const(1);
-    f.i64_xor();
-    f.i64_const(2);
-    f.i64_shl();
-    // AF
-    f.local_get(A);
-    f.local_get(B);
-    f.i64_xor();
-    f.local_get(R);
-    f.i64_xor();
-    f.i64_const(AF as i64);
-    f.i64_and();
-    f.i64_or();
-    // ZF
-    f.local_get(R);
-    f.i64_eqz();
-    f.i64_extend_i32_u();
-    f.i64_const(6);
-    f.i64_shl();
-    f.i64_or();
-    // SF
-    f.local_get(R);
-    f.local_get(SIGN);
-    f.i64_and();
-    f.i64_eqz();
-    f.i32_eqz();
-    f.i64_extend_i32_u();
-    f.i64_const(7);
-    f.i64_shl();
-    f.i64_or();
-    f.local_get(CF_OF);
-    f.i64_or();
-    f.end();
-    func
+    module.section(&funcs);
+    module.section(&exports);
+    module.section(&code);
+    module.finish()
 }
 
 /// Encodes `prog`, partitioned as `part`, as a module following the ABI.
@@ -1170,6 +1206,18 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
     types
         .ty()
         .function([ValType::I64], [ValType::I32, ValType::I32]); // T_LOOKUP
+    let uses_div128 = prog
+        .blocks
+        .iter()
+        .flat_map(|b| b.insns.iter().flat_map(|i| i.ops.iter()))
+        .any(|op| matches!(op, Op::DivWide { .. }));
+    if uses_div128 {
+        types.ty().function(
+            [ValType::I64, ValType::I64, ValType::I64, ValType::I32],
+            [ValType::I64, ValType::I64, ValType::I32],
+        ); // T_DIV128
+    }
+    let f_div128 = uses_div128.then_some(F_CHUNK0 + n_chunks);
     module.section(&types);
 
     let mut imports = ImportSection::new();
@@ -1219,6 +1267,9 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
     for _ in 0..n_chunks {
         funcs.function(T_CHUNK);
     }
+    if uses_div128 {
+        funcs.function(T_DIV128);
+    }
     module.section(&funcs);
 
     let mut exports = ExportSection::new();
@@ -1248,9 +1299,19 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             .flat_map(|&b| prog.blocks[b].insns.iter().map(|i| i.temps))
             .max()
             .unwrap_or(0);
-        temps.push(t);
+        let vt = chunk
+            .blocks
+            .iter()
+            .flat_map(|&b| prog.blocks[b].insns.iter().map(|i| i.vtemps))
+            .max()
+            .unwrap_or(0);
+        temps.push((t, vt));
         let l_cc_op = L_TEMP0 + t;
-        let mut func = Function::new([(L_TEMP0 - L_GPR0 + t, ValType::I64), (3, ValType::I32)]);
+        let mut locals = vec![(L_TEMP0 - L_GPR0 + t, ValType::I64), (3, ValType::I32)];
+        if vt > 0 {
+            locals.push((vt, ValType::V128));
+        }
+        let mut func = Function::new(locals);
         let mut emitter = ChunkEmitter {
             prog,
             part,
@@ -1265,10 +1326,16 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             l_cc_op,
             l_status: l_cc_op + 1,
             l_func: l_cc_op + 2,
+            l_v0: l_cc_op + 3,
+            f_div128,
+            cur_addr: 0,
             leave_used: false,
         };
         emitter.body(&mut func.instructions());
         code.function(&func);
+    }
+    if uses_div128 {
+        code.function(&helpers::emit_div128());
     }
     module.section(&code);
 
@@ -1288,11 +1355,16 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
         data: Cow::Owned(encode_blocks(n_chunks, &blocks)),
     });
 
-    module.section(&names(prog, part, &temps));
+    module.section(&names(prog, part, &temps, f_div128));
     module.finish()
 }
 
-fn names(prog: &Program, part: &Partition, temps: &[u32]) -> NameSection {
+fn names(
+    prog: &Program,
+    part: &Partition,
+    temps: &[(u32, u32)],
+    f_div128: Option<u32>,
+) -> NameSection {
     let mut names = NameSection::new();
     let mut funcs = NameMap::new();
     funcs.append(F_RUN, "run");
@@ -1300,6 +1372,9 @@ fn names(prog: &Program, part: &Partition, temps: &[u32]) -> NameSection {
     funcs.append(F_FLAGS, "flags");
     for c in 0..part.chunks.len() {
         funcs.append(F_CHUNK0 + c as u32, &part.chunk_name(prog, c));
+    }
+    if let Some(i) = f_div128 {
+        funcs.append(i, "div128");
     }
     names.functions(&funcs);
 
@@ -1322,7 +1397,7 @@ fn names(prog: &Program, part: &Partition, temps: &[u32]) -> NameSection {
         flags.append(i as u32, n);
     }
     locals.append(F_FLAGS, &flags);
-    for (c, &t) in temps.iter().enumerate() {
+    for (c, &(t, vt)) in temps.iter().enumerate() {
         let mut chunk = NameMap::new();
         chunk.append(P_STATE, "state");
         chunk.append(P_ENTRY, "entry");
@@ -1341,7 +1416,17 @@ fn names(prog: &Program, part: &Partition, temps: &[u32]) -> NameSection {
         chunk.append(L_TEMP0 + t, "cc_op");
         chunk.append(L_TEMP0 + t + 1, "status");
         chunk.append(L_TEMP0 + t + 2, "func");
+        for i in 0..vt {
+            chunk.append(L_TEMP0 + t + 3 + i, &format!("v{i}"));
+        }
         locals.append(F_CHUNK0 + c as u32, &chunk);
+    }
+    if let Some(i) = f_div128 {
+        let mut div = NameMap::new();
+        for (j, n) in helpers::DIV128_LOCALS.iter().enumerate() {
+            div.append(j as u32, n);
+        }
+        locals.append(i, &div);
     }
     names.locals(&locals);
 

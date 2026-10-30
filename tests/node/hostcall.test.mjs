@@ -171,7 +171,12 @@ test('shim lookup is case-insensitive in the DLL only', () => {
   assert.ok(findShim('KERNEL32.DLL', 'WriteFile'));
   assert.equal(findShim('kernel32.dll', 'writefile'), undefined);
   assert.equal(findShim('kernel32.dll', 'toString'), undefined);
-  assert.deepEqual(Object.keys(SHIM['kernel32.dll']).sort(), ['ExitProcess', 'GetStdHandle', 'WriteFile']);
+  assert.deepEqual(Object.keys(SHIM['kernel32.dll']).sort(), [
+    'DeleteCriticalSection', 'EnterCriticalSection', 'ExitProcess', 'GetLastError', 'GetStdHandle',
+    'InitializeCriticalSection', 'IsDBCSLeadByteEx', 'LeaveCriticalSection', 'MultiByteToWideChar',
+    'SetLastError', 'SetUnhandledExceptionFilter', 'Sleep', 'TlsGetValue', 'VirtualProtect', 'VirtualQuery',
+    'WideCharToMultiByte', 'WriteFile',
+  ]);
 });
 
 test('SetLastError writes TEB.LastErrorValue of the GS base', () => {

@@ -42,7 +42,7 @@ pub const MEMORY_BYTES: u64 = 4 << 20;
 /// Seed of every generator stream ("Tempwind" in ASCII).
 pub const SEED: u64 = 0x5465_6d70_7769_6e64;
 /// Fixture format version.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// `crates/testkit/fixtures/l1`.
 pub fn fixtures_dir() -> PathBuf {

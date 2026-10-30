@@ -89,6 +89,7 @@ u64 values are `"0x…"` hex strings, as in the spike manifest; addresses are vi
    - Insert the lookup slot (key = thunk address, func 0, entry = id) and write the thunk address into the function's `iat` slot.
    - DLL names compare case-insensitively. Ordinal imports are named `#<ordinal>`.
    - A function the shim lacks still gets a thunk; calling it stops the program (below).
+   - A data import (msvcrt's `_fmode`, `_commode`, `__initenv`, …) gets storage instead of a thunk. The shim declares it as `{ data: { size, init } }`, the loader allocates it in the guest heap, and the IAT slot points to it.
 5. Link the AOT module (`abi.md`, "Linking a module").
 6. PEB, TEB and stack (below). The state block starts zeroed.
 7. TLS, if present:
@@ -138,6 +139,34 @@ A stop sets `state.exit = EXIT_HOST` and returns `STATUS_EXIT`, and the runtime 
 - Shim v0 is what the M2 test program imports from `kernel32.dll`: `GetStdHandle`, `WriteFile`, `ExitProcess`.
   - Standard handles are fixed: stdin `0x3`, stdout `0x7`, stderr `0xB`.
   - `WriteFile` to stdout or stderr appends the bytes to the process's captured output; the CLI also forwards them.
+
+## Calls from the host into guest code
+
+Several shim functions call guest functions: `_initterm`, `exit` (atexit and `_onexit` handlers) and `qsort`. The loader does too, for TLS callbacks. A call from inside a host call:
+1. saves the state block and `depth`;
+2. builds a call frame below the guest's current RSP, 16-byte aligned:
+   - 32 bytes of shadow space, then the stack arguments;
+   - `SENTINEL_RET` as the return address;
+   - RCX, RDX, R8 and R9 for the first four arguments;
+3. runs the run loop until `EXIT_LEFT_CODE` at `SENTINEL_RET`, and takes RAX as the result;
+4. restores the state block and `depth`. The interrupted host call then continues as if no guest code had run, except for the callee's effects on memory.
+
+Limits:
+- **Stops:** a stop inside the nested call, such as `exit` or an error, stops the whole process.
+- **Depth:** nesting is limited to 16 levels, so a runaway chain of callbacks fails loudly.
+
+## msvcrt (M3)
+
+Every value a program can observe follows `msvcrt.dll` on the reference runner (windows-2025). Wine's `dlls/msvcrt` source is the reference for the details, and a difference found later is a bug.
+- **FILE:** `__iob_func` returns `_iob`, three 48-byte msvcrt `FILE` structures (stdin, stdout, stderr) in the guest heap, and the stdio functions take those pointers. Output is written through at once.
+- **Heap:** `malloc`, `calloc`, `realloc` and `free` use a deterministic allocator in the guest heap, with 16-byte alignment. An invalid `free` stops with an error.
+- **errno:** `_errno` returns the address of the thread's errno, and `strerror` returns msvcrt's message texts.
+- **Locale:** the C locale. Locale queries (`___lc_codepage_func`, `___mb_cur_max_func`, `localeconv`) return msvcrt's values for it. Conversions between multi-byte and wide strings use code page 1252, the ACP of the reference runner.
+- **Startup and exit:**
+  - `__getmainargs` builds `argv` from the runtime's command line (the program name unless more is given) and `envp` from an empty environment.
+  - `_initterm` calls each non-null entry.
+  - `exit` runs the `atexit` and `_onexit` handlers in reverse order, then ends the process with the code.
+- **Locks and critical sections:** no-ops with one thread. They still check their arguments.
 
 ## Run loop
 
@@ -196,3 +225,10 @@ It exercises:
 - `ExitProcess` with a non-zero code.
 
 On Windows (CI), its stdout and exit code are compared with `tests/pe/basic.expected` and `tests/pe/basic.exitcode`. The translated run in Node must match both, with AOT from all entries and from the entry point only.
+
+## M3 L2 programs (`tests/native/`)
+
+Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` and `l2_crt.c`.
+- Each has a `.expected` stdout and an exit-code file.
+- CI runs them natively on Windows and translated in Node.
+- `hello.exe` moves to M4: its float output needs SSE2 and x87 arithmetic.

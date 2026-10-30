@@ -1,9 +1,11 @@
 // The Win32 shim: one module per DLL (docs/design/runtime.md). DLL names
 // compare case-insensitively; function names are exact.
 import kernel32 from './kernel32.mjs';
+import msvcrt from './msvcrt.mjs';
 
 export const SHIM = {
   'kernel32.dll': kernel32,
+  'msvcrt.dll': msvcrt,
 };
 
 /** The shim entry {args, fn} for `dll!name`, or undefined. */

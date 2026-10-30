@@ -20,12 +20,35 @@ export class HostStop {
   constructor(stop) { this.stop = stop; }
 }
 
+/**
+ * @typedef {{call: (target: bigint, args: bigint[]) => ({rax: bigint} | {exitCode: number} | {error: string}),
+ *   alloc: (size: bigint, align: bigint) => bigint, dllState: (dll: string, init: () => object) => object,
+ *   dataAddress: (dll: string, name: string) => bigint | undefined, argv: string[],
+ *   image: {base: bigint, size: bigint, sizeOfHeaders: bigint, sections: object[]} | null}} HostServices
+ */
+const unavailable = (what) => () => { throw new HostStop({ error: `${what} is not available in this context` }); };
+const NO_HOST = {
+  call: unavailable('calling guest code'),
+  alloc: unavailable('the guest heap'),
+  dllState: unavailable('shim DLL state'),
+  dataAddress: unavailable('data imports'),
+  argv: [],
+  image: null,
+};
+
 /** What a shim function sees: Win64 arguments, guest memory, last error, output, stops. */
 export class HostContext {
-  constructor(mem, state, output) {
+  /**
+   * @param {import('./guest-memory.mjs').GuestMemory} mem
+   * @param {bigint} state
+   * @param {(stream: string, bytes: Uint8Array) => void} output
+   * @param {HostServices} [host] process services (guest calls, guest heap, per-DLL state, data imports)
+   */
+  constructor(mem, state, output, host = NO_HOST) {
     this.mem = mem;
     this.state = state;
     this.outputSink = output;
+    this.host = host;
   }
 
   reg(i) { return this.mem.u64(this.state + BigInt(gprOffset(i))); }
@@ -65,8 +88,70 @@ export class HostContext {
     this.mem.setU32(teb + BigInt(TEB_LAST_ERROR), code);
   }
 
+  /** The calling thread's last error (TEB.LastErrorValue). */
+  lastError() {
+    const teb = this.mem.u64(this.state + BigInt(STATE_GS_BASE));
+    if (teb === 0n) this.fail('GetLastError without a TEB (GS base is 0)');
+    return this.mem.u32(teb + BigInt(TEB_LAST_ERROR));
+  }
+
+  /** The TEB of the calling thread (GS base). */
+  teb() {
+    const teb = this.mem.u64(this.state + BigInt(STATE_GS_BASE));
+    if (teb === 0n) this.fail('no TEB (GS base is 0)');
+    return teb;
+  }
+
+  /** The loaded image: {base, size, sizeOfHeaders, sections: [{name, va, mappedSize, characteristics}]}. */
+  get image() { return this.host.image; }
+
   /** Appends to the process's captured stdout or stderr. */
   output(stream, bytes) { this.outputSink(stream, bytes); }
+
+  /**
+   * Calls guest code at `target` with Win64 arguments (runtime.md, "Calls
+   * from the host into guest code") and returns its RAX as a u64 BigInt. A
+   * stop inside the call (exit or error) stops the whole process.
+   */
+  call(target, ...args) {
+    const r = this.host.call(BigInt.asUintN(64, BigInt(target)), args.map((a) => BigInt.asUintN(64, BigInt(a))));
+    if ('exitCode' in r) throw new HostStop({ exitCode: r.exitCode });
+    if ('error' in r) this.fail(r.error);
+    return r.rax;
+  }
+
+  /** Allocates `size` bytes of the guest heap (process lifetime; fresh memory is zero). */
+  alloc(size, align = 16n) { return this.host.alloc(BigInt(size), BigInt(align)); }
+
+  /** Per-process state of a shim DLL: `init()` creates it on first use. */
+  dllState(dll, init) { return this.host.dllState(dll.toLowerCase(), init); }
+
+  /** The storage address of data import `dll!name`, or undefined if the program doesn't import it. */
+  dataAddress(dll, name) { return this.host.dataAddress(dll.toLowerCase(), name); }
+
+  /** The program's command line as argv strings (argv[0] = program name). */
+  get argv() { return this.host.argv; }
+
+  /** Reads a NUL-terminated byte string (at most `max` bytes before the NUL). */
+  readCString(addr, max = 1 << 20) {
+    const start = this.mem.at(this.check(addr, 1, 'string'), 1);
+    const u8 = this.mem.u8;
+    const nul = u8.indexOf(0, start);
+    if (nul < 0) this.fail(`string at ${hex(addr)} runs past the end of memory`);
+    if (nul - start > max) this.fail(`string at ${hex(addr)} longer than ${max} bytes`);
+    return u8.slice(start, nul);
+  }
+
+  /** Reads a NUL-terminated UTF-16 string as code units (at most `max` units before the NUL). */
+  readWString(addr, max = 1 << 20) {
+    const out = [];
+    for (let a = this.check(addr, 2, 'string'); ; a += 2n) {
+      const u = this.mem.u16(this.check(a, 2, 'string'));
+      if (u === 0) return out;
+      if (out.length >= max) this.fail(`string at ${hex(addr)} longer than ${max} units`);
+      out.push(u);
+    }
+  }
 
   exit(code) { throw new HostStop({ exitCode: code >>> 0 }); }
   fail(message) { throw new HostStop({ error: message }); }
@@ -85,17 +170,17 @@ export class HostContext {
  *   imports: {dll: string, name: string, thunk: bigint, impl?: {args: number, fn: Function}}[],
  *   output: (stream: string, bytes: Uint8Array) => void,
  *   onStop: (stop: {exitCode: number} | {error: string}) => void,
- *   trace?: (line: string) => void}} opts
+ *   trace?: (line: string) => void, host?: HostServices}} opts
  * @returns {(state: bigint, id: number, ret: bigint) => number}
  */
-export function makeHostCall({ mem, imports, output, onStop, trace }) {
+export function makeHostCall({ mem, imports, output, onStop, trace, host }) {
   return (stateArg, id, retArg) => {
     // i64 parameters reach JS as signed BigInts.
     const state = BigInt.asUintN(64, stateArg);
     const ret = BigInt.asUintN(64, retArg);
     const imp = imports[id];
     const label = imp ? `${imp.dll.toLowerCase()}!${imp.name}` : `import #${id}`;
-    const ctx = new HostContext(mem, state, output);
+    const ctx = new HostContext(mem, state, output, host);
     const stopWith = (stop, args) => {
       if (trace) trace(`${label}(${args}) -> ${'exitCode' in stop ? `exit ${stop.exitCode}` : `error: ${stop.error}`}`);
       onStop(stop);
@@ -104,7 +189,7 @@ export function makeHostCall({ mem, imports, output, onStop, trace }) {
       return STATUS_EXIT;
     };
     if (!imp) return stopWith({ error: `host call with unknown import id ${id}` }, '?');
-    if (!imp.impl) return stopWith({ error: `unimplemented API ${label}` }, '?');
+    if (!imp.impl || !imp.impl.fn) return stopWith({ error: `unimplemented API ${label}` }, '?');
     let args = '';
     try {
       if (trace) args = Array.from({ length: imp.impl.args }, (_, i) => hex(ctx.arg(i))).join(', ');

@@ -99,6 +99,10 @@ MMX has no instructions in these builds. `mov` alone is 34.5 % of all instructio
 - 5 `Code`s are excluded by the rule: `In_AL_imm8`, `Out_imm8_AL`, `Out_DX_AL`, `Hlt` (the first four only in gaps of 7zz.exe, so data bytes) and `Cpuid` (14 occurrences, dedicated test).
 - 22 forms occur only in gaps, where the sweep reads some data bytes as code (`Std`, `Cmc`, `Int1`, `Loop_rel8_64_RCX`, ...). They are listed in `census.md` and count toward S as the rule is written. Dropping them is a decision for the M5 gate (they are probably not code); the rule as decided keeps them.
 - **L1 fixtures cover 134 of the 491 forms (27.3 %)**, counting M2's `jmp` fixtures. `testkit census --check` lists the 357 missing ones, and fails until the instruction PRs add them (M5).
+- **After M3:**
+  - the M3 L2 programs (`tests/native/l2_*.c`) bring the scope to 509 forms;
+  - L1 fixtures cover 484 of them: 67 families, 44,256 cases;
+  - the 25 left are M4's SSE floating-point and x87 forms and the gap-only `int1`.
 
 ### Imports (the Win32 shim's surface)
 
