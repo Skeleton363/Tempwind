@@ -4,3 +4,5 @@
 *.exe binary
 *.wasm binary
 *.png binary
+# 7-Zip matrix results are compared byte for byte (CRLF output, archives): no conversion at all.
+tests/sevenzip/expected/** binary
