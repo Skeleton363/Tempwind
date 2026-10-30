@@ -268,6 +268,135 @@ struct Group<'a> {
     mask: u32,
 }
 
+/// The host CPU's vendor string (cpuid leaf 0).
+fn host_vendor() -> String {
+    #[allow(unused_unsafe)]
+    let r = unsafe { core::arch::x86_64::__cpuid(0) };
+    let b: Vec<u8> = [r.ebx, r.edx, r.ecx]
+        .iter()
+        .flat_map(|x| x.to_le_bytes())
+        .collect();
+    String::from_utf8_lossy(&b).into_owned()
+}
+
+/// Whether the cases the SDM leaves to the implementation are compared bit
+/// for bit: only on the vendor the model follows (GenuineIntel). FP_VENDOR
+/// overrides the host's string, to run the other path on an Intel host.
+fn exact_host() -> bool {
+    static EXACT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *EXACT.get_or_init(|| {
+        let host = host_vendor();
+        let v = std::env::var("FP_VENDOR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| host.clone());
+        let exact = v == "GenuineIntel";
+        eprintln!(
+            "host CPU vendor: {host}{}; implementation-dependent x87 cases {}",
+            if v != host {
+                format!(" (treated as {v})")
+            } else {
+                String::new()
+            },
+            if exact {
+                "compared bit for bit"
+            } else {
+                "checked against the SDM's guarantees"
+            }
+        );
+        exact
+    })
+}
+
+/// Cases whose result the SDM leaves to the implementation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Dep {
+    /// fprem/fprem1 with an exponent difference of 64 or more: the
+    /// reduction N is "an implementation-dependent number between 32 and 63".
+    PartialRem,
+    /// Two NaNs of the same kind with equal significands and different
+    /// signs: table 4-7 picks the larger significand, which doesn't decide.
+    NanTie,
+}
+
+fn is_nan80(o: &Opnd) -> bool {
+    o.kind == 0 && o.se & 0x7FFF == 0x7FFF && o.m >> 63 == 1 && o.m << 1 != 0
+}
+
+fn impl_dependent(name: &str, a: &Opnd, b: &Opnd, soft_status: u32) -> Option<Dep> {
+    // Only functions with an 80-bit result return a NaN operand.
+    let nan_result = !name.starts_with("f80_cmp");
+    if nan_result
+        && is_nan80(a)
+        && is_nan80(b)
+        && a.m << 1 == b.m << 1
+        && (a.se ^ b.se) & 0x8000 != 0
+    {
+        return Some(Dep::NanTie);
+    }
+    if name.starts_with("f80_prem") && soft_status & 0x400 != 0 {
+        return Some(Dep::PartialRem);
+    }
+    None
+}
+
+/// The SDM's partial remainder for a given N: ST(0) - ST(1) * QQ * 2^(D-N)
+/// with QQ = trunc(ST(0) / ST(1) / 2^(D-N)), D the exponent difference.
+/// None when that remainder needs bits below the denormal LSB (no
+/// implementation can produce it).
+fn partial_rem(a: &Opnd, b: &Opnd, n: u32) -> Option<(u64, u32)> {
+    // (normalized significand, exponent of its bit 0)
+    let unpack = |o: &Opnd| {
+        let e = (o.se & 0x7FFF).max(1) as i32 - 16383 - 63;
+        let lz = o.m.leading_zeros();
+        (o.m << lz, e - lz as i32)
+    };
+    let ((ma, ea), (mb, eb)) = (unpack(a), unpack(b));
+    let d = ea - eb;
+    let sign = a.se & 0x8000;
+    let r = ((ma as u128) << n) % mb as u128;
+    if r == 0 {
+        return Some((0, sign));
+    }
+    // Drop trailing zero bits, so an exact denormal isn't rejected.
+    let tz = r.trailing_zeros();
+    let r = r >> tz;
+    let base = eb + d - n as i32 + tz as i32;
+    let top = 127 - r.leading_zeros() as i32;
+    let biased = base + top + 16383;
+    if biased >= 1 {
+        Some(((r << (63 - top)) as u64, sign | biased as u32))
+    } else if base >= -16445 {
+        Some(((r << (base + 16445)) as u64, sign))
+    } else {
+        None
+    }
+}
+
+/// What the SDM guarantees for an implementation-dependent case: `soft` is
+/// (result, status) of the model, `cpu` is (result, se, FSW).
+fn sdm_ok(dep: Dep, a: &Opnd, b: &Opnd, soft: (u64, u32), cpu: (u64, u32, u32), mask: u32) -> bool {
+    let (_, st) = soft;
+    let (hr, hse, fsw) = cpu;
+    match dep {
+        Dep::NanTie => {
+            // Either operand, quieted; flags and C1 as the model says (fprem
+            // leaves C0 and C3 alone on a NaN result).
+            let mask = mask & !0x4100;
+            let q = |o: &Opnd| (o.m | 1 << 62, o.se);
+            ((hr, hse) == q(a) || (hr, hse) == q(b)) && fsw & mask == st & mask
+        }
+        Dep::PartialRem => {
+            // C2 = 1 with C0, C3, C1 clear; the same exception flags; the
+            // sign of ST(0); and the remainder of some N in [32, 63].
+            fsw & 0x4700 == 0x400
+                && fsw & 0xFF == st & 0xFF
+                && hse & 0x8000 == a.se & 0x8000
+                && (32..=63).any(|n| partial_rem(a, b, n) == Some((hr, hse)))
+        }
+    }
+}
+
 fn run(g: &Group, cases: impl Iterator<Item = (Opnd, Opnd, u32)>, presets: &[u16]) -> usize {
     let mut n = 0;
     let mut nbad = 0;
@@ -295,7 +424,13 @@ fn run(g: &Group, cases: impl Iterator<Item = (Opnd, Opnd, u32)>, presets: &[u16
             };
             let soft = (r, st >> 16, st & mask);
             let cpu = (hr, hse, fsw as u32 & mask);
-            if soft != cpu {
+            let ok = match impl_dependent(g.name, &a, &b, st) {
+                Some(dep) if !exact_host() => {
+                    sdm_ok(dep, &a, &b, (r, st), (hr, hse, fsw as u32), g.mask)
+                }
+                _ => soft == cpu,
+            };
+            if !ok {
                 nbad += 1;
                 if bad.len() < 12 {
                     bad.push(format!(
@@ -692,3 +827,100 @@ fn x87_long_random() {
 
 #[allow(dead_code)]
 const _: &str = LD2;
+
+/// The vendor-independent checks accept what the SDM allows and nothing
+/// else, so a non-Intel host still tests these cases.
+#[test]
+fn sdm_checks_accept_other_implementations() {
+    let a = f80((0xB504_F333_F9DE_6484, 0x3FFF + 100));
+    let b = f80((0xC000_0000_0000_0001, 0x4000));
+    let (r, st) = fp::f80_prem(a.m, a.se, b.m, b.se, fcw(3, 0));
+    assert_eq!(
+        impl_dependent("f80_prem", &a, &b, st),
+        Some(Dep::PartialRem)
+    );
+    for n in 32..=63 {
+        let (m, se) = partial_rem(&a, &b, n).unwrap();
+        assert!(
+            sdm_ok(Dep::PartialRem, &a, &b, (r, st), (m, se, 0x400), CC_ALL),
+            "N = {n}"
+        );
+        // C1 set, C2 clear, or the wrong sign: rejected.
+        assert!(!sdm_ok(
+            Dep::PartialRem,
+            &a,
+            &b,
+            (r, st),
+            (m, se, 0x600),
+            CC_ALL
+        ));
+        assert!(!sdm_ok(
+            Dep::PartialRem,
+            &a,
+            &b,
+            (r, st),
+            (m, se, 0),
+            CC_ALL
+        ));
+        assert!(!sdm_ok(
+            Dep::PartialRem,
+            &a,
+            &b,
+            (r, st),
+            (m, se ^ 0x8000, 0x400),
+            CC_ALL
+        ));
+    }
+    // N outside [32, 63]: rejected unless it gives the same value as a valid
+    // N (as when doubling the remainder doesn't wrap).
+    let valid: Vec<_> = (32..=63).filter_map(|n| partial_rem(&a, &b, n)).collect();
+    let mut rejected = 0;
+    for n in [0, 1, 31, 64, 65, 100] {
+        let (m, se) = partial_rem(&a, &b, n).unwrap();
+        if !valid.contains(&(m, se)) {
+            assert!(
+                !sdm_ok(Dep::PartialRem, &a, &b, (r, st), (m, se, 0x400), CC_ALL),
+                "N = {n}"
+            );
+            rejected += 1;
+        }
+    }
+    assert!(rejected >= 3);
+    // Two QNaNs with equal significands and different signs: either one.
+    let a = f80((0xC000_0000_0000_0001, 0x7FFF));
+    let b = f80((0xC000_0000_0000_0001, 0xFFFF));
+    let (r, st) = fp::f80_add(a.m, a.se, b.m, b.se, 0, fcw(3, 0));
+    assert_eq!(impl_dependent("f80_add", &a, &b, st), Some(Dep::NanTie));
+    assert!(sdm_ok(
+        Dep::NanTie,
+        &a,
+        &b,
+        (r, st),
+        (a.m, 0x7FFF, 0),
+        ARITH
+    ));
+    assert!(sdm_ok(
+        Dep::NanTie,
+        &a,
+        &b,
+        (r, st),
+        (b.m, 0xFFFF, 0),
+        ARITH
+    ));
+    assert!(!sdm_ok(
+        Dep::NanTie,
+        &a,
+        &b,
+        (r, st),
+        (0xC000_0000_0000_0000, 0xFFFF, 0),
+        ARITH
+    ));
+    assert!(!sdm_ok(
+        Dep::NanTie,
+        &a,
+        &b,
+        (r, st),
+        (a.m, 0x7FFF, 1),
+        ARITH
+    ));
+}
