@@ -346,6 +346,28 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - **user32:** `CharUpperW` takes a string or a single character in the low word. `CharPrevExA` works on code page 1252.
 - **Memory:** `VirtualAlloc` and `VirtualFree` reserve and commit in the guest heap with 64 KiB granularity, and `MapViewOfFile` and `UnmapViewOfFile` stop unless the matrix needs them.
 
+**Values the implementation fixes** (M5; the spec above left them open):
+- **Volume `C:`:** serial number `0x54454D50`, an empty label, `NTFS` with flags `0x03E702FF` and 255-character components; 256 GiB in all and 128 GiB free, in 4 KiB clusters of 8 sectors of 512 bytes. `GetFileInformationByHandle` reports one link and the node's number as the file index. There are no 8.3 names: `cAlternateFileName` is empty and masks match long names only.
+- **Program:** `C:\tempwind\<plan file>` has attributes `0x21` (read-only, archive). The command line starts with that path.
+- **Code pages:** conversions take the ANSI code page 1252 and the OEM code page 437 (`CP_OEMCP`; `GetOEMCP` is 437, as on an en-US Windows). 7-Zip writes console text through `CP_OEMCP` after `SetFileApisToOEM`.
+- **Modules:** pseudo-bases `0x7FFA_0000_0000` + n × `0x100_0000` for `kernel32`, `kernelbase`, `ntdll`, `advapi32`, `user32`, `oleaut32` and `msvcrt` (loaded at start) and `psapi`, `version` and `shell32` (loaded by `LoadLibrary*W`, also by full path in `C:\Windows\System32`). `GetProcAddress` thunks are allocated after the import thunks, one per function; the functions 7zz asks for in the matrix are `SetDefaultDllDirectories`, `GetActiveProcessorGroupCount` and `GetActiveProcessorCount`.
+- **`GetVersion`:** the compatibility rule reads the manifest: Windows 10 values when the image's `.rsrc` holds the Windows 10 `supportedOS` GUID (7zz's does), else 6.2.9200.
+- **Memory:** `GetSystemInfo` reports processor level 6, revision 0 (the CPUID profile's family 6, model 0) and the highest application address as the guest memory size − `0x10001`. `GlobalMemoryStatusEx`: total physical memory and page file 4 GiB, available = min(free guest heap, 4 GiB), total virtual `0x7FFF_FFFE_0000`. `VirtualAlloc` also takes `MEM_COMMIT` alone (with no address it reserves too); released regions are reused first-fit and zeroed.
+- **`IsProcessorFeaturePresent`:** present means reported by the CPUID profile: 2 (CMPXCHG8B), 3 (MMX), 6 (SSE), 10 (SSE2), 12 (NX), 14 (CMPXCHG16B). PAE (9) is absent, since the profile doesn't report it.
+- **`FormatMessageW`:** only `FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS` (with or without `ALLOCATE_BUFFER`), language 0, and the English texts of the errors the shim sets; anything else stops.
+- **Write-back:** times reach the host through `utimes` in seconds, exact for whole seconds and to about 0.25 µs otherwise.
+
+**Windows details the implementation follows** (checked against Wine 11 and Microsoft's documentation):
+- An open with no read, write or delete access (attributes only) takes no part in share checks.
+- `RemoveDirectoryW` on the current directory or an ancestor fails with `ERROR_SHARING_VIOLATION` before the emptiness check.
+- `FindFirstFileW` on `file\*` fails with `ERROR_DIRECTORY`; an empty mask (`dir\`) with `ERROR_FILE_NOT_FOUND`; a missing directory with `ERROR_PATH_NOT_FOUND`. Find handles enumerate a snapshot taken by `FindFirstFileW`.
+- `SetFileTime` with `0xFFFFFFFF_FFFFFFFF`, or an explicit time, stops later writes through that handle from updating the time; 0 means "unchanged". A new or removed entry updates its directory's last-write time.
+- `SetFilePointer` and `GetFileSize` set the last error to 0 when the low part they return is `0xFFFFFFFF`.
+
+**Threads despite `-mmt1` (a known gap):** 7-Zip creates threads in four matrix groups, so they stop at `_beginthreadex` until the runtime has a second thread:
+- 7z archives with a chain of coders (BCJ + LZMA2, BCJ2, and AES for `-p`): `NArchive::N7z::CEncoder` uses `NCoderMixer2::CMixerMT` whenever `_useMultiThreadMixer` is set, which is the default whatever `-mmt` says (only `-mtf=off` clears it). The decoder uses it too.
+- xz at `-mx=5`: `Lzma2Enc` → `MatchFinderMt_Create` → `Thread_Create`, a match-finder thread.
+
 **Tests:**
 - unit tests per module in `tests/node/`, through `shim-harness.mjs`;
 - the translated 7-Zip matrix as the acceptance test.
