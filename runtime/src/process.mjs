@@ -642,7 +642,7 @@ export class Process {
       try { return this.guestHeap.alloc(size, align); } catch (e) { throw new HostStop({ error: `a new thread: ${e.message}` }); }
     };
     let state;
-    try { state = this.runtimeHeap.alloc(STATE_SIZE, 64n); } catch (e) { throw new HostStop({ error: `a new thread: ${e.message}` }); }
+    try { state = this.runtimeHeap.alloc(BigInt(STATE_SIZE), 64n); } catch (e) { throw new HostStop({ error: `a new thread: ${e.message}` }); }
     return { reserve, state, teb: alloc(TEB_SIZE, 0x1000n), stackLimit: alloc(reserve, STACK_ALIGN) };
   }
 
