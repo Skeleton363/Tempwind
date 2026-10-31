@@ -6,7 +6,8 @@ paths:
 ---
 # Runtime and shim rules
 
-- The Win32 shim is strict. Never return a made-up success. An unknown case (unimplemented import, `GetProcAddress` of a missing function, exception, thread creation) stops loudly.
+- The Win32 shim is strict. Never return a made-up success. An unknown case (unimplemented import, `GetProcAddress` of a missing function, exception, blocking inside `callNested`) stops loudly.
+- Guest threads are cooperative (`runtime.md`, "Guest threads (M5)"): blocking host calls suspend through JSPI, and every other host call stays synchronous.
 - Look things up before implementing a shim function. Sources: Microsoft's documentation, Wine's source (wine-11.0 tarball) and the program's own source. Read them; never copy code. The clean-room list in `CLAUDE.md` applies.
 - Contracts: `docs/design/runtime.md` and `docs/design/abi.md`. Change the doc first.
 - Tests go through `tests/node/shim-harness.mjs`.

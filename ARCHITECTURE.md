@@ -34,6 +34,7 @@ Translation is function-level: the translator discovers functions from the entry
 - `link.mjs` (`Linker`): table, `lookup`, `depth` globals, block tables; links the AOT module, run-time translations and the host-call module.
 - `process.mjs` (`Process`): guest memory, address map, image mapping, PEB/TEB/stack/TLS, import thunks, run loop, exit status.
 - `hostcall.mjs` (`HostContext`, `HostStop`): the guest-to-host call path.
+- `threads.mjs`: cooperative guest threads (scheduler, waits, locks, deadlock detection).
 - `win32/`: the shim, one module per DLL (`kernel32*.mjs`, `msvcrt.mjs`, `advapi32.mjs`, `user32.mjs`, `oleaut32.mjs`), with the in-memory file system `vfs.mjs` and handle table `handles.mjs`.
 - `rt.mjs`, `fp.mjs`: wrappers for the run-time translator and the soft float module.
 - `plan.mjs`, `abi.mjs`: the load plan and ABI constants on the JS side.
@@ -76,7 +77,8 @@ Contracts are committed before the code that uses them. The ABI is versioned; bo
 - Every decoder uses `x64wasm::DECODER_OPTIONS`, so the census, the oracle and the translator agree on what an encoding means.
 - Fixtures come only from the recorder, never by hand. `record --check` reproduces on any CPU vendor; implementation-dependent results are `undefined`.
 - Floating-point results are bit-exact with the CPU. `x64wasm-fp` uses no host floating point.
-- The shim never fakes success. Unimplemented imports, `GetProcAddress` misses, exceptions and thread creation stop loudly.
+- The shim never fakes success. Unimplemented imports, `GetProcAddress` misses, exceptions, and blocking inside a host-to-guest call (`callNested`) stop loudly.
+- Guest threads are cooperative: they take turns on one JS thread and switch only at blocking host calls, which suspend through JSPI (`threads.mjs`). The schedule is deterministic.
 - A new thread's state block carries real FP defaults (MXCSR), not zeros.
 - JS never parses PE files; `translate-pe` writes the plan.
 - Clean room: never read or copy WebWindows, BottleShip, DirectWebGPU/Theseus or Boxedwine. Work from specs, Wine's source and the programs' own source. Wine's source is read, not copied. Our code is MIT; our Wine patches stay LGPL.

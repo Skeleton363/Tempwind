@@ -365,6 +365,10 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - **`IsProcessorFeaturePresent`** agrees with the CPUID profile: SSE and SSE2, CMPXCHG16B and NX are present; SSE3, AVX, RDRAND and the rest are not.
 - **`GetLargePageMinimum`** is 0.
 - **`GetVersion`** follows Windows' compatibility rule. A program whose manifest doesn't declare Windows 10 sees 6.2.9200; otherwise it sees 10.0.26100, like the PEB.
+- **`RtlGetVersion`** (ntdll, reached through `GetProcAddress`) always reports the real version: 10.0.26100, platform 2, no service pack.
+  - With `RTL_OSVERSIONINFOEXW` it adds a workstation: `wProductType` = `VER_NT_WORKSTATION` and `wSuiteMask` = `VER_SUITE_SINGLEUSERTS`.
+  - Tempwind presents a desktop Windows. The windows-2025 reference runner is a server, but no matrix output depends on the product type; only `7zz b` and `7zz i` print it.
+  - A size other than the two structures' stops.
 - **Directories:** `GetWindowsDirectoryW` is `C:\Windows` and `GetSystemDirectoryW` is `C:\Windows\System32`. `GetTempPathW` follows its documented order (TMP, TEMP, USERPROFILE, then the Windows directory), so it returns `C:\Windows\` with the empty environment.
 - **Drives:** `GetLogicalDriveStringsW` lists `C:\`, `GetDriveTypeW` reports `DRIVE_FIXED`, and `GetVolumeInformationW` reports NTFS.
 - **Command line:** `GetCommandLineW` is the command line Windows would hold. That is the program path, then the arguments, quoted by the rules `CommandLineToArgvW` reverses; 7-Zip parses it itself.

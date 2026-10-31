@@ -8,6 +8,7 @@ import msvcrt from './msvcrt.mjs';
 import advapi32 from './advapi32.mjs';
 import oleaut32 from './oleaut32.mjs';
 import user32 from './user32.mjs';
+import ntdll from './ntdll.mjs';
 
 function merge(...parts) {
   const out = {};
@@ -26,6 +27,7 @@ export const SHIM = {
   'advapi32.dll': advapi32,
   'oleaut32.dll': oleaut32,
   'user32.dll': user32,
+  'ntdll.dll': ntdll,
 };
 
 /** The shim entry {args, fn} for `dll!name`, or undefined. */
