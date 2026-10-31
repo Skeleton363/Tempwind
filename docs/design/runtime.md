@@ -133,6 +133,8 @@ The host-call function sits at table slot 0 (`abi.md`, "Host functions"). It rec
 3. Writes the function's return value (a BigInt or number) into RAX. Nothing is written for a void function.
 4. Performs the guest's `ret` and returns the status, exactly as `abi.md` says.
 
+A function that blocks returns a Promise of its value instead; steps 3 and 4 happen when it settles ("Guest threads" below). It can also stop only its thread (`threadExit`).
+
 A stop sets `state.exit = EXIT_HOST` and returns `STATUS_EXIT`, and the runtime records why: an exit code or an error.
 
 **Shim rules:**
@@ -310,31 +312,38 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - the LZMA2 match finder (`MatchFinderMt`) for xz.
 
 `-mtf=off` doesn't help: native 7-Zip fails with it. Real parallel threads (Workers, shared memory) are Phase 4. Until then, guest threads take turns on one JS thread.
-- **Mechanism:** JSPI (`WebAssembly.Suspending` and `WebAssembly.promising`; Node 24, Chromium 137+).
+- **Mechanism:** JSPI (`WebAssembly.Suspending` and `WebAssembly.promising`; Node 24, Chromium 137+). The code is `runtime/src/threads.mjs` (scheduler, waits, locks) and `process.mjs` (thread start and end).
   - Every guest thread runs `run(state)` through `WebAssembly.promising`.
-  - Host calls that can block go through a host function wrapped in `WebAssembly.Suspending`: waits, a contended `EnterCriticalSection`, `Sleep`, `SwitchToThread`, thread exit. When such a call can't complete, it returns a Promise. That suspends the thread's whole wasm stack, and the scheduler resumes another thread.
+  - Host calls that can block go through a second host function, wrapped in `WebAssembly.Suspending`, in table slot 1 (modules follow from slot 2): the waits, `EnterCriticalSection`, msvcrt's `_lock`, `Sleep` and `SwitchToThread` (shim entries marked `blocks: true`). When such a call can't complete, it returns a Promise. That suspends the thread's whole wasm stack, and the scheduler resumes another thread.
   - All other host calls stay synchronous: no Promise, no suspension cost.
-- **Scheduling** is deterministic and non-preemptive. A thread runs until it blocks, yields (`Sleep`, `SwitchToThread`) or ends; the scheduler then resumes the oldest runnable thread. Signaling an object (`SetEvent`, `ReleaseSemaphore`, `LeaveCriticalSection`, a thread's end) makes waiters runnable but doesn't switch threads.
+  - A thread exit (`_endthreadex`, `ExitThread`) isn't a suspension: it is a stop like `ExitProcess` that unwinds the thread's wasm stack, and only that thread ends.
+  - V8 throws when a `Suspending` import runs without `promising` on the stack, even if it returns no Promise. So while the host calls into guest code (`callNested`), slot 1 holds the plain host function.
+- **Scheduling** is deterministic and non-preemptive. A thread runs until it blocks, yields (`Sleep`, `SwitchToThread`) or ends; the scheduler then resumes the thread that has been runnable longest (a FIFO queue; a yielding thread goes to its end). Signaling an object (`SetEvent`, `ReleaseSemaphore`, `LeaveCriticalSection`, a thread's end) makes waiters runnable, in the order they started waiting, but doesn't switch threads.
 - **Threads** come from `_beginthreadex` (and `CreateThread` where a program imports it). Each has:
-  - **its own state:** a state block (host region), a TEB (TLS slots, last error, `ClientId`), a stack (the requested size rounded up to 64 KiB, or the image's stack reserve, from the guest heap), the FP defaults of a new thread, and its own errno.
+  - **its own state:** a state block (host region), a TEB (TLS slots, last error, `ClientId`), a stack from the guest heap, the image's TLS data block (a copy of the template), the FP defaults of a new thread, and its own errno (the main thread's is the CRT's).
+    - **Stack size**, by Windows' rule (`RtlCreateUserStack`): the requested size is a reservation with `STACK_SIZE_PARAM_IS_A_RESERVATION`, else a commit size; the reservation is that, or the image's stack reserve, at least the commit size and 1 MiB, rounded up to 64 KiB.
+    - **Thread ids** are 0x1008, 0x100C, ... (the main thread is 0x1004). A later thread with the same stack size reuses an ended thread's state block, TEB and stack.
   - **a start like the main thread's:** RCX = the argument, RSP = top − 0x38 with `[RSP]` = `SENTINEL_RET`, RIP = the start address. The image's TLS callbacks run first with `DLL_THREAD_ATTACH`, as on Windows.
   - **an end:** returning to the sentinel, `_endthreadex` or `ExitThread`. The return value or the argument becomes its exit code, and the TLS callbacks run with `DLL_THREAD_DETACH`.
   - **`CREATE_SUSPENDED`:** it waits for `ResumeThread`.
-  - **its handle:** signaled when the thread ends; `GetExitCodeThread` reads the code.
+  - **its handle:** signaled when the thread ends; `GetExitCodeThread` reads the code (`STILL_ACTIVE`, 259, until then). `GetThreadId`, `ResumeThread` and `SetThreadAffinityMask` take it too.
+  - `_beginthreadex` with security attributes, or flags other than `CREATE_SUSPENDED` and `STACK_SIZE_PARAM_IS_A_RESERVATION`, stops. `ExitThread` or `_endthreadex` on the main thread stops (Windows would keep the process until its last thread ends). `CreateThread` waits for a program that imports it.
 - **The process ends** when the main thread calls `ExitProcess` or `exit`, or returns from the entry point, whatever the other threads are doing.
 - **`depth`** (the call-depth guard) belongs to each thread: it is saved when a thread suspends and restored when it resumes.
 - **Synchronization objects** follow Windows:
   - events, manual- or auto-reset;
   - semaphores;
-  - critical sections, with an owner, a recursion count and waiters (`TryEnterCriticalSection` fails while another thread owns one);
+  - critical sections, with an owner, a recursion count and waiters (`TryEnterCriticalSection` fails while another thread owns one). The last `LeaveCriticalSection` hands it to the first waiter at once. The guest sees `OwningThread` (the thread id), `RecursionCount` and `LockCount` (−1 free; held: −2, minus 4 per waiter). msvcrt's `_lock`/`_unlock` locks behave the same;
   - `WaitForSingleObject`, and `WaitForMultipleObjects` with "all" or "any".
   - `OpenEventW` and `OpenFileMappingW` find no named objects (`ERROR_FILE_NOT_FOUND`).
+  - `TlsAlloc` and `TlsFree` clear the slot in every thread, as Windows does.
 - **Timeouts:**
   - `INFINITE` blocks;
   - 0 polls;
-  - a finite timeout blocks until the object is signaled or no other thread can run, and then returns `WAIT_TIMEOUT`, since no real time passes between turns.
-- **Deadlock:** when every thread waits with `INFINITE`, the run stops with an error naming each thread's wait.
-- **Limit:** blocking inside a call from the host into guest code (`callNested`, for example a `qsort` comparator) is an error stop.
+  - a finite timeout blocks until the object is signaled or no other thread can run, and then returns `WAIT_TIMEOUT`, since no real time passes between turns. When several threads wait with finite timeouts, the one that has waited longest times out first.
+  - `Sleep(0)` and `SwitchToThread` yield. `Sleep(n)` with n > 0 yields too, and lets time pass: with no other runnable thread, the longest finite wait times out. `Sleep(INFINITE)` waits forever.
+- **Deadlock:** when every thread waits with `INFINITE`, the run stops with an error naming each thread's wait, for example `deadlock: no thread can run; thread 0x1004 waits in WaitForSingleObject(0x104, INFINITE); thread 0x1008 waits in EnterCriticalSection(0x10002340), held by thread 0x1004; thread 0x100c is suspended (CREATE_SUSPENDED, never resumed)`. The thread that blocks last, or the thread whose end leaves no thread runnable, finds it.
+- **Limit:** blocking inside a call from the host into guest code (`callNested`, for example a `qsort` comparator) is an error stop. Waits that complete at once still work there, and a yield returns without switching.
 - **Outputs** don't depend on the interleaving, and the schedule itself is deterministic.
 
 **Console:**
