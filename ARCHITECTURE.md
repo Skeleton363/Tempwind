@@ -24,7 +24,7 @@ Translation is function-level: the translator discovers functions from the entry
 ## Codemap
 
 ### crates/
-- `x64wasm`: the translator. `pe.rs` (PE parsing, load plan), `image.rs` (whole-image discovery), `func.rs` (function and chunk splitting), `lift/` and `lift.rs` (decoded instruction to IR), `ir.rs`, `emit/` and `emit.rs` (IR to WebAssembly), `switch.rs` (jump tables), `link.rs` (block tables), `abi.rs` (constants shared with JS). `DECODER_OPTIONS` is the one decoder configuration.
+- `x64wasm`: the translator. `pe.rs` (PE reader), `image.rs` (whole-image discovery and the load plan, `LoadPlan`), `func.rs` (function and chunk splitting), `lift/` and `lift.rs` (decoded instruction to IR), `ir.rs`, `emit/` and `emit.rs` (IR to WebAssembly), `switch.rs` (jump tables), `link.rs` (block tables), `abi.rs` (constants shared with JS). `DECODER_OPTIONS` is the one decoder configuration.
 - `x64wasm-cli`: `translate`, `ir`, `wat`, `translate-pe`. Thin; logic stays in `x64wasm`.
 - `x64wasm-rt`: the translator built for `wasm32-unknown-unknown`, called by the runtime for run-time translation.
 - `x64wasm-fp`: integer-only soft float (SSE and x87), built for wasm32; its differential tests run the real CPU in-process.
