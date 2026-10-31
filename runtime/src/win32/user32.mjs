@@ -22,11 +22,11 @@ export default {
     }
     return p;
   }),
-  // LPSTR CharPrevExA(WORD CodePage, LPCSTR lpStart, LPCSTR lpCurrentChar, DWORD dwFlags):
-  // code page 1252 has no lead bytes, so the previous character is one byte back.
+  // LPSTR CharPrevExA(WORD CodePage, LPCSTR lpStart, LPCSTR lpCurrentChar, DWORD dwFlags): the ANSI
+  // (1252) and OEM (437) code pages have no lead bytes, so the previous character is one byte back.
   CharPrevExA: fn(4, (ctx) => {
     const cp = ctx.arg32(0) & 0xffff, start = ctx.arg(1), cur = ctx.arg(2);
-    if (cp !== 0 && cp !== 1252 && cp !== 3) ctx.fail(`code page ${cp} is not supported`);
+    if (![0, 1, 3, 437, 1252].includes(cp)) ctx.fail(`code page ${cp} is not supported`);
     if (ctx.arg32(3) !== 0) ctx.fail('dwFlags must be 0');
     return cur > start ? cur - 1n : start;
   }),
