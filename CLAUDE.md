@@ -14,32 +14,17 @@ Runs unmodified 64-bit Windows programs in the browser: x86-64 to WebAssembly tr
 - docs/: plan.md and status/phase-N.md
 
 ## Commands
-Keep this section current; add each command when it first works.
-- Lint and unit/integration tests (includes L1 fixture replay, spike tests in wasmtime, L5 snapshots): `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
-- L1 oracle (x86-64 Linux only; format: `docs/design/fixtures.md`): `cargo run -p testkit --release -- record` re-records `crates/testkit/fixtures/l1/`; `-- record --check` diffs a fresh recording against them; `-- replay` prints a per-family summary.
-- Spike programs for the JS hosts: `cargo run -p testkit --release -- spike --out target/spike`
-- Translator CLI: `cargo run -p x64wasm-cli -- translate|ir|wat --base 0x140001000 --hex "48 01 d8 c3" [-o out.wasm] [--shared] [--max-function-insns N] [--max-chunk-insns N] [--call-depth-limit N | --no-depth-guard]`
-- Whole PE images: `cargo run -p x64wasm-cli --release -- translate-pe FILE --out-dir DIR [--entries all|entry]` writes `DIR/<stem>.wasm` (ABI v3) and `DIR/<stem>.plan.json` (load plan). Run-time translator: `cargo build -p x64wasm-rt --release --target wasm32-unknown-unknown`.
-- Run a PE program in Node: `node runtime/src/run-pe.mjs --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt target/wasm32-unknown-unknown/release/x64wasm_rt.wasm]`; `TEMPWIND_TRACE=api,translate,exits` traces to stderr. `--fp FILE` names the floating-point helper module (default `target/wasm32-unknown-unknown/release/x64wasm_fp.wasm` if present); `-- ARGS...` become the guest's command-line arguments.
-- Floating-point helper module (soft float behind SSE and x87): `cargo build -p x64wasm-fp --release --target wasm32-unknown-unknown` writes `target/wasm32-unknown-unknown/release/x64wasm_fp.wasm`; `cargo clippy -p x64wasm-fp --target wasm32-unknown-unknown -- -D warnings`; test vectors for the Node tests: `cargo run -p x64wasm-fp --release --example vectors -- --out target/fp/vectors.json`.
-- M2 test program: `tests/pe/build.sh` builds `target/pe/basic.exe` (expected: `tests/pe/basic.expected` and `tests/pe/basic.exitcode`); `tests/pe/prepare.sh` writes both AOT variants and the run-time translator, which `npm run test:node` needs.
-- Regenerate IR/WAT snapshots: `UPDATE_SNAPSHOTS=1 cargo test -p x64wasm --test snapshots`
-- Translator measurements: `cargo test -p testkit --release --test spike_bench -- --ignored --nocapture --test-threads=1` (wasmtime); in V8, `cargo run -p testkit --release -- spike --bench --out target/bench/translator`, then `node tests/bench/translator/bench.mjs [--runs N]` (Node, four V8 configurations) and `node tests/bench/translator/bench.mjs --browser` (recursion depth in Chromium page and Worker).
-- Image measurements (needs `7zz.exe`, `coremark.exe` and `census.json` from the targets release in `target/targets/`): wasmtime `cargo test -p x64wasm-cli --release --test images -- --ignored --nocapture`; V8 `node tests/bench/translator/images.mjs [--runs N]`; linking speed `node tests/bench/translator/link.mjs` (after `spike --bench`).
-- Phase 1 targets (7zz.exe, coremark.exe, built in CI by `.github/workflows/targets.yml` from the sources pinned in `tests/targets/sources.json`): `scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe` (also `coremark.exe`, `census.json`, `census.md`, `build-info.json`). Mirrored sources: releases `src-7zip-25.01` and `src-coremark-1f483d5`.
-- Instruction census: `cargo run -p testkit --release -- census FILE... [--json PATH] [--md PATH] [--check]`; `--check` fails while in-scope forms lack L1 fixtures (scope rule: `docs/design/instruction-scope.md`).
-- JS (Node 24): `npm ci`, then `npm run test:node` and `npm run test:browser` (Playwright, headless Chromium). Both need `target/spike`; `test:node` also needs the outputs of `tests/pe/prepare.sh` and `tests/native/prepare.sh`. `CHROME_PATH=/path/to/chrome npm run test:browser` uses another browser. Never run `playwright install` in a session; the image already has Playwright's Chromium.
-- Docker: `tools/start-dockerd.sh` (idempotent; the SessionStart hook runs it).
-- Emscripten probe (wasm64 vs x86_64-linux type sizes, pthreads): `native/spike/run.sh`; report in `native/spike/out/report.md`.
-- Environment setup script: `tools/cloud-setup.sh` (safe to rerun; always exits 0 and prints a per-step summary).
-- MinGW test programs (L2): `tests/native/build.sh` builds `target/native/{hello,l2_int,l2_crt,l2_float}.exe`. The expected outputs are `tests/native/<name>.expected`, with LF line ends; checks compare them as CRLF, because msvcrt's stdout is in text mode. The exit codes are in `<name>.exitcode`. `tests/native/prepare.sh` translates hello and the L2 programs, fetches (if absent) and translates `target/targets/coremark.exe`, builds `x64wasm_fp.wasm` and writes `target/fp/vectors.json`, all for `npm run test:node`. `l2_float.exe` is built with `-O2 -ftree-vectorize -fno-math-errno`.
-- CoreMark benchmark (translated in Node vs `wine64`, medians of 3, prints one JSON line; needs `coremark.exe`, the fp module and `wine64`): `node tests/bench/coremark.mjs [--runs N] [--skip-native] [--wine CMD]`; CI: `.github/workflows/bench.yml`.
-- 7-Zip command matrix (`tests/sevenzip/README.md`; needs `target/targets/7zz.exe`): `node tests/sevenzip/matrix.mjs --mode native|wine|translated --out OUT [--jobs N] [--filter STEP_OR_GROUP] [--quiet]` runs the 138 steps in `steps.json` (7z, zip, tar, gz, bz2, xz, hashes, encryption round trips) in per-archive work directories and writes `OUT/results/`; `node tests/sevenzip/compare.mjs OUT tests/sevenzip/expected` names the first byte difference per step. `tests/sevenzip/expected/` comes from `--mode wine` (`WINE=/usr/lib/wine/wine64`); real Windows (CI `windows-x64`) is the reference. `translated` translates with `translate-pe` into `target/sevenzip` (`--skip-translate` reuses it) and needs `x64wasm_rt.wasm`, `x64wasm_fp.wasm` and `run-pe --dir`. Never convert line ends in `expected/` (`.gitattributes` marks it binary).
-- `7z b` benchmark (translated in Node vs `wine64`, `7zz b 2 -mmt1 -md18`, medians of 3, prints one JSON line with the "Tot:" ratings; same needs as CoreMark plus `7zz.exe`): `node tests/bench/sevenzip.mjs [--runs N] [--skip-native] [--wine CMD] [--aot-dir DIR]`; CI: `.github/workflows/bench.yml` (`sevenzip.jsonl` on `bench-data`).
-- Release assets: `scripts/fetch-artifact.sh TAG ASSET [DIR]` or `scripts/fetch-artifact.sh --latest PREFIX ASSET [DIR]` (sha256-verified). Releases are published by `.github/workflows/artifacts.yml` as `<artifact>-<sha7>`.
+Core verification; the full reference is `docs/dev/commands.md` (add each command there when it first works). Area rules are in `.claude/rules/`; procedures are skills in `.claude/skills/` (`/pause`, `/milestone-close`, `/diverge`). Design of the whole: `ARCHITECTURE.md`.
+- Lint and tests (includes L1 replay, spike tests, L5 snapshots): `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+- L1 oracle: `cargo run -p testkit --release -- record --check` (fresh recording must equal the fixtures); `-- replay` prints a per-family summary. Fixtures come only from `record`.
+- Census: `cargo run -p testkit --release -- census FILE... --check` fails while in-scope forms lack fixtures.
+- JS (Node 24): `npm ci`, `npm run test:node`, `npm run test:browser`. They need `target/spike`, `tests/pe/prepare.sh` and `tests/native/prepare.sh` outputs. Never run `playwright install`; the image has Chromium.
+- 7-Zip matrix (needs `target/targets/7zz.exe`): `node tests/sevenzip/matrix.mjs --mode native|wine|translated --out OUT`, then `node tests/sevenzip/compare.mjs OUT tests/sevenzip/expected`.
+- Release assets: `scripts/fetch-artifact.sh TAG ASSET [DIR]`.
 
 ## How we work
 - One phase at a time, in order. Before starting, read docs/plan.md and the latest docs/status/ note.
+- Each milestone's planning starts with a short research pass over official and community sources for its domain and our workflow, logged in `docs/dev/research.md`.
 - Branch from main. One draft PR per milestone, titled "[Phase N] <what>"; a session covers a phase.
 - Commits: author and committer `Skeleton363 <46569584+Skeleton363@users.noreply.github.com>`, unsigned. The SessionStart hook sets this in cloud sessions; check `git config user.email` before the first commit. Commit messages and PR descriptions carry no `Co-Authored-By`, `Claude-Session` or "Generated with Claude Code" lines. Post PR comments only where required.
 - Done = all CI checks green, the test summary in your final message, and docs/status/phase-N.md updated (what works, measurements, decisions, known issues, next step).
@@ -53,11 +38,7 @@ Keep this section current; add each command when it first works.
 - GitHub works only for this repo; other GitHub repos return 403. Never clone or download from them in a session.
 - Available: crates.io, npm, PyPI, Ubuntu apt, Docker Hub, raw.githubusercontent.com (single files), dl.winehq.org, gitlab.winehq.org.
 - Wine: the wine-11.0 source tarball from dl.winehq.org.
-- Environment: `tools/cloud-setup.sh` is the cloud environment's setup script (MinGW-w64 x86-64, wabt, binaryen, the pinned Rust toolchain with wasm32, Node 24, the emsdk image). When you change it, ask the user to paste the new version into the environment settings.
-- Docker: a SessionStart hook (`.claude/settings.json`) starts dockerd in every cloud session, in the background. If `docker info` fails, run `tools/start-dockerd.sh`. Never use `service docker start`; it fails in this sandbox.
-- Emscripten: the emscripten/emsdk Docker image (tag pinned in `scripts/emcc.sh`), with the repo mounted at /src. Run tools through `scripts/emcc.sh`.
-- Node: 24, pinned in `.nvmrc` for CI and sessions.
-- Chrome for headless tests: Playwright's Chromium, preinstalled in the image. Tests find it through Playwright; never hard-code a browser path. Set `CHROME_PATH` to test with another Chrome or Chromium binary (in CI, the `CHROME_PATH` repository variable).
+- Setup, Docker, Emscripten, Node and Chrome details: `docs/dev/commands.md`, "Environment and builds". Never use `service docker start`; never hard-code a browser path.
 - Heavy builds (Wine, Emscripten builds of Wine), long jobs, and anything needing other GitHub repos run in GitHub Actions. Publish results as artifacts or releases in this repo; sessions download them instead of rebuilding.
 
 ## Clean room and licenses

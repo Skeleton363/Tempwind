@@ -212,7 +212,12 @@ export function makeHostCall({ mem, imports, output, onStop, trace, host }) {
       return STATUS_EXIT;
     };
     if (!imp) return stopWith({ error: `host call with unknown import id ${id}` }, '?');
-    if (!imp.impl || !imp.impl.fn) return stopWith({ error: `unimplemented API ${label}` }, '?');
+    if (!imp.impl || !imp.impl.fn) {
+      // The trace names the caller: the return address at [RSP].
+      let caller = '?';
+      try { caller = `return address ${hex(mem.u64(mem.u64(state + BigInt(gprOffset(RSP)))))}`; } catch { /* unreadable stack */ }
+      return stopWith({ error: `unimplemented API ${label}` }, caller);
+    }
     let args = '';
     try {
       if (trace) args = Array.from({ length: imp.impl.args }, (_, i) => hex(ctx.arg(i))).join(', ');
