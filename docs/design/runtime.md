@@ -168,7 +168,7 @@ Every value a program can observe follows `msvcrt.dll` on the reference runner (
   - `__getmainargs` builds `argv` from the runtime's command line (the program name unless more is given) and `envp` from an empty environment.
   - `_initterm` calls each non-null entry.
   - `exit` runs the `atexit` and `_onexit` handlers in reverse order, then ends the process with the code.
-- **Locks and critical sections:** no-ops with one thread. They still check their arguments.
+- **Locks and critical sections:** real owners and waiters since M5 ("Guest threads" below). They still check their arguments.
 
 ## Run loop
 
@@ -272,7 +272,6 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
   The code is our own: Wine's is read, not copied.
 - **Stops loudly:** what the matrix doesn't execute, and these cases:
   - **Exceptions:** `RaiseException`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx` and `RtlVirtualUnwind`, until Phase 4.
-  - **Threads:** `_beginthreadex`. Phase 1 has one thread, and the matrix runs with `-mmt1`.
   - **Calls that only optional switches reach:** hard links, NT security and the other `-sn*` features.
 
 **The file system** (`runtime/src/win32/vfs.mjs`) is in memory, with Win32 and NTFS semantics:
@@ -306,10 +305,37 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - **`GetProcAddress`** returns a thunk, allocated on demand, for a function the shim implements. A function the shim lacks stops loudly with its name, so a run never silently takes a fallback that native Windows wouldn't take.
 - **An unknown handle** is an error stop, as before.
 
-**Synchronization with one thread:**
-- Events and semaphores keep their state. `OpenEventW` and `OpenFileMappingW` find no named objects (`ERROR_FILE_NOT_FOUND`).
-- `WaitForSingleObject` and `WaitForMultipleObjects` return at once on a signaled object, with auto-reset semantics. A timeout of 0 returns `WAIT_TIMEOUT`. A wait that could only be satisfied by another thread is an error stop (a deadlock).
-- `TryEnterCriticalSection` succeeds.
+**Guest threads (M5): cooperative, on one JS thread.** 7-Zip runs extra threads even with `-mmt1`:
+- the coder mixer (`NCoderMixer2::CMixerMT`) for 7z archives with BCJ, BCJ2 or AES, when encoding and decoding;
+- the LZMA2 match finder (`MatchFinderMt`) for xz.
+
+`-mtf=off` doesn't help: native 7-Zip fails with it. Real parallel threads (Workers, shared memory) are Phase 4. Until then, guest threads take turns on one JS thread.
+- **Mechanism:** JSPI (`WebAssembly.Suspending` and `WebAssembly.promising`; Node 24, Chromium 137+).
+  - Every guest thread runs `run(state)` through `WebAssembly.promising`.
+  - Host calls that can block go through a host function wrapped in `WebAssembly.Suspending`: waits, a contended `EnterCriticalSection`, `Sleep`, `SwitchToThread`, thread exit. When such a call can't complete, it returns a Promise. That suspends the thread's whole wasm stack, and the scheduler resumes another thread.
+  - All other host calls stay synchronous: no Promise, no suspension cost.
+- **Scheduling** is deterministic and non-preemptive. A thread runs until it blocks, yields (`Sleep`, `SwitchToThread`) or ends; the scheduler then resumes the oldest runnable thread. Signaling an object (`SetEvent`, `ReleaseSemaphore`, `LeaveCriticalSection`, a thread's end) makes waiters runnable but doesn't switch threads.
+- **Threads** come from `_beginthreadex` (and `CreateThread` where a program imports it). Each has:
+  - **its own state:** a state block (host region), a TEB (TLS slots, last error, `ClientId`), a stack (the requested size rounded up to 64 KiB, or the image's stack reserve, from the guest heap), the FP defaults of a new thread, and its own errno.
+  - **a start like the main thread's:** RCX = the argument, RSP = top − 0x38 with `[RSP]` = `SENTINEL_RET`, RIP = the start address. The image's TLS callbacks run first with `DLL_THREAD_ATTACH`, as on Windows.
+  - **an end:** returning to the sentinel, `_endthreadex` or `ExitThread`. The return value or the argument becomes its exit code, and the TLS callbacks run with `DLL_THREAD_DETACH`.
+  - **`CREATE_SUSPENDED`:** it waits for `ResumeThread`.
+  - **its handle:** signaled when the thread ends; `GetExitCodeThread` reads the code.
+- **The process ends** when the main thread calls `ExitProcess` or `exit`, or returns from the entry point, whatever the other threads are doing.
+- **`depth`** (the call-depth guard) belongs to each thread: it is saved when a thread suspends and restored when it resumes.
+- **Synchronization objects** follow Windows:
+  - events, manual- or auto-reset;
+  - semaphores;
+  - critical sections, with an owner, a recursion count and waiters (`TryEnterCriticalSection` fails while another thread owns one);
+  - `WaitForSingleObject`, and `WaitForMultipleObjects` with "all" or "any".
+  - `OpenEventW` and `OpenFileMappingW` find no named objects (`ERROR_FILE_NOT_FOUND`).
+- **Timeouts:**
+  - `INFINITE` blocks;
+  - 0 polls;
+  - a finite timeout blocks until the object is signaled or no other thread can run, and then returns `WAIT_TIMEOUT`, since no real time passes between turns.
+- **Deadlock:** when every thread waits with `INFINITE`, the run stops with an error naming each thread's wait.
+- **Limit:** blocking inside a call from the host into guest code (`callNested`, for example a `qsort` comparator) is an error stop.
+- **Outputs** don't depend on the interleaving, and the schedule itself is deterministic.
 
 **Console:**
 - stdout and stderr are redirected, not consoles. `GetConsoleMode` and `GetConsoleScreenBufferInfo` fail with `ERROR_INVALID_HANDLE`, and `_isatty` returns 0.
@@ -363,10 +389,6 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - `FindFirstFileW` on `file\*` fails with `ERROR_DIRECTORY`; an empty mask (`dir\`) with `ERROR_FILE_NOT_FOUND`; a missing directory with `ERROR_PATH_NOT_FOUND`. Find handles enumerate a snapshot taken by `FindFirstFileW`.
 - `SetFileTime` with `0xFFFFFFFF_FFFFFFFF`, or an explicit time, stops later writes through that handle from updating the time; 0 means "unchanged". A new or removed entry updates its directory's last-write time.
 - `SetFilePointer` and `GetFileSize` set the last error to 0 when the low part they return is `0xFFFFFFFF`.
-
-**Threads despite `-mmt1` (a known gap):** 7-Zip creates threads in four matrix groups, so they stop at `_beginthreadex` until the runtime has a second thread:
-- 7z archives with a chain of coders (BCJ + LZMA2, BCJ2, and AES for `-p`): `NArchive::N7z::CEncoder` uses `NCoderMixer2::CMixerMT` whenever `_useMultiThreadMixer` is set, which is the default whatever `-mmt` says (only `-mtf=off` clears it). The decoder uses it too.
-- xz at `-mx=5`: `Lzma2Enc` → `MatchFinderMt_Create` → `Thread_Create`, a match-finder thread.
 
 **Tests:**
 - unit tests per module in `tests/node/`, through `shim-harness.mjs`;

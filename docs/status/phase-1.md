@@ -233,6 +233,9 @@ Phase 0's lessons still hold. New ones from M1:
   - **Thread creation:** stops loudly (Phase 1 has one thread, `-mmt1`).
   - **`GetProcAddress`:** stops on a function the shim lacks rather than returning NULL, so no run takes a fallback that native Windows wouldn't.
   - **Machine profile:** fixed and documented: 1 processor, UTC, an empty registry and environment, redirected stdout.
+- **Cooperative guest threads with JSPI, in M5** (your decision, 2026-10-31). 7-Zip always runs a second thread for 7z archives with BCJ, BCJ2 or AES, and for xz, whatever `-mmt` says. `-mtf=off` makes native 7-Zip fail, so no switch avoids it. So guest threads take turns on one JS thread, suspending their wasm stacks at blocking calls through JSPI (`runtime.md`, "Guest threads (M5)").
+  - It keeps all 138 matrix steps, and lets common real-world archives extract.
+  - Real parallel threads stay in Phase 4.
 - **The command matrix** (`tests/sevenzip/README.md`):
   - deterministic inputs and switches;
   - expected outputs committed from a native run, with real Windows gating them in CI and Node gating the translated run;
