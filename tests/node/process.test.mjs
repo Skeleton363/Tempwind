@@ -42,7 +42,9 @@ test('import thunks, lookup slots and the IAT', async () => {
   // The lookup table: header at 0x8000_0000, at least 4096 slots in the runtime heap.
   assert.equal(p.mem.u64(LOOKUP_HEADER_ADDR + BigInt(LOOKUP_MASK)), 4095n);
   assert.ok(p.mem.u64(LOOKUP_HEADER_ADDR + BigInt(LOOKUP_SLOTS)) >= 0x8010_0000n);
-  assert.deepEqual(p.linker.lookup(TEXT), { func: 1, entry: 0 }, 'AOT block');
+  // Table slot 1 is the blocking host function (runtime.md, "Guest threads"); the AOT module follows.
+  assert.equal(p.blockingIndex, 1);
+  assert.deepEqual(p.linker.lookup(TEXT), { func: 2, entry: 0 }, 'AOT block');
 });
 
 test('GetProcAddress thunks: created on demand after the imports, one per function', async () => {
@@ -212,8 +214,8 @@ test('run-time translation: request, link, continue', async () => {
   assert.deepEqual(r.code, exe.subarray(0x400, 0x500));
   const thunks = Array.from({ length: 5 }, (_, i) => THUNK_BASE + 16n * BigInt(i));
   assert.deepEqual([...r.known], [...thunks, TEXT], 'every key, sorted');
-  assert.deepEqual(p.linker.lookup(target), { func: 2, entry: 0 });
-  assert.deepEqual(p.linker.lookup(TEXT), { func: 1, entry: 0 }, 'the AOT block wins');
+  assert.deepEqual(p.linker.lookup(target), { func: 3, entry: 0 });
+  assert.deepEqual(p.linker.lookup(TEXT), { func: 2, entry: 0 }, 'the AOT block wins');
   assert.equal(p.translations, 1);
   assert.match(lines.join('\n'), /^exit LEFT_CODE rip=0x140001040$/m);
   assert.match(lines.join('\n'), /^translate 0x140001040: 2 blocks \(1 new\), \d+ wasm bytes, [\d.]+ ms$/m);

@@ -6,6 +6,8 @@
 
 import { CrtHeap, HeapError } from './crtheap.mjs';
 import { formatPrintf, FormatError } from './printf.mjs';
+import { addHandle } from './handles.mjs';
+import { Lock, threadsOf } from '../threads.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
 const enc = new TextEncoder();
@@ -64,7 +66,7 @@ export function crt(ctx) {
       userMathErr: 0n,
       newMode: 0,
       signals: new Map(SIGNALS.map((s) => [s, SIG_DFL])),
-      locks: new Array(TOTAL_LOCKS).fill(0),
+      locks: Array.from({ length: TOTAL_LOCKS }, (_, i) => new Lock(`msvcrt lock ${i}`)),
       strerrorBuffer: 0n,
       lconv: 0n,
       mainArgs: null,
@@ -72,7 +74,14 @@ export function crt(ctx) {
   });
 }
 
-const setErrno = (ctx, v) => ctx.write32(crt(ctx).errno, v);
+/** The calling thread's errno: the CRT's for the main thread, its own for each other thread. */
+function errnoAddress(ctx) {
+  const t = threadsOf(ctx).of(ctx);
+  if (t.main) return crt(ctx).errno;
+  return t.local('msvcrt.errno', () => ctx.alloc(4n));
+}
+const setErrno = (ctx, v) => ctx.write32(errnoAddress(ctx), v);
+const CREATE_SUSPENDED = 0x4, STACK_SIZE_PARAM_IS_A_RESERVATION = 0x1_0000;
 
 function heapCall(ctx, f) {
   try { return f(crt(ctx).heap); } catch (e) {
@@ -396,19 +405,40 @@ export default {
   // Exceptions do not exist in Phase 1; reaching the handler means something faulted.
   __C_specific_handler: fn(4, (ctx) => { ctx.fail('structured exception handling is not supported'); }),
 
-  // --- locks (no-ops with one thread; they still check their arguments) ---
-  _lock: fn(1, (ctx) => {
-    const n = ctx.argI32(0);
-    if (n < 0 || n >= TOTAL_LOCKS) ctx.fail(`lock number ${n} is out of range`);
-    crt(ctx).locks[n]++;
-  }),
+  // --- locks: owners, recursion and waiters, like critical sections ---
+  _lock: {
+    args: 1,
+    blocks: true,
+    fn(ctx) {
+      const n = ctx.argI32(0);
+      if (n < 0 || n >= TOTAL_LOCKS) ctx.fail(`lock number ${n} is out of range`);
+      return threadsOf(ctx).lock(ctx, crt(ctx).locks[n], `_lock(${n})`);
+    },
+  },
   _unlock: fn(1, (ctx) => {
     const n = ctx.argI32(0);
     if (n < 0 || n >= TOTAL_LOCKS) ctx.fail(`lock number ${n} is out of range`);
-    const c = crt(ctx);
-    if (c.locks[n] === 0) ctx.fail(`lock ${n} is not held`);
-    c.locks[n]--;
+    const lock = crt(ctx).locks[n];
+    if (lock.owner === null) ctx.fail(`lock ${n} is not held`);
+    threadsOf(ctx).unlock(ctx, lock);
   }),
+
+  // --- threads (runtime.md, "Guest threads") ---
+  // uintptr_t _beginthreadex(void *security, unsigned stack_size, start_address, void *arglist, unsigned initflag, unsigned *thrdaddr)
+  _beginthreadex: fn(6, (ctx) => {
+    const security = ctx.arg(0), stack = BigInt(ctx.arg32(1)), start = ctx.arg(2), arg = ctx.arg(3), flags = ctx.arg32(4), idP = ctx.arg(5);
+    if (security !== 0n) ctx.fail('security attributes are not supported');
+    if (start === 0n) ctx.fail('start_address is NULL');
+    if (flags & ~(CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION)) ctx.fail(`initflag ${hex(flags)} is not supported`);
+    if (!ctx.host.createThread) ctx.fail('threads are not available in this context');
+    const t = ctx.host.createThread({
+      start, arg, stack, reservation: (flags & STACK_SIZE_PARAM_IS_A_RESERVATION) !== 0, suspended: (flags & CREATE_SUSPENDED) !== 0,
+    });
+    if (idP !== 0n) ctx.write32(idP, t.id);
+    return addHandle(ctx, t.object);
+  }),
+  // void _endthreadex(unsigned retval)
+  _endthreadex: fn(1, (ctx) => { ctx.exitThread(ctx.arg32(0)); }),
 
   // --- locale: the C locale ---
   ___lc_codepage_func: fn(0, () => 0),
@@ -429,7 +459,7 @@ export default {
   }),
 
   // --- errno ---
-  _errno: fn(0, (ctx) => crt(ctx).errno),
+  _errno: fn(0, (ctx) => errnoAddress(ctx)),
   strerror: fn(1, (ctx) => {
     let n = ctx.argI32(0);
     if (n < 0 || n >= SYS_ERRLIST.length) n = SYS_ERRLIST.length - 1;

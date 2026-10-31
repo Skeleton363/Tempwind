@@ -6,10 +6,11 @@
 
 import {
   STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE,
-  STDIN_HANDLE, STDOUT_HANDLE, STDERR_HANDLE, INVALID_HANDLE_VALUE, ERROR_INVALID_HANDLE, THREAD_ID,
+  STDIN_HANDLE, STDOUT_HANDLE, STDERR_HANDLE, INVALID_HANDLE_VALUE, ERROR_INVALID_HANDLE,
 } from '../abi.mjs';
 import { CP1252_TO_UNICODE, UNICODE_TO_CP1252 } from './cp1252.mjs';
 import { CP437_TO_UNICODE, UNICODE_TO_CP437 } from './cp437.mjs';
+import { Lock, threadsOf, INFINITE } from '../threads.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
 
@@ -106,11 +107,23 @@ function pageIndex(ctx, pages, addr, api) {
   return i;
 }
 
+/** The lock of an initialized critical section. */
 function criticalSection(ctx, cs, api) {
   ctx.check(cs, CRITICAL_SECTION_SIZE, 'critical section');
-  const held = k32(ctx).criticalSections.get(cs);
-  if (held === undefined) ctx.fail(`${api}: critical section ${hex(cs)} is not initialized`);
-  return held;
+  const lock = k32(ctx).criticalSections.get(cs);
+  if (lock === undefined) ctx.fail(`${api}: critical section ${hex(cs)} is not initialized`);
+  return lock;
+}
+
+/**
+ * The guest-visible fields of a critical section after a change: LockCount
+ * (-1 free; held: -2, minus 4 per waiter, as Windows counts), RecursionCount
+ * and OwningThread (the owner's thread id).
+ */
+function writeCriticalSection(ctx, cs, lock) {
+  ctx.write32(cs + CS_LOCK_COUNT, lock.owner ? -2 - 4 * lock.waiters.length : -1);
+  ctx.write32(cs + CS_RECURSION_COUNT, lock.count);
+  ctx.write64(cs + CS_OWNING_THREAD, lock.owner ? BigInt(lock.owner.id) : 0n);
 }
 
 export default {
@@ -136,7 +149,7 @@ export default {
   // void SetLastError(DWORD dwErrCode)
   SetLastError: { args: 1, fn(ctx) { ctx.setLastError(ctx.arg32(0)); } },
 
-  // void InitializeCriticalSection(LPCRITICAL_SECTION): one thread, so locks only count.
+  // void InitializeCriticalSection(LPCRITICAL_SECTION): owner, recursion count and waiters (runtime.md, "Guest threads").
   InitializeCriticalSection: {
     args: 1,
     fn(ctx) {
@@ -147,50 +160,45 @@ export default {
       ctx.write64(cs + CS_OWNING_THREAD, 0n);
       ctx.write64(cs + CS_LOCK_SEMAPHORE, 0n);
       ctx.write64(cs + CS_SPIN_COUNT, 0n);
-      k32(ctx).criticalSections.set(cs, 0);
+      k32(ctx).criticalSections.set(cs, new Lock(`critical section ${hex(cs)}`));
     },
   },
 
-  // void EnterCriticalSection(LPCRITICAL_SECTION)
+  // void EnterCriticalSection(LPCRITICAL_SECTION): blocks while another thread owns it.
   EnterCriticalSection: {
     args: 1,
+    blocks: true,
     fn(ctx) {
       const cs = ctx.arg(0);
-      const n = criticalSection(ctx, cs, 'EnterCriticalSection') + 1;
-      k32(ctx).criticalSections.set(cs, n);
-      ctx.write32(cs + CS_LOCK_COUNT, -2);
-      ctx.write32(cs + CS_RECURSION_COUNT, n);
-      ctx.write64(cs + CS_OWNING_THREAD, BigInt(THREAD_ID));
+      const lock = criticalSection(ctx, cs, 'EnterCriticalSection');
+      const r = threadsOf(ctx).lock(ctx, lock, `EnterCriticalSection(${hex(cs)})`);
+      writeCriticalSection(ctx, cs, lock);
+      if (r instanceof Promise) return r.then(() => { writeCriticalSection(ctx, cs, lock); });
+      return undefined;
     },
   },
 
-  // BOOL TryEnterCriticalSection(LPCRITICAL_SECTION): with one thread it always succeeds.
+  // BOOL TryEnterCriticalSection(LPCRITICAL_SECTION): fails while another thread owns it.
   TryEnterCriticalSection: {
     args: 1,
     fn(ctx) {
       const cs = ctx.arg(0);
-      const n = criticalSection(ctx, cs, 'TryEnterCriticalSection') + 1;
-      k32(ctx).criticalSections.set(cs, n);
-      ctx.write32(cs + CS_LOCK_COUNT, -2);
-      ctx.write32(cs + CS_RECURSION_COUNT, n);
-      ctx.write64(cs + CS_OWNING_THREAD, BigInt(THREAD_ID));
+      const lock = criticalSection(ctx, cs, 'TryEnterCriticalSection');
+      if (!threadsOf(ctx).tryLock(ctx, lock)) return 0;
+      writeCriticalSection(ctx, cs, lock);
       return 1;
     },
   },
 
-  // void LeaveCriticalSection(LPCRITICAL_SECTION)
+  // void LeaveCriticalSection(LPCRITICAL_SECTION): at count 0 the first waiter owns it next.
   LeaveCriticalSection: {
     args: 1,
     fn(ctx) {
       const cs = ctx.arg(0);
-      const n = criticalSection(ctx, cs, 'LeaveCriticalSection') - 1;
-      if (n < 0) ctx.fail(`LeaveCriticalSection: critical section ${hex(cs)} is not held`);
-      k32(ctx).criticalSections.set(cs, n);
-      ctx.write32(cs + CS_RECURSION_COUNT, n);
-      if (n === 0) {
-        ctx.write32(cs + CS_LOCK_COUNT, -1);
-        ctx.write64(cs + CS_OWNING_THREAD, 0n);
-      }
+      const lock = criticalSection(ctx, cs, 'LeaveCriticalSection');
+      if (lock.owner === null) ctx.fail(`LeaveCriticalSection: critical section ${hex(cs)} is not held`);
+      threadsOf(ctx).unlock(ctx, lock);
+      writeCriticalSection(ctx, cs, lock);
     },
   },
 
@@ -199,7 +207,8 @@ export default {
     args: 1,
     fn(ctx) {
       const cs = ctx.arg(0);
-      criticalSection(ctx, cs, 'DeleteCriticalSection');
+      const lock = criticalSection(ctx, cs, 'DeleteCriticalSection');
+      if (lock.waiters.length) ctx.fail(`DeleteCriticalSection: threads wait for critical section ${hex(cs)}`);
       k32(ctx).criticalSections.delete(cs);
       ctx.write64(cs + CS_DEBUG_INFO, 0n);
       ctx.write32(cs + CS_LOCK_COUNT, -1);
@@ -293,11 +302,26 @@ export default {
     },
   },
 
-  // void Sleep(DWORD dwMilliseconds): one thread and no clocks, so nothing to wait for.
+  // void Sleep(DWORD dwMilliseconds): gives other threads a turn; no real time passes (runtime.md, "Guest threads").
   Sleep: {
     args: 1,
+    blocks: true,
     fn(ctx) {
-      if (ctx.arg32(0) === 0xffff_ffff) ctx.fail('Sleep(INFINITE) with one thread never returns');
+      const ms = ctx.arg32(0);
+      const threads = threadsOf(ctx);
+      if (ms === INFINITE) return threads.blockForever(ctx, 'Sleep(INFINITE)');
+      const r = threads.yield(ctx, ms !== 0, undefined);
+      return r instanceof Promise ? r : undefined;
+    },
+  },
+
+  // BOOL SwitchToThread(void): nonzero if another thread ran.
+  SwitchToThread: {
+    args: 0,
+    blocks: true,
+    fn(ctx) {
+      const r = threadsOf(ctx).yield(ctx, false, 1);
+      return r instanceof Promise ? r : 0;
     },
   },
 

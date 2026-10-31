@@ -1,11 +1,12 @@
 // kernel32.dll: the process, modules and GetProcAddress, memory, time,
-// synchronization with one thread, the console and the machine profile
+// synchronization and threads (runtime.md, "Guest threads"), the console and the machine profile
 // (runtime.md, "Files, handles and the 7-Zip shim (M5)"). Behaviour follows
 // Microsoft's documentation; details are checked against Wine 11
 // (kernelbase/{loader,memory,process,sync,console,file}.c, kernel32/file.c,
 // ntdll/time.c).
 
-import { INVALID_HANDLE_VALUE, PROCESS_ID, THREAD_ID, OS_VERSION } from '../abi.mjs';
+import { INVALID_HANDLE_VALUE, PROCESS_ID, OS_VERSION } from '../abi.mjs';
+import { threadsOf, INFINITE, WAIT_FAILED } from '../threads.mjs';
 import {
   Win32Error, ERROR_INVALID_PARAMETER, ERROR_INVALID_HANDLE, ERROR_FILE_NOT_FOUND, ERROR_MOD_NOT_FOUND,
   ERROR_INSUFFICIENT_BUFFER, ERROR_TOO_MANY_POSTS, ERROR_INVALID_ADDRESS, ERROR_NOT_ENOUGH_MEMORY,
@@ -252,24 +253,26 @@ function vmFree(ctx, base) {
 
 // --- synchronization -------------------------------------------------------------
 
-const WAIT_OBJECT_0 = 0, WAIT_TIMEOUT = 0x102;
-const INFINITE = 0xffff_ffff;
+/** Handle kinds a wait accepts. */
+const WAITABLE = ['event', 'semaphore', 'thread'];
+const msText = (ms) => (ms === INFINITE ? 'INFINITE' : String(ms));
 
-/** Whether a wait on `obj` is satisfied now; `consume` applies its side effect. */
-function signaled(ctx, obj, api) {
-  if (obj.kind === 'event') return obj.signaled;
-  if (obj.kind === 'semaphore') return obj.count > 0;
-  ctx.fail(`${api}: waiting on a ${obj.kind} handle is not supported`);
-}
-
-function consume(obj) {
-  if (obj.kind === 'event' && !obj.manual) obj.signaled = false;
-  if (obj.kind === 'semaphore') obj.count--;
+/** The thread a thread handle names; GetCurrentThread's pseudo-handle is the caller. */
+function threadOf(ctx, h, param) {
+  if (BigInt.asUintN(64, h) === CURRENT_THREAD) return threadsOf(ctx).of(ctx);
+  return getHandle(ctx, h, param, 'thread').thread;
 }
 
 function checkUnnamed(ctx, sa, nameP, api) {
   if (sa !== 0n) ctx.fail(`${api}: security attributes are not supported`);
   if (nameP !== 0n) ctx.fail(`${api}: named objects (${wstr(ctx, nameP)}) are not supported`);
+}
+
+/** TlsAlloc and TlsFree clear the slot in every thread, as Windows does. */
+function clearTlsSlot(ctx, i) {
+  const threads = threadsOf(ctx);
+  threads.of(ctx);
+  for (const t of threads.live()) ctx.write64(t.teb + TEB_TLS_SLOTS + 8n * BigInt(i), 0n);
 }
 
 // --- FormatMessage -----------------------------------------------------------------
@@ -312,13 +315,28 @@ export default {
   }),
   GetCurrentProcess: fn(0, () => CURRENT_PROCESS),
   GetCurrentProcessId: fn(0, () => PROCESS_ID),
-  GetCurrentThreadId: fn(0, () => THREAD_ID),
+  GetCurrentThreadId: fn(0, (ctx) => threadsOf(ctx).of(ctx).id),
   GetCurrentThread: fn(0, () => CURRENT_THREAD),
   // DWORD GetThreadId(HANDLE Thread)
-  GetThreadId: fn(1, (ctx) => {
-    if (BigInt.asUintN(64, ctx.arg(0)) !== CURRENT_THREAD) ctx.fail(`GetThreadId(${hex(ctx.arg(0))}): only the current thread exists`);
-    return THREAD_ID;
+  GetThreadId: fn(1, (ctx) => threadOf(ctx, ctx.arg(0), 'Thread').id),
+  // DWORD ResumeThread(HANDLE hThread): the previous suspend count; at 0 the thread can run.
+  ResumeThread: fn(1, (ctx) => {
+    const t = threadOf(ctx, ctx.arg(0), 'hThread');
+    const prev = t.suspendCount;
+    if (prev > 0) {
+      t.suspendCount--;
+      threadsOf(ctx).start(t);
+    }
+    return prev;
   }),
+  // BOOL GetExitCodeThread(HANDLE hThread, LPDWORD lpExitCode): STILL_ACTIVE while it runs.
+  GetExitCodeThread: fn(2, (ctx) => {
+    const t = threadOf(ctx, ctx.arg(0), 'hThread');
+    ctx.write32(ctx.arg(1), t.exitCode);
+    return 1;
+  }),
+  // void ExitThread(DWORD dwExitCode)
+  ExitThread: fn(1, (ctx) => { ctx.exitThread(ctx.arg32(0)); }),
 
   // LPWSTR GetCommandLineW(void)
   GetCommandLineW: fn(0, (ctx) => {
@@ -447,7 +465,7 @@ export default {
   }),
   // DWORD_PTR SetThreadAffinityMask(HANDLE, DWORD_PTR): returns the previous mask.
   SetThreadAffinityMask: fn(2, (ctx) => {
-    if (BigInt.asUintN(64, ctx.arg(0)) !== CURRENT_THREAD) ctx.fail('only the current thread is supported');
+    threadOf(ctx, ctx.arg(0), 'hThread');
     if (ctx.arg(1) !== 1n) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0; }
     return 1;
   }),
@@ -547,7 +565,11 @@ export default {
     return addHandle(ctx, { kind: 'event', manual: ctx.arg32(1) !== 0, signaled: ctx.arg32(2) !== 0 });
   }),
   // BOOL SetEvent(HANDLE)
-  SetEvent: fn(1, (ctx) => { getHandle(ctx, ctx.arg(0), 'hEvent', 'event').signaled = true; return 1; }),
+  SetEvent: fn(1, (ctx) => {
+    getHandle(ctx, ctx.arg(0), 'hEvent', 'event').signaled = true;
+    threadsOf(ctx).signal();
+    return 1;
+  }),
   // BOOL ResetEvent(HANDLE)
   ResetEvent: fn(1, (ctx) => { getHandle(ctx, ctx.arg(0), 'hEvent', 'event').signaled = false; return 1; }),
   // HANDLE OpenEventW(DWORD, BOOL, LPCWSTR lpName): there are no named objects.
@@ -570,31 +592,33 @@ export default {
     if (s.count + n > s.max) { ctx.setLastError(ERROR_TOO_MANY_POSTS); return 0; }
     if (prevP !== 0n) ctx.write32(prevP, s.count);
     s.count += n;
+    threadsOf(ctx).signal();
     return 1;
   }),
   // DWORD WaitForSingleObject(HANDLE, DWORD dwMilliseconds)
-  WaitForSingleObject: fn(2, (ctx) => {
-    const obj = getHandle(ctx, ctx.arg(0), 'hHandle', 'event', 'semaphore');
-    const ms = ctx.arg32(1);
-    if (signaled(ctx, obj, 'WaitForSingleObject')) { consume(obj); return WAIT_OBJECT_0; }
-    if (ms === 0) return WAIT_TIMEOUT;
-    ctx.fail(`deadlock: waiting ${ms === INFINITE ? 'forever' : `${ms} ms`} on ${hex(ctx.arg(0))}, which only another thread could signal`);
-  }),
+  WaitForSingleObject: {
+    args: 2,
+    blocks: true,
+    fn(ctx) {
+      const h = ctx.arg(0), ms = ctx.arg32(1);
+      const obj = getHandle(ctx, h, 'hHandle', ...WAITABLE);
+      return threadsOf(ctx).waitFor(ctx, [obj], false, ms, `WaitForSingleObject(${hex(h)}, ${msText(ms)})`);
+    },
+  },
   // DWORD WaitForMultipleObjects(DWORD nCount, const HANDLE *lpHandles, BOOL bWaitAll, DWORD dwMilliseconds)
-  WaitForMultipleObjects: fn(4, (ctx) => {
-    const n = ctx.arg32(0), arr = ctx.arg(1), all = ctx.arg32(2) !== 0, ms = ctx.arg32(3);
-    if (n === 0 || n > 64) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0xffff_ffff; }
-    const objs = Array.from({ length: n }, (_, i) => getHandle(ctx, ctx.read64(arr + 8n * BigInt(i)), 'lpHandles[i]', 'event', 'semaphore'));
-    const ready = objs.map((o) => signaled(ctx, o, 'WaitForMultipleObjects'));
-    if (all ? ready.every(Boolean) : ready.some(Boolean)) {
-      if (all) { objs.forEach(consume); return WAIT_OBJECT_0; }
-      const i = ready.indexOf(true);
-      consume(objs[i]);
-      return WAIT_OBJECT_0 + i;
-    }
-    if (ms === 0) return WAIT_TIMEOUT;
-    ctx.fail(`deadlock: waiting on ${n} objects, which only another thread could signal`);
-  }),
+  WaitForMultipleObjects: {
+    args: 4,
+    blocks: true,
+    fn(ctx) {
+      const n = ctx.arg32(0), arr = ctx.arg(1), all = ctx.arg32(2) !== 0, ms = ctx.arg32(3);
+      if (n === 0 || n > 64) { ctx.setLastError(ERROR_INVALID_PARAMETER); return WAIT_FAILED; }
+      const handles = Array.from({ length: n }, (_, i) => ctx.read64(arr + 8n * BigInt(i)));
+      const objs = handles.map((h) => getHandle(ctx, h, 'lpHandles[i]', ...WAITABLE));
+      if (all && new Set(objs).size !== n) ctx.fail('WaitForMultipleObjects: the same object twice with bWaitAll is not supported');
+      const label = `WaitForMultipleObjects(${n}, [${handles.map(hex).join(', ')}], ${all ? 'all' : 'any'}, ${msText(ms)})`;
+      return threadsOf(ctx).waitFor(ctx, objs, all, ms, label);
+    },
+  },
   // --- thread-local storage ---
   // DWORD TlsAlloc(void)
   TlsAlloc: fn(0, (ctx) => {
@@ -602,7 +626,7 @@ export default {
     for (let i = 0; i < TLS_MINIMUM_AVAILABLE; i++) {
       if (!used.has(i)) {
         used.add(i);
-        ctx.write64(ctx.teb() + TEB_TLS_SLOTS + 8n * BigInt(i), 0n);
+        clearTlsSlot(ctx, i);
         return i;
       }
     }
@@ -614,7 +638,7 @@ export default {
     const used = sys(ctx).tlsUsed;
     if (!used.has(i)) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0; }
     used.delete(i);
-    ctx.write64(ctx.teb() + TEB_TLS_SLOTS + 8n * BigInt(i), 0n);
+    clearTlsSlot(ctx, i);
     return 1;
   }),
   // BOOL TlsSetValue(DWORD dwTlsIndex, LPVOID lpTlsValue)

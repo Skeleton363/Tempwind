@@ -13,6 +13,7 @@ import {
   TEB_STACK_BASE, TEB_STACK_LIMIT, TEB_SELF, TEB_CLIENT_ID_PROCESS, TEB_CLIENT_ID_THREAD,
   TEB_TLS_POINTER, TEB_PEB, PEB_BEING_DEBUGGED, PEB_IMAGE_BASE, PEB_NUMBER_OF_PROCESSORS,
   PEB_OS_MAJOR, PEB_OS_MINOR, PEB_OS_BUILD, PEB_OS_PLATFORM_ID, OS_VERSION, gprOffset,
+  DLL_THREAD_ATTACH, DLL_THREAD_DETACH, TEB_SIZE, STACK_ALIGN,
 } from './abi.mjs';
 import { createMemory64 } from './memory.mjs';
 import { GuestMemory } from './guest-memory.mjs';
@@ -21,6 +22,7 @@ import { makeHostCall, HostStop } from './hostcall.mjs';
 import { parsePlan, checkPlan, executableSection, hex } from './plan.mjs';
 import { findShim, SHIM } from './win32/index.mjs';
 import { Vfs, hostNow } from './win32/vfs.mjs';
+import { Thread, Threads } from './threads.mjs';
 
 const RCX = 1, RDX = 2, RSP = 4, R8 = 8, R9 = 9;
 const ARG_REGS = [RCX, RDX, R8, R9];
@@ -29,6 +31,11 @@ const FAULT_NAMES = { [FAULT_READ]: 'read', [FAULT_WRITE]: 'write', [FAULT_EXECU
 const now = () => performance.now();
 /** Calls from the host into guest code nest at most this deep (runtime.md). */
 export const MAX_GUEST_CALL_NESTING = 16;
+/** JSPI (runtime.md, "Guest threads"): Node 24, Chromium 137+. */
+const JSPI = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+/** A thread's stack reservation is at least 1 MiB (Windows: RtlCreateUserStack). */
+const MIN_STACK_RESERVE = 0x10_0000n;
+const roundUp = (v, a) => (v + a - 1n) / a * a;
 
 /** An error stop of the process (exit status 125 in the CLI). */
 export class ProcessError extends Error {}
@@ -78,6 +85,8 @@ export class Process {
     this.output = { stdout: [], stderr: [] };
     this.stop = null;
     this.running = false;
+    /** Set once the process has ended (exit code or error stop). */
+    this.finished = false;
     /** Depth of calls from host functions into guest code. */
     this.nesting = 0;
     this.argvOption = argv;
@@ -136,14 +145,27 @@ export class Process {
       fp: this.fp,
     });
     this.imports = imports.map((f, id) => ({ ...f, thunk: THUNK_BASE + THUNK_SIZE * BigInt(id), impl: findShim(f.dll, f.name, this.shim) }));
-    this.linker.setHostFunction(makeHostCall({
+    const hostCall = makeHostCall({
       mem: this.mem,
       imports: this.imports,
       output: (stream, bytes) => this.write(stream, bytes),
       onStop: (stop) => { this.stop = stop; },
       trace: this.trace.api ? (line) => this.log(line) : undefined,
       host: this.services(),
-    }));
+    });
+    this.linker.setHostFunction(hostCall);
+    // Calls that can block (runtime.md, "Guest threads") go through a second
+    // host function wrapped in WebAssembly.Suspending. Inside a call from the
+    // host into guest code its slot holds the plain one (callNested).
+    this.hostFn = this.linker.table.get(HOST_FUNC_INDEX);
+    this.blockingIndex = this.linker.addHostFunction(JSPI ? new WebAssembly.Suspending(hostCall) : hostCall);
+    this.blockingFn = this.linker.table.get(this.blockingIndex);
+    this.threads = new Threads({
+      depth: this.linker.depth,
+      nesting: () => this.nesting,
+      canSuspend: JSPI,
+      onEnter: (t) => { this.state = t.state; },
+    });
 
     // 4. Imports: thunks, lookup slots, IAT.
     this.writeImports();
@@ -162,9 +184,12 @@ export class Process {
     this.state = MAIN_STATE_ADDR;
     this.writePebTeb();
     this.initFpState();
+    this.mainThread = this.threads.add(new Thread({
+      id: THREAD_ID, state: MAIN_STATE_ADDR, teb: TEB_ADDR, stackBase: this.map.stackTop, stackLimit: this.map.stackBottom, main: true,
+    }));
 
     // 7. TLS data (callbacks run in start()).
-    if (this.plan.tls) this.setupTls();
+    if (this.plan.tls) this.tlsBlock = this.setupTls(TEB_ADDR);
   }
 
   mapImage(exe) {
@@ -181,6 +206,8 @@ export class Process {
     const p = this;
     return {
       call: (target, args) => p.callNested(target, args),
+      createThread: (opts) => p.createThread(opts),
+      get threads() { return p.threads; },
       alloc: (size, align) => {
         try { return p.guestHeap.alloc(size, align); } catch (e) { throw new HostStop({ error: e.message }); }
       },
@@ -218,7 +245,7 @@ export class Process {
     const thunk = THUNK_BASE + THUNK_SIZE * BigInt(id);
     this.imports.push({ dll, name, thunk, impl, iat: 0n });
     this.mem.write(thunk, THUNK_BYTES);
-    this.linker.insert(thunk, HOST_FUNC_INDEX, id);
+    this.linker.insert(thunk, impl.blocks ? this.blockingIndex : HOST_FUNC_INDEX, id);
     this.procThunks.set(key, thunk);
     return thunk;
   }
@@ -254,7 +281,7 @@ export class Process {
         continue;
       }
       this.mem.write(f.thunk, THUNK_BYTES);
-      this.linker.insert(f.thunk, HOST_FUNC_INDEX, id);
+      this.linker.insert(f.thunk, f.impl?.blocks ? this.blockingIndex : HOST_FUNC_INDEX, id);
       this.mem.setU64(f.iat, f.thunk);
     }
   }
@@ -277,16 +304,17 @@ export class Process {
     m.setU32(PEB_ADDR + BigInt(PEB_OS_PLATFORM_ID), OS_VERSION.platformId);
   }
 
-  setupTls() {
+  /** The image's TLS data for the thread of `teb`: a block from the template and the pointer array. Returns the block. */
+  setupTls(teb) {
     const t = this.plan.tls;
     const dataSize = t.endOfRawData - t.startOfRawData;
     const block = this.guestHeap.alloc(dataSize + t.sizeOfZeroFill || 1n, 16n);
     if (dataSize) this.mem.write(block, this.mem.read(t.startOfRawData, Number(dataSize)));
     const array = this.guestHeap.alloc(8n, 16n);
     this.mem.setU64(array, block);
-    this.mem.setU64(TEB_ADDR + BigInt(TEB_TLS_POINTER), array);
+    this.mem.setU64(teb + BigInt(TEB_TLS_POINTER), array);
     this.mem.setU32(t.addressOfIndex, 0);
-    this.tlsBlock = block;
+    return block;
   }
 
   write(stream, bytes) {
@@ -307,61 +335,72 @@ export class Process {
   setReg(i, v) { this.mem.setU64(this.state + BigInt(gprOffset(i)), v); }
 
   /** The FP state of a new thread, as on Windows x64 (runtime.md, "Start of the main thread"). */
-  initFpState() {
+  initFpState(state = this.state) {
     const m = this.mem;
-    m.setU32(this.state + BigInt(STATE_MXCSR), MXCSR_INIT);
-    m.setU16(this.state + BigInt(STATE_FCW), FCW_INIT);
-    m.setU16(this.state + BigInt(STATE_FTW), FTW_EMPTY);
+    m.setU32(state + BigInt(STATE_MXCSR), MXCSR_INIT);
+    m.setU16(state + BigInt(STATE_FCW), FCW_INIT);
+    m.setU16(state + BigInt(STATE_FTW), FTW_EMPTY);
   }
 
   /**
-   * Sets up a host-initiated guest call (runtime.md, "Start of the main
-   * thread"): fresh GPRs, Win64 register arguments, RSP = top - 0x38 with
-   * [RSP] = SENTINEL_RET, RFLAGS = 0x202, GS base = TEB, FS base = 0. The FP
-   * state (XMM, MXCSR, x87) is the thread's and carries over, as from a TLS
-   * callback to the entry point on Windows.
+   * Sets up a host-initiated guest call on thread `t` (runtime.md, "Start of
+   * the main thread"): fresh GPRs, Win64 register arguments, RSP = top - 0x38
+   * with [RSP] = SENTINEL_RET, RFLAGS = 0x202, GS base = TEB, FS base = 0.
+   * The FP state (XMM, MXCSR, x87) is the thread's and carries over, as from
+   * a TLS callback to the entry point on Windows.
    */
-  prepareCall(target, args = []) {
+  prepareCall(target, args = [], t = this.mainThread) {
     if (args.length > 4) throw new ProcessError('host-initiated guest calls take at most 4 arguments');
     const m = this.mem;
-    const fpAt = this.state + BigInt(STATE_XMM);
+    const state = t.state;
+    const fpAt = state + BigInt(STATE_XMM);
     const fp = m.read(fpAt, STATE_FP_END - STATE_XMM);
-    m.fill(this.state, Number(STATE_SIZE));
+    m.fill(state, Number(STATE_SIZE));
     m.write(fpAt, fp);
-    const top = this.map.stackTop & ~0xfn;
+    const top = t.stackBase & ~0xfn;
     const rsp = top - GUEST_CALL_FRAME;
-    args.forEach((a, i) => this.setReg(ARG_REGS[i], BigInt.asUintN(64, BigInt(a))));
-    this.setReg(RSP, rsp);
+    const reg = (i, v) => m.setU64(state + BigInt(gprOffset(i)), v);
+    args.forEach((a, i) => reg(ARG_REGS[i], BigInt.asUintN(64, BigInt(a))));
+    reg(RSP, rsp);
     m.setU64(rsp, SENTINEL_RET);
-    m.setU64(this.state + BigInt(STATE_RIP), target);
-    m.setU64(this.state + BigInt(STATE_RFLAGS), RFLAGS_INIT);
-    m.setU64(this.state + BigInt(STATE_GS_BASE), TEB_ADDR);
-    m.setU64(this.state + BigInt(STATE_FS_BASE), 0n);
+    m.setU64(state + BigInt(STATE_RIP), target);
+    m.setU64(state + BigInt(STATE_RFLAGS), RFLAGS_INIT);
+    m.setU64(state + BigInt(STATE_GS_BASE), t.teb);
+    m.setU64(state + BigInt(STATE_FS_BASE), 0n);
   }
 
   /**
-   * Runs a host-initiated guest call to its end.
-   * @returns {Promise<{returned: true, rax: bigint} | {exitCode: number}>}
+   * Runs a host-initiated guest call on thread `t` to its end.
+   * @returns {Promise<{returned: true, rax: bigint} | {exitCode: number} | {threadExit: number}>}
    * Throws ProcessError on an error stop.
    */
-  async callGuest(target, args = []) {
-    if (this.running) throw new ProcessError('nested host-initiated guest calls are not supported');
-    this.running = true;
-    try {
-      this.prepareCall(target, args);
-      return await this.loop();
-    } finally {
-      this.running = false;
-    }
+  async callOn(t, target, args = []) {
+    this.prepareCall(target, args, t);
+    return await this.loop(t);
   }
 
   /**
-   * The run loop (runtime.md, "Run loop"). Asynchronous at the top level,
-   * so a page can compile run-time translations off the main thread.
+   * `run` for a thread's top level: through WebAssembly.promising, so a
+   * blocking host call can suspend the thread (runtime.md, "Guest threads").
+   * A `run` that isn't a wasm function (tests) is called directly.
    */
-  async loop() {
+  runTop(state) {
+    if (this.promisingFor !== this.run) {
+      this.promisingFor = this.run;
+      try { this.promisingRun = JSPI ? WebAssembly.promising(this.run) : this.run; } catch { this.promisingRun = this.run; }
+    }
+    return this.promisingRun(state);
+  }
+
+  /**
+   * The run loop (runtime.md, "Run loop") of thread `t`. Asynchronous: the
+   * thread suspends in blocking calls, and a page can compile run-time
+   * translations off the main thread.
+   */
+  async loop(t = this.mainThread) {
     for (;;) {
-      const r = this.onExit(this.run(this.state));
+      const reason = await this.runTop(t.state);
+      const r = this.onExit(reason, t.state);
       if (r.translate === undefined) return r;
       await this.translateAt(r.translate);
     }
@@ -380,15 +419,15 @@ export class Process {
    * What an exit of `run` means: the guest call returned, the process
    * exited, or code at `translate` needs translating. Throws ProcessError on
    * an error stop.
-   * @returns {{returned: true, rax: bigint} | {exitCode: number} | {translate: bigint}}
+   * @returns {{returned: true, rax: bigint} | {exitCode: number} | {threadExit: number} | {translate: bigint}}
    */
-  onExit(reason) {
+  onExit(reason, state = this.state) {
     const m = this.mem;
-    const rip = m.u64(this.state + BigInt(STATE_RIP));
+    const rip = m.u64(state + BigInt(STATE_RIP));
     if (this.trace.exits) this.log(`exit ${EXIT_NAMES[reason] ?? reason} rip=${hex(rip)}`);
     switch (reason) {
       case EXIT_LEFT_CODE:
-        if (rip === SENTINEL_RET) return { returned: true, rax: this.reg(0) };
+        if (rip === SENTINEL_RET) return { returned: true, rax: m.u64(state + BigInt(gprOffset(0))) };
         if (executableSection(this.plan, rip)) return { translate: rip };
         throw new ProcessError(`fault: execute at ${hex(rip)}`);
       case EXIT_UNSUPPORTED:
@@ -398,11 +437,12 @@ export class Process {
         this.stop = null;
         if (!stop) throw new ProcessError(`EXIT_HOST at ${hex(rip)} without a recorded stop`);
         if ('exitCode' in stop) return { exitCode: stop.exitCode };
+        if ('threadExit' in stop) return { threadExit: stop.threadExit };
         throw new ProcessError(stop.error);
       }
       case EXIT_FAULT: {
-        const addr = m.u64(this.state + BigInt(STATE_FAULT_ADDR));
-        const kind = m.u32(this.state + BigInt(STATE_FAULT_KIND));
+        const addr = m.u64(state + BigInt(STATE_FAULT_ADDR));
+        const kind = m.u32(state + BigInt(STATE_FAULT_KIND));
         throw new ProcessError(`fault: ${FAULT_NAMES[kind] ?? `kind ${kind}`} at ${hex(addr)} (rip ${hex(rip)})`);
       }
       default:
@@ -425,12 +465,14 @@ export class Process {
     const m = this.mem;
     const saved = m.read(this.state, Number(STATE_SIZE));
     const depth = this.linker.depth.value;
-    this.nesting++;
+    const stackLimit = this.threads.current?.stackLimit ?? this.map.stackBottom;
+    // Synchronous code can't suspend: blocking calls get the plain host function.
+    if (this.nesting++ === 0) this.linker.table.set(this.blockingIndex, this.hostFn);
     try {
       const stackArgs = args.slice(4);
       const top = this.reg(RSP) & ~0xfn;
       const rsp = ((top - 0x20n - 8n * BigInt(stackArgs.length)) & ~0xfn) - 8n;
-      if (rsp < this.map.stackBottom) return { error: `stack overflow in a guest call to ${hex(target)} (rsp ${hex(rsp)})` };
+      if (rsp < stackLimit) return { error: `stack overflow in a guest call to ${hex(target)} (rsp ${hex(rsp)})` };
       m.setU64(rsp, SENTINEL_RET);
       stackArgs.forEach((a, i) => m.setU64(rsp + 0x28n + 8n * BigInt(i), a));
       args.slice(0, 4).forEach((a, i) => this.setReg(ARG_REGS[i], a));
@@ -439,6 +481,7 @@ export class Process {
       m.setU64(this.state + BigInt(STATE_RFLAGS), RFLAGS_INIT);
       if (this.trace.api) this.log(`call ${hex(target)}(${args.map(hex).join(', ')})`);
       const r = this.loopSync();
+      if ('threadExit' in r) return { error: 'a thread exit inside a call from the host into guest code is not supported' };
       return 'exitCode' in r ? r : { rax: r.rax };
     } catch (e) {
       if (e instanceof ProcessError) return { error: e.message };
@@ -446,7 +489,7 @@ export class Process {
     } finally {
       m.write(this.state, saved);
       this.linker.depth.value = depth;
-      this.nesting--;
+      if (--this.nesting === 0) this.linker.table.set(this.blockingIndex, this.blockingFn);
     }
   }
 
@@ -506,16 +549,130 @@ export class Process {
 
   /**
    * Runs the program: TLS callbacks (DLL_PROCESS_ATTACH), then the entry
-   * point with RCX = PEB. Resolves with the exit code; rejects with a
-   * ProcessError on an error stop.
+   * point with RCX = PEB, on the main thread. Resolves with the exit code
+   * when the main thread returns or any thread exits the process; rejects
+   * with a ProcessError on an error stop in any thread.
    */
-  async start() {
+  start() {
+    if (this.running) return Promise.reject(new ProcessError('the process is already running'));
+    this.running = true;
+    this.outcome = new Promise((resolve, reject) => { this.settle = { resolve, reject }; });
+    this.guard(this.runMain());
+    return this.outcome;
+  }
+
+  async runMain() {
     const { imageBase, entryPoint, tls } = this.plan;
+    const t = this.mainThread;
     for (const cb of tls?.callbacks ?? []) {
-      const r = await this.callGuest(cb, [imageBase, DLL_PROCESS_ATTACH, 0n]);
-      if ('exitCode' in r) return r.exitCode;
+      const r = await this.callOn(t, cb, [imageBase, DLL_PROCESS_ATTACH, 0n]);
+      if (!('returned' in r)) return this.ended(r, t);
     }
-    const r = await this.callGuest(entryPoint, [PEB_ADDR]);
-    return 'exitCode' in r ? r.exitCode : Number(BigInt.asUintN(32, r.rax));
+    const r = await this.callOn(t, entryPoint, [PEB_ADDR]);
+    if (!('returned' in r)) return this.ended(r, t);
+    this.finish({ exitCode: Number(BigInt.asUintN(32, r.rax)) });
+  }
+
+  /** A guest call that didn't return: the process exits, or (not on the main thread) the thread ends. */
+  ended(r, t) {
+    if ('exitCode' in r) { this.finish(r); return true; }
+    if (t.main) throw new ProcessError('ExitThread or _endthreadex on the main thread is not supported');
+    return false;
+  }
+
+  /** Ends the process once: {exitCode} or {error}. Other threads never run again. */
+  finish(outcome) {
+    if (this.finished) return;
+    this.finished = true;
+    this.threads.finished = true;
+    this.running = false;
+    if ('exitCode' in outcome) this.settle.resolve(outcome.exitCode);
+    else this.settle.reject(outcome.error instanceof ProcessError ? outcome.error : new ProcessError(String(outcome.error?.stack ?? outcome.error)));
+  }
+
+  /** Turns a failure of a thread's loop into the process's error stop. */
+  guard(promise) {
+    promise.catch((e) => this.finish({ error: e }));
+  }
+
+  /**
+   * A new guest thread (runtime.md, "Guest threads"): state block, TEB,
+   * stack and TLS data; it starts when the scheduler picks it, unless
+   * `suspended` (CREATE_SUSPENDED).
+   * @param {{start: bigint, arg: bigint, stack: bigint, reservation: boolean, suspended: boolean}} opts
+   */
+  createThread({ start, arg, stack = 0n, reservation = false, suspended = false }) {
+    // Windows' rule (RtlCreateUserStack): the reservation, or the image's;
+    // at least the commit size and 1 MiB; 64 KiB granularity.
+    let reserve = reservation && stack ? stack : this.plan.stackReserve;
+    if (!reservation && stack > reserve) reserve = stack;
+    if (reserve < MIN_STACK_RESERVE) reserve = MIN_STACK_RESERVE;
+    reserve = roundUp(reserve, STACK_ALIGN);
+    const slot = this.threadSlot(reserve);
+    const t = new Thread({
+      id: this.threads.newId(), state: slot.state, teb: slot.teb, stackBase: slot.stackLimit + reserve, stackLimit: slot.stackLimit,
+    });
+    t.slot = slot;
+    const m = this.mem;
+    m.fill(slot.teb, Number(TEB_SIZE));
+    m.fill(slot.state, Number(STATE_SIZE));
+    m.setU64(slot.teb + BigInt(TEB_STACK_BASE), t.stackBase);
+    m.setU64(slot.teb + BigInt(TEB_STACK_LIMIT), t.stackLimit);
+    m.setU64(slot.teb + BigInt(TEB_SELF), slot.teb);
+    m.setU64(slot.teb + BigInt(TEB_CLIENT_ID_PROCESS), PROCESS_ID);
+    m.setU64(slot.teb + BigInt(TEB_CLIENT_ID_THREAD), BigInt(t.id));
+    m.setU64(slot.teb + BigInt(TEB_PEB), PEB_ADDR);
+    if (this.plan.tls) slot.tls = this.setupTls(slot.teb);
+    this.initFpState(slot.state);
+    t.suspendCount = suspended ? 1 : 0;
+    this.threads.add(t);
+    const gate = this.threads.suspend(t);
+    t.depth = 0;
+    this.guard(this.runThread(t, gate, start, arg));
+    this.threads.start(t);
+    return t;
+  }
+
+  /** A state block, TEB and stack for a new thread: those of an ended thread with the same stack size, or new ones. */
+  threadSlot(reserve) {
+    this.freeSlots ??= [];
+    const i = this.freeSlots.findIndex((s) => s.reserve === reserve);
+    if (i >= 0) return this.freeSlots.splice(i, 1)[0];
+    const alloc = (size, align) => {
+      try { return this.guestHeap.alloc(size, align); } catch (e) { throw new HostStop({ error: `a new thread: ${e.message}` }); }
+    };
+    let state;
+    try { state = this.runtimeHeap.alloc(STATE_SIZE, 64n); } catch (e) { throw new HostStop({ error: `a new thread: ${e.message}` }); }
+    return { reserve, state, teb: alloc(TEB_SIZE, 0x1000n), stackLimit: alloc(reserve, STACK_ALIGN) };
+  }
+
+  /**
+   * Thread `t` from its first turn to its end: TLS callbacks with
+   * DLL_THREAD_ATTACH, the start routine, TLS callbacks with
+   * DLL_THREAD_DETACH; then its handle is signaled and the next thread runs.
+   */
+  async runThread(t, gate, start, arg) {
+    await gate;
+    const { imageBase, tls } = this.plan;
+    const callbacks = tls?.callbacks ?? [];
+    let code = null;
+    for (const cb of callbacks) {
+      const r = await this.callOn(t, cb, [imageBase, DLL_THREAD_ATTACH, 0n]);
+      if (this.ended(r, t)) return;
+      if ('threadExit' in r) { code = r.threadExit; break; }
+    }
+    if (code === null) {
+      const r = await this.callOn(t, start, [arg]);
+      if (this.ended(r, t)) return;
+      code = 'threadExit' in r ? r.threadExit : Number(BigInt.asUintN(32, r.rax));
+    }
+    for (const cb of callbacks) {
+      const r = await this.callOn(t, cb, [imageBase, DLL_THREAD_DETACH, 0n]);
+      if (this.ended(r, t)) return;
+      if ('threadExit' in r) break;
+    }
+    this.freeSlots.push(t.slot);
+    const deadlock = this.threads.exit(t, code);
+    if (deadlock) throw new ProcessError(deadlock);
   }
 }

@@ -161,6 +161,8 @@ export const OS_VERSION = { major: 10, minor: 0, build: 26100, platformId: 2 };
 export const IMAGE_FILE_MACHINE_AMD64 = 0x8664;
 export const IMAGE_SCN_MEM_EXECUTE = 0x2000_0000;
 export const DLL_PROCESS_ATTACH = 1;
+export const DLL_THREAD_ATTACH = 2;
+export const DLL_THREAD_DETACH = 3;
 
 // Win32 values used by the shim.
 export const STD_INPUT_HANDLE = -10;

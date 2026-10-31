@@ -16,7 +16,7 @@ const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
 
 /** Thrown by a shim function through ctx.exit / ctx.fail. */
 export class HostStop {
-  /** @param {{exitCode: number} | {error: string}} stop */
+  /** @param {{exitCode: number} | {threadExit: number} | {error: string}} stop */
   constructor(stop) { this.stop = stop; }
 }
 
@@ -26,7 +26,9 @@ export class HostStop {
  *   dataAddress: (dll: string, name: string) => bigint | undefined, argv: string[],
  *   image: {base: bigint, size: bigint, sizeOfHeaders: bigint, sections: object[]} | null,
  *   vfs?: import('./win32/vfs.mjs').Vfs, procAddress?: (dll: string, name: string) => bigint | undefined,
- *   startTime?: bigint, programPath?: string}} HostServices
+ *   startTime?: bigint, programPath?: string, threads?: import('./threads.mjs').Threads,
+ *   createThread?: (opts: {start: bigint, arg: bigint, stack: bigint, reservation: boolean, suspended: boolean})
+ *     => import('./threads.mjs').Thread}} HostServices
  */
 const unavailable = (what) => () => { throw new HostStop({ error: `${what} is not available in this context` }); };
 const NO_HOST = {
@@ -177,6 +179,8 @@ export class HostContext {
   }
 
   exit(code) { throw new HostStop({ exitCode: code >>> 0 }); }
+  /** Ends the calling thread with `code` (ExitThread, _endthreadex). */
+  exitThread(code) { throw new HostStop({ threadExit: code >>> 0 }); }
   fail(message) { throw new HostStop({ error: message }); }
 
   guard(f, what) {
@@ -205,7 +209,7 @@ export function makeHostCall({ mem, imports, output, onStop, trace, host }) {
     const label = imp ? `${imp.dll.toLowerCase()}!${imp.name}` : `import #${id}`;
     const ctx = new HostContext(mem, state, output, host);
     const stopWith = (stop, args) => {
-      if (trace) trace(`${label}(${args}) -> ${'exitCode' in stop ? `exit ${stop.exitCode}` : `error: ${stop.error}`}`);
+      if (trace) trace(`${label}(${args}) -> ${'exitCode' in stop ? `exit ${stop.exitCode}` : 'threadExit' in stop ? `thread exit ${stop.threadExit}` : `error: ${stop.error}`}`);
       onStop(stop);
       mem.setU64(state + BigInt(STATE_RIP), imp ? imp.thunk : 0n);
       mem.setU32(state + BigInt(STATE_EXIT), EXIT_HOST);
@@ -219,23 +223,34 @@ export function makeHostCall({ mem, imports, output, onStop, trace, host }) {
       return stopWith({ error: `unimplemented API ${label}` }, caller);
     }
     let args = '';
-    try {
-      if (trace) args = Array.from({ length: imp.impl.args }, (_, i) => hex(ctx.arg(i))).join(', ');
-      const value = imp.impl.fn(ctx);
+    // RAX, then the guest's ret: t = [RSP], RSP += 8.
+    const complete = (value) => {
       if (value !== undefined) mem.setU64(state + BigInt(gprOffset(RAX)), BigInt.asUintN(64, BigInt(value)));
       if (trace) trace(`${label}(${args})${value === undefined ? '' : ` = ${hex(value)}`}`);
-      // The guest's ret: t = [RSP], RSP += 8.
       const rsp = mem.u64(state + BigInt(gprOffset(RSP)));
       const t = ctx.guard(() => mem.u64(rsp), 'return address');
       mem.setU64(state + BigInt(gprOffset(RSP)), rsp + 8n);
       if (t === ret) return STATUS_RETURNED;
       mem.setU64(state + BigInt(STATE_RIP), t);
       return STATUS_UNWIND;
-    } catch (e) {
+    };
+    const failed = (e) => {
       if (e instanceof HostStop) {
         return stopWith('error' in e.stop ? { error: `${label}: ${e.stop.error}` } : e.stop, args);
       }
       return stopWith({ error: `${label}: internal error: ${e?.stack ?? e}` }, args);
+    };
+    try {
+      if (trace) args = Array.from({ length: imp.impl.args }, (_, i) => hex(ctx.arg(i))).join(', ');
+      const value = imp.impl.fn(ctx);
+      // A blocking call (runtime.md, "Guest threads") returns a Promise of its
+      // value; the thread's wasm stack stays suspended until it settles.
+      if (value instanceof Promise) {
+        return value.then((v) => { try { return complete(v); } catch (e) { return failed(e); } }, failed);
+      }
+      return complete(value);
+    } catch (e) {
+      return failed(e);
     }
   };
 }
