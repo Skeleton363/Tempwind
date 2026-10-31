@@ -308,9 +308,10 @@ export class Vfs {
     if (!n) throw new Win32Error(ERROR_FILE_NOT_FOUND, `${path} not found`);
     if (!n.isDir) throw new Win32Error(ERROR_DIRECTORY, `${path} is not a directory`);
     if (n === this.root) throw new Win32Error(ERROR_ACCESS_DENIED, 'the root directory');
-    if (n.children.size) throw new Win32Error(ERROR_DIR_NOT_EMPTY, `${path} is not empty`);
-    if (n.attrs & FILE_ATTRIBUTE_READONLY) throw new Win32Error(ERROR_ACCESS_DENIED, `${path} is read-only`);
+    // The open for DELETE comes first (the current directory is held open without FILE_SHARE_DELETE).
     if (this.isCwdOrAbove(n) || n.opens.size) throw new Win32Error(ERROR_SHARING_VIOLATION, `${path} is in use`);
+    if (n.attrs & FILE_ATTRIBUTE_READONLY) throw new Win32Error(ERROR_ACCESS_DENIED, `${path} is read-only`);
+    if (n.children.size) throw new Win32Error(ERROR_DIR_NOT_EMPTY, `${path} is not empty`);
     this.unlink(n);
   }
 
@@ -427,6 +428,8 @@ export class Vfs {
   /** Share modes: each side's access must be allowed by the other's share mode. */
   checkSharing(n, access, share, path) {
     const want = dataAccess(access);
+    // An open without read, write or delete access takes no part in sharing.
+    if (!want.read && !want.write && !want.delete) return;
     for (const o of n.opens) {
       const have = dataAccess(o.access);
       const conflict = (want.read && !(o.share & FILE_SHARE_READ)) || (want.write && !(o.share & FILE_SHARE_WRITE))

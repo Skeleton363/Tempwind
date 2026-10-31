@@ -172,10 +172,27 @@ test('shim lookup is case-insensitive in the DLL only', () => {
   assert.equal(findShim('kernel32.dll', 'writefile'), undefined);
   assert.equal(findShim('kernel32.dll', 'toString'), undefined);
   assert.deepEqual(Object.keys(SHIM['kernel32.dll']).sort(), [
-    'DeleteCriticalSection', 'EnterCriticalSection', 'ExitProcess', 'GetLastError', 'GetStdHandle',
-    'InitializeCriticalSection', 'IsDBCSLeadByteEx', 'LeaveCriticalSection', 'MultiByteToWideChar',
-    'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'SetLastError', 'SetUnhandledExceptionFilter', 'Sleep', 'TlsGetValue', 'VirtualProtect', 'VirtualQuery',
-    'WideCharToMultiByte', 'WriteFile',
+    'CloseHandle', 'CompareFileTime', 'CreateDirectoryW', 'CreateEventW', 'CreateFileW', 'CreateSemaphoreW',
+    'DeleteCriticalSection', 'DeleteFileW', 'DosDateTimeToFileTime', 'EnterCriticalSection', 'ExitProcess',
+    'FileTimeToDosDateTime', 'FileTimeToLocalFileTime', 'FileTimeToSystemTime', 'FindClose', 'FindFirstFileW',
+    'FindFirstStreamW', 'FindNextFileW', 'FindNextStreamW', 'FormatMessageW', 'FreeLibrary',
+    'GetActiveProcessorCount', 'GetActiveProcessorGroupCount', 'GetCommandLineW', 'GetConsoleMode',
+    'GetConsoleScreenBufferInfo', 'GetCurrentDirectoryW', 'GetCurrentProcess', 'GetCurrentProcessId',
+    'GetCurrentThread', 'GetCurrentThreadId', 'GetDiskFreeSpaceExW', 'GetDiskFreeSpaceW', 'GetDriveTypeW',
+    'GetFileAttributesW', 'GetFileInformationByHandle', 'GetFileSize', 'GetLargePageMinimum', 'GetLastError',
+    'GetLogicalDriveStringsW', 'GetModuleFileNameW', 'GetModuleHandleA', 'GetModuleHandleW', 'GetOEMCP',
+    'GetProcAddress', 'GetProcessAffinityMask', 'GetProcessTimes', 'GetStdHandle', 'GetSystemDirectoryW',
+    'GetSystemInfo', 'GetSystemTimeAsFileTime', 'GetTempPathW', 'GetThreadId', 'GetTickCount', 'GetVersion',
+    'GetVolumeInformationW', 'GetWindowsDirectoryW', 'GlobalMemoryStatusEx', 'InitializeCriticalSection',
+    'IsDBCSLeadByteEx', 'IsProcessorFeaturePresent', 'LeaveCriticalSection', 'LoadLibraryExW', 'LoadLibraryW',
+    'LocalFileTimeToFileTime', 'LocalFree', 'MoveFileW', 'MoveFileWithProgressW', 'MultiByteToWideChar', 'OpenEventW',
+    'OpenFileMappingW', 'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'ReadFile', 'ReleaseSemaphore',
+    'RemoveDirectoryW', 'ResetEvent', 'SetConsoleCtrlHandler', 'SetConsoleMode', 'SetCurrentDirectoryW',
+    'SetDefaultDllDirectories', 'SetEndOfFile', 'SetEvent', 'SetFileApisToOEM', 'SetFileAttributesW',
+    'SetFilePointer', 'SetFileTime', 'SetLastError', 'SetProcessAffinityMask', 'SetThreadAffinityMask',
+    'SetUnhandledExceptionFilter', 'Sleep', 'TlsAlloc', 'TlsFree', 'TlsGetValue', 'TlsSetValue',
+    'TryEnterCriticalSection', 'VirtualAlloc', 'VirtualFree', 'VirtualProtect', 'VirtualQuery',
+    'WaitForMultipleObjects', 'WaitForSingleObject', 'WideCharToMultiByte', 'WriteFile', 'lstrlenW',
   ]);
 });
 

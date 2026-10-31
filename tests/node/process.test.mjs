@@ -45,6 +45,29 @@ test('import thunks, lookup slots and the IAT', async () => {
   assert.deepEqual(p.linker.lookup(TEXT), { func: 1, entry: 0 }, 'AOT block');
 });
 
+test('GetProcAddress thunks: created on demand after the imports, one per function', async () => {
+  const p = await load();
+  const n = p.imports.length;
+  const a = p.procAddress('KERNEL32.dll', 'SetDefaultDllDirectories');
+  assert.equal(a, THUNK_BASE + 16n * BigInt(n));
+  assert.deepEqual([...p.mem.read(a, 16)], [0x0f, 0x0b, ...new Array(14).fill(0xcc)]);
+  assert.deepEqual(p.linker.lookup(a), { func: 0, entry: n });
+  assert.equal(p.imports[n].name, 'SetDefaultDllDirectories');
+  assert.equal(p.procAddress('kernel32.dll', 'SetDefaultDllDirectories'), a);
+  assert.equal(p.procAddress('kernel32.dll', 'NoSuchFunction'), undefined);
+  assert.equal(p.imports.length, n + 1);
+});
+
+test('the file system: the program is C:\\tempwind\\<file>, read-only; C:\\work is empty', async () => {
+  const p = await load();
+  const node = p.vfs.stat(p.programPath);
+  assert.equal(p.programPath, `C:\\tempwind\\${p.plan.file}`);
+  assert.equal(node.attrs, 0x21);
+  assert.equal(node.size, exe.length);
+  assert.equal(p.vfs.cwd, 'C:\\work');
+  assert.equal(p.vfs.stat('C:\\work').children.size, 0);
+});
+
 test('PEB and TEB fields', async () => {
   const p = await load();
   const m = p.mem;

@@ -169,6 +169,8 @@ function findEntries(vfs, pattern) {
     const j = Math.max(pattern.lastIndexOf('\\'), pattern.lastIndexOf('/'));
     mask = fixupMask(pattern.slice(j + 1));
   }
+  // The directory is opened as a directory: a file there gives ERROR_DIRECTORY.
+  if (dirPath.length > 3 && dirPath.endsWith('\\') && !/^\\\\\?\\[A-Za-z]:\\$/.test(dirPath)) dirPath = dirPath.slice(0, -1);
   let dir;
   try {
     dir = vfs.stat(dirPath);
