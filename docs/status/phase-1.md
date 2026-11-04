@@ -232,7 +232,7 @@ Phase 0's lessons still hold. New ones from M1:
 - **Workflow:**
   - **Research** (your decision, 2026-10-31): a research pass over official and community sources at the start of each milestone, and a digest every two weeks (the "Workflow research digest" routine), logged in `docs/dev/research.md`.
   - **Structure:** fixed rules in `.claude/agents/`, path-scoped rules in `.claude/rules/`, procedures as skills (`/pause`, `milestone-close`, `diverge`), deny rules in `.claude/settings.json`, and `ARCHITECTURE.md` as the map. `CLAUDE.md` keeps only what every session needs.
-- **Close-out review in two stages** (`milestone-close`): a code review (7 correctness findings, all fixed in `5709b87`), then a spec-compliance review (6 findings fixed, 6 untested promises given tests).
+- **Close-out review in two stages** (`milestone-close`): a code review (7 correctness findings, all fixed in `5709b87`), then a spec-compliance review: 7 findings (6 fixed in `52adb0e` and `46644f7`, the 7th a stale line in this note), and 6 promised behaviours that had no test got one.
 
 ## What works
 
@@ -271,6 +271,19 @@ Phase 0's lessons still hold. New ones from M1:
 | **The 7-Zip command matrix** (`tests/sevenzip/`): 138 steps in 40 groups (7z, zip, tar, gz, bz2, xz, the hashes, AES round trips) | Translated in Node: 138/138 identical to `expected/` (output, exit codes and every file written). Native on windows-x64 in CI: identical too. |
 | **`7z b`** (`tests/bench/sevenzip.mjs`, `bench.yml`) | Runs to its "Tot:" line translated and under wine64 (measurements below). |
 | **The census gate on every program** | `census --check`: 614 of 614 forms, 7zz.exe included. CI gates it. |
+
+### Test summary (local, M5, Node 24.22.0)
+
+- **Rust** (at `5a45251`; M5's only Rust change, in `census.rs`, came before it):
+  - `cargo fmt --all --check`, workspace clippy, and the wasm32 builds of `x64wasm-rt` and `x64wasm-fp`: clean;
+  - `cargo test --workspace`: 192 passed, 0 failed.
+- `record --check`: "75 fixture files match a fresh recording".
+- `census --check`: 614 of 614 forms on every program, 7zz.exe included.
+- `npm run test:node`: 230/230.
+- `npm run test:browser`: 4/4.
+- **The 7-Zip matrix:**
+  - translated: 138/138 steps identical to `expected/`;
+  - native under wine64: 138/138 identical too, a re-check of `expected/`.
 
 ### Test summary (local, M4, Node 24.22.0)
 
@@ -427,6 +440,14 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
   - native under wine64: 24,684 iterations/s;
   - ratio 0.30.
 
+**M5** (the session's 4-core Xeon @ 2.10 GHz, Node 24.22.0):
+- **`7z b 2 -mmt1 -md18`** (`tests/bench/sevenzip.mjs`, the "Tot:" rating, medians of 3):
+  - translated in Node: 1,393 MIPS (runs 1,387-1,394);
+  - native under wine64: 4,033 MIPS (runs 3,857-4,852; this VM is noisy);
+  - ratio 0.35.
+- **The matrix:** 83 s translated, against 354 s under wine64. That compares start-up, not speed: each of the 138 steps starts a new process, and Wine's start-up dominates its runs.
+- **7zz.exe's module is unchanged** from M4: M5 didn't change the translator.
+
 **Census** (details in `docs/design/instruction-scope.md`):
 - Sizes:
   - functions: 6,289 / 134 / 95 in 7zz / coremark / hello;
@@ -479,7 +500,7 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 `docs/plan.md`: register-sync and flag liveness, loop structuring and a call fast path; the cost of the guest-memory checks is measured on real code. Phase 1 closes with M6: the fixtures pass, 7-Zip matches native, and CoreMark and `7z b` are tracked in CI.
 
 1. **Research pass** (`docs/dev/research.md`): code generation in binary translators that target WebAssembly, V8's tiers and memory64 bounds checks.
-2. **Baselines:** CoreMark at 0.30 of native and `7z b` at the ratio above; calls cost 10-20x native.
+2. **Baselines:** CoreMark at 0.30 of native and `7z b` at 0.35; calls cost 10-20x native.
 3. **Liveness:** at calls, returns and host calls, store and reload only the live registers and flags, instead of the whole state.
 4. **Loop structuring and the call fast path**, measured against the baselines after each step.
 5. **The guest-memory checks:** measure what they cost on CoreMark and `7z b`.
