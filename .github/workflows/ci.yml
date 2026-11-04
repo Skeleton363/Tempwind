@@ -67,17 +67,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/native/build.sh
 
-      - name: Fetch coremark.exe (targets release)
+      - name: Fetch coremark.exe and 7zz.exe (targets release)
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
+        run: |
+          scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
+          scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets
 
       - name: The programs use only forms with L1 fixtures
         if: ${{ !cancelled() }}
         run: >
           cargo run -p testkit --release -- census
-          target/pe/basic.exe target/targets/coremark.exe target/native/hello.exe
+          target/pe/basic.exe target/targets/coremark.exe target/targets/7zz.exe target/native/hello.exe
           target/native/l2_int.exe target/native/l2_crt.exe target/native/l2_float.exe --check
 
       - name: Translate the L2 programs and CoreMark (AOT), build x64wasm_fp.wasm, write its vectors
@@ -97,6 +99,23 @@ jobs:
       - name: Node tests
         if: ${{ !cancelled() }}
         run: npm run test:node
+
+      # The 7-Zip command matrix (tests/sevenzip/README.md): 7zz.exe translated, each step compared byte for
+      # byte with tests/sevenzip/expected/ (written from Wine, checked against real Windows in windows-x64).
+      - name: 7-Zip command matrix, translated in Node
+        if: ${{ !cancelled() }}
+        run: |
+          cargo run -q -p x64wasm-cli --release -- translate-pe target/targets/7zz.exe --out-dir target/sevenzip
+          node tests/sevenzip/matrix.mjs --mode translated --out target/sevenzip-out --skip-translate --jobs "$(nproc)" --quiet
+          node tests/sevenzip/compare.mjs target/sevenzip-out tests/sevenzip/expected
+
+      - name: Upload the 7-Zip matrix results
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sevenzip-translated
+          path: target/sevenzip-out/results
+          if-no-files-found: ignore
 
       # Tests use Playwright's pinned Chromium unless the CHROME_PATH repository
       # variable names another browser binary on the runner.
@@ -184,7 +203,7 @@ jobs:
   windows-x64:
     needs: mingw-build
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -243,3 +262,28 @@ jobs:
             fi
             echo "$name.exe output and exit code match"
           done
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Fetch 7zz.exe (targets release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets
+      # Real Windows is the reference of truth for tests/sevenzip/expected/. The first difference is named
+      # (step, file, offset); the whole results directory is uploaded so expected/ can be corrected from it.
+      - name: 7-Zip command matrix, natively, compared with the expected results
+        run: |
+          bad=0
+          node tests/sevenzip/matrix.mjs --mode native --out sevenzip-out --jobs 2 --quiet || bad=1
+          node tests/sevenzip/compare.mjs sevenzip-out tests/sevenzip/expected || bad=1
+          if [ $bad = 1 ]; then
+            echo "::error::7zz.exe on Windows differs from tests/sevenzip/expected (see the sevenzip-windows artifact)"
+            exit 1
+          fi
+      - name: Upload the 7-Zip matrix results
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sevenzip-windows
+          path: sevenzip-out/results
+          if-no-files-found: ignore

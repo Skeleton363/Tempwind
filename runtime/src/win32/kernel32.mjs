@@ -1,20 +1,21 @@
-// kernel32.dll, shim v0 (docs/design/runtime.md, "Shim rules"). Each entry:
+// kernel32.dll: the M2-M4 functions (docs/design/runtime.md, "Shim rules");
+// files are in kernel32-files.mjs and the rest of M5 in kernel32-system.mjs,
+// merged in index.mjs. Each entry:
 // `args` (the Win64 argument count, for traces) and `fn(ctx)` returning the
 // value for RAX (undefined for none). Unsupported cases stop with ctx.fail.
 
 import {
   STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE,
-  STDIN_HANDLE, STDOUT_HANDLE, STDERR_HANDLE, INVALID_HANDLE_VALUE, ERROR_INVALID_HANDLE, THREAD_ID,
+  STDIN_HANDLE, STDOUT_HANDLE, STDERR_HANDLE, INVALID_HANDLE_VALUE, ERROR_INVALID_HANDLE,
 } from '../abi.mjs';
 import { CP1252_TO_UNICODE, UNICODE_TO_CP1252 } from './cp1252.mjs';
+import { CP437_TO_UNICODE, UNICODE_TO_CP437 } from './cp437.mjs';
+import { Lock, threadsOf, INFINITE } from '../threads.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
 
-export const ERROR_SUCCESS = 0;
-export const ERROR_BAD_LENGTH = 24;
-export const ERROR_INVALID_PARAMETER = 87;
-export const ERROR_INSUFFICIENT_BUFFER = 122;
-export const ERROR_INVALID_FLAGS = 1004;
+import { ERROR_SUCCESS, ERROR_BAD_LENGTH, ERROR_INVALID_PARAMETER, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FLAGS } from './errors.mjs';
+export { ERROR_SUCCESS, ERROR_BAD_LENGTH, ERROR_INVALID_PARAMETER, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FLAGS };
 
 // Memory protection constants and MEMORY_BASIC_INFORMATION (winnt.h).
 export const PAGE_NOACCESS = 0x01, PAGE_READONLY = 0x02, PAGE_READWRITE = 0x04, PAGE_WRITECOPY = 0x08;
@@ -36,7 +37,9 @@ export const TLS_EXPANSION_SLOTS = 1024;
 export const CRITICAL_SECTION_SIZE = 40;
 const CS_DEBUG_INFO = 0n, CS_LOCK_COUNT = 8n, CS_RECURSION_COUNT = 12n, CS_OWNING_THREAD = 16n, CS_LOCK_SEMAPHORE = 24n, CS_SPIN_COUNT = 32n;
 
-const CP_ACP = 0, CP_THREAD_ACP = 3, CP_1252 = 1252;
+const CP_ACP = 0, CP_OEMCP = 1, CP_THREAD_ACP = 3, CP_437 = 437, CP_1252 = 1252;
+const CP1252 = { toUnicode: CP1252_TO_UNICODE, fromUnicode: UNICODE_TO_CP1252 };
+const CP437 = { toUnicode: CP437_TO_UNICODE, fromUnicode: UNICODE_TO_CP437 };
 const MB_PRECOMPOSED = 0x1, MB_ERR_INVALID_CHARS = 0x8;
 const WC_NO_BEST_FIT_CHARS = 0x400;
 
@@ -56,10 +59,14 @@ const k32 = (ctx) => ctx.dllState('kernel32.dll', () => ({
   unhandledExceptionFilter: 0n,
 }));
 
-/** The code pages the shim converts: the ANSI code page is 1252 (runtime.md, "Locale"). */
+/**
+ * The code pages the shim converts (runtime.md, "Locale"): the ANSI code
+ * page 1252 and the OEM code page 437, both single-byte.
+ */
 function codePage(ctx, cp) {
-  if (cp === CP_ACP || cp === CP_THREAD_ACP || cp === CP_1252) return CP_1252;
-  ctx.fail(`code page ${cp} is not supported (only the ANSI code page, 1252)`);
+  if (cp === CP_ACP || cp === CP_THREAD_ACP || cp === CP_1252) return CP1252;
+  if (cp === CP_OEMCP || cp === CP_437) return CP437;
+  ctx.fail(`code page ${cp} is not supported (only the ANSI code page 1252 and the OEM code page 437)`);
 }
 
 /** Page protections of the image: headers read-only, sections by their characteristics, as Windows maps an image. */
@@ -97,11 +104,23 @@ function pageIndex(ctx, pages, addr, api) {
   return i;
 }
 
+/** The lock of an initialized critical section. */
 function criticalSection(ctx, cs, api) {
   ctx.check(cs, CRITICAL_SECTION_SIZE, 'critical section');
-  const held = k32(ctx).criticalSections.get(cs);
-  if (held === undefined) ctx.fail(`${api}: critical section ${hex(cs)} is not initialized`);
-  return held;
+  const lock = k32(ctx).criticalSections.get(cs);
+  if (lock === undefined) ctx.fail(`${api}: critical section ${hex(cs)} is not initialized`);
+  return lock;
+}
+
+/**
+ * The guest-visible fields of a critical section after a change: LockCount
+ * (-1 free; held: -2, minus 4 per waiter, as Windows counts), RecursionCount
+ * and OwningThread (the owner's thread id).
+ */
+function writeCriticalSection(ctx, cs, lock) {
+  ctx.write32(cs + CS_LOCK_COUNT, lock.owner ? -2 - 4 * lock.waiters.length : -1);
+  ctx.write32(cs + CS_RECURSION_COUNT, lock.count);
+  ctx.write64(cs + CS_OWNING_THREAD, lock.owner ? BigInt(lock.owner.id) : 0n);
 }
 
 export default {
@@ -121,37 +140,13 @@ export default {
     },
   },
 
-  // BOOL WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite,
-  //                LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped)
-  WriteFile: {
-    args: 5,
-    fn(ctx) {
-      const handle = ctx.arg(0);
-      const buffer = ctx.arg(1);
-      const count = ctx.arg32(2);
-      const written = ctx.arg(3);
-      const overlapped = ctx.arg(4);
-      if (overlapped !== 0n) ctx.fail(`lpOverlapped ${hex(overlapped)}: overlapped I/O is not supported`);
-      // Microsoft: lpNumberOfBytesWritten can be NULL only when lpOverlapped is not NULL.
-      if (written === 0n) ctx.fail('lpNumberOfBytesWritten is NULL without lpOverlapped');
-      let stream;
-      if (handle === STDOUT_HANDLE) stream = 'stdout';
-      else if (handle === STDERR_HANDLE) stream = 'stderr';
-      else ctx.fail(`hFile ${hex(handle)}: not a writable handle (only the standard output and error handles are)`);
-      const bytes = count ? ctx.read(buffer, count) : new Uint8Array(0);
-      ctx.write32(written, count);
-      ctx.output(stream, bytes);
-      return 1n;
-    },
-  },
-
   // DWORD GetLastError(void)
   GetLastError: { args: 0, fn: (ctx) => ctx.lastError() },
 
   // void SetLastError(DWORD dwErrCode)
   SetLastError: { args: 1, fn(ctx) { ctx.setLastError(ctx.arg32(0)); } },
 
-  // void InitializeCriticalSection(LPCRITICAL_SECTION): one thread, so locks only count.
+  // void InitializeCriticalSection(LPCRITICAL_SECTION): owner, recursion count and waiters (runtime.md, "Guest threads").
   InitializeCriticalSection: {
     args: 1,
     fn(ctx) {
@@ -162,36 +157,45 @@ export default {
       ctx.write64(cs + CS_OWNING_THREAD, 0n);
       ctx.write64(cs + CS_LOCK_SEMAPHORE, 0n);
       ctx.write64(cs + CS_SPIN_COUNT, 0n);
-      k32(ctx).criticalSections.set(cs, 0);
+      k32(ctx).criticalSections.set(cs, new Lock(`critical section ${hex(cs)}`));
     },
   },
 
-  // void EnterCriticalSection(LPCRITICAL_SECTION)
+  // void EnterCriticalSection(LPCRITICAL_SECTION): blocks while another thread owns it.
   EnterCriticalSection: {
+    args: 1,
+    blocks: true,
+    fn(ctx) {
+      const cs = ctx.arg(0);
+      const lock = criticalSection(ctx, cs, 'EnterCriticalSection');
+      const r = threadsOf(ctx).lock(ctx, lock, `EnterCriticalSection(${hex(cs)})`);
+      writeCriticalSection(ctx, cs, lock);
+      if (r instanceof Promise) return r.then(() => { writeCriticalSection(ctx, cs, lock); });
+      return undefined;
+    },
+  },
+
+  // BOOL TryEnterCriticalSection(LPCRITICAL_SECTION): fails while another thread owns it.
+  TryEnterCriticalSection: {
     args: 1,
     fn(ctx) {
       const cs = ctx.arg(0);
-      const n = criticalSection(ctx, cs, 'EnterCriticalSection') + 1;
-      k32(ctx).criticalSections.set(cs, n);
-      ctx.write32(cs + CS_LOCK_COUNT, -2);
-      ctx.write32(cs + CS_RECURSION_COUNT, n);
-      ctx.write64(cs + CS_OWNING_THREAD, BigInt(THREAD_ID));
+      const lock = criticalSection(ctx, cs, 'TryEnterCriticalSection');
+      if (!threadsOf(ctx).tryLock(ctx, lock)) return 0;
+      writeCriticalSection(ctx, cs, lock);
+      return 1;
     },
   },
 
-  // void LeaveCriticalSection(LPCRITICAL_SECTION)
+  // void LeaveCriticalSection(LPCRITICAL_SECTION): at count 0 the first waiter owns it next.
   LeaveCriticalSection: {
     args: 1,
     fn(ctx) {
       const cs = ctx.arg(0);
-      const n = criticalSection(ctx, cs, 'LeaveCriticalSection') - 1;
-      if (n < 0) ctx.fail(`LeaveCriticalSection: critical section ${hex(cs)} is not held`);
-      k32(ctx).criticalSections.set(cs, n);
-      ctx.write32(cs + CS_RECURSION_COUNT, n);
-      if (n === 0) {
-        ctx.write32(cs + CS_LOCK_COUNT, -1);
-        ctx.write64(cs + CS_OWNING_THREAD, 0n);
-      }
+      const lock = criticalSection(ctx, cs, 'LeaveCriticalSection');
+      if (lock.owner === null) ctx.fail(`LeaveCriticalSection: critical section ${hex(cs)} is not held`);
+      threadsOf(ctx).unlock(ctx, lock);
+      writeCriticalSection(ctx, cs, lock);
     },
   },
 
@@ -200,7 +204,8 @@ export default {
     args: 1,
     fn(ctx) {
       const cs = ctx.arg(0);
-      criticalSection(ctx, cs, 'DeleteCriticalSection');
+      const lock = criticalSection(ctx, cs, 'DeleteCriticalSection');
+      if (lock.waiters.length) ctx.fail(`DeleteCriticalSection: threads wait for critical section ${hex(cs)}`);
       k32(ctx).criticalSections.delete(cs);
       ctx.write64(cs + CS_DEBUG_INFO, 0n);
       ctx.write32(cs + CS_LOCK_COUNT, -1);
@@ -294,11 +299,26 @@ export default {
     },
   },
 
-  // void Sleep(DWORD dwMilliseconds): one thread and no clocks, so nothing to wait for.
+  // void Sleep(DWORD dwMilliseconds): gives other threads a turn; no real time passes (runtime.md, "Guest threads").
   Sleep: {
     args: 1,
+    blocks: true,
     fn(ctx) {
-      if (ctx.arg32(0) === 0xffff_ffff) ctx.fail('Sleep(INFINITE) with one thread never returns');
+      const ms = ctx.arg32(0);
+      const threads = threadsOf(ctx);
+      if (ms === INFINITE) return threads.blockForever(ctx, 'Sleep(INFINITE)');
+      const r = threads.yield(ctx, ms !== 0, undefined);
+      return r instanceof Promise ? r : undefined;
+    },
+  },
+
+  // BOOL SwitchToThread(void): nonzero if another thread ran.
+  SwitchToThread: {
+    args: 0,
+    blocks: true,
+    fn(ctx) {
+      const r = threadsOf(ctx).yield(ctx, false, 1);
+      return r instanceof Promise ? r : 0;
     },
   },
 
@@ -330,14 +350,14 @@ export default {
       const cp = ctx.arg32(0), flags = ctx.arg32(1), src = ctx.arg(2), srcLen = ctx.argI32(3);
       const dst = ctx.arg(4), dstLen = ctx.argI32(5);
       if (src === 0n || srcLen === 0 || (dst === 0n && dstLen) || dstLen < 0) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0; }
-      codePage(ctx, cp);
+      const table = codePage(ctx, cp);
       if (flags & ~(MB_PRECOMPOSED | MB_ERR_INVALID_CHARS)) ctx.fail(`dwFlags ${hex(flags)} is not supported`);
       const bytes = srcLen < 0 ? [...ctx.readCString(src), 0] : ctx.read(src, srcLen);
       if (dstLen === 0) return bytes.length;
       if (dstLen < bytes.length) { ctx.setLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
       const out = new Uint8Array(2 * bytes.length);
       const dv = new DataView(out.buffer);
-      Array.from(bytes).forEach((b, i) => dv.setUint16(2 * i, CP1252_TO_UNICODE[b], true));
+      Array.from(bytes).forEach((b, i) => dv.setUint16(2 * i, table.toUnicode[b], true));
       ctx.write(dst, out);
       return bytes.length;
     },
@@ -351,7 +371,7 @@ export default {
       const cp = ctx.arg32(0), flags = ctx.arg32(1), src = ctx.arg(2), srcLen = ctx.argI32(3);
       const dst = ctx.arg(4), dstLen = ctx.argI32(5), defChar = ctx.arg(6), used = ctx.arg(7);
       if (src === 0n || srcLen === 0 || (dst === 0n && dstLen) || dstLen < 0) { ctx.setLastError(ERROR_INVALID_PARAMETER); return 0; }
-      codePage(ctx, cp);
+      const table = codePage(ctx, cp);
       if (flags & ~WC_NO_BEST_FIT_CHARS) ctx.fail(`dwFlags ${hex(flags)} is not supported`);
       let units;
       if (srcLen < 0) units = [...ctx.readWString(src), 0];
@@ -362,7 +382,7 @@ export default {
       const def = defChar === 0n ? 0x3f : ctx.read(defChar, 1)[0];
       let usedDefault = false;
       const out = Uint8Array.from(units, (u) => {
-        const b = UNICODE_TO_CP1252.get(u);
+        const b = table.fromUnicode.get(u);
         if (b !== undefined) return b;
         if (!(flags & WC_NO_BEST_FIT_CHARS)) {
           ctx.fail(`U+${u.toString(16).padStart(4, '0')} needs a best-fit mapping, which is not supported`);

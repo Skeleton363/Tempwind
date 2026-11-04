@@ -7,6 +7,7 @@ import { HostContext, HostStop } from '../../runtime/src/hostcall.mjs';
 import { STATE_GS_BASE, gprOffset } from '../../runtime/src/abi.mjs';
 import { Bump } from '../../runtime/src/process.mjs';
 import { SHIM, findShim } from '../../runtime/src/win32/index.mjs';
+import { Vfs } from '../../runtime/src/win32/vfs.mjs';
 
 export const STATE = 0x1_0000n;
 export const TEB = 0x1_1000n;
@@ -15,7 +16,17 @@ export const HEAP = 0x10_0000n;
 const GUEST_FN = 0x5000_0000n;
 const ARG_REGS = [1, 2, 8, 9];
 
-export function shimEnv({ argv = ['prog.exe'], image = null, pages = 128 } = {}) {
+/** A FILETIME clock for tests: starts at 2024-01-01 00:00:00 UTC and advances 1 s per reading. */
+export function testClock(start = 133_485_408_000_000_000n) {
+  let t = start;
+  const now = () => { const v = t; t += 10_000_000n; return v; };
+  return now;
+}
+
+/** The pseudo-address GetProcAddress returns in the harness for `dll!name`. */
+export const PROC_BASE = 0x6000_0000n;
+
+export function shimEnv({ argv = ['prog.exe'], image = null, pages = 128, vfs = null, programPath = 'C:\\tempwind\\prog.exe' } = {}) {
   const { memory } = createMemory64({ initialPages: pages });
   const mem = new GuestMemory(memory);
   const bump = new Bump('guest heap', HEAP, BigInt(pages) * 0x1_0000n);
@@ -24,6 +35,8 @@ export function shimEnv({ argv = ['prog.exe'], image = null, pages = 128 } = {})
   const states = new Map();
   const data = new Map();
   const calls = [];
+  const procs = [];
+  const fs = vfs ?? new Vfs({ now: testClock() });
   const host = {
     call(target, args) {
       calls.push([target, args]);
@@ -42,10 +55,30 @@ export function shimEnv({ argv = ['prog.exe'], image = null, pages = 128 } = {})
     dataAddress: (dll, name) => data.get(`${dll}!${name}`),
     argv,
     image,
+    vfs: fs,
+    startTime: 133_485_408_000_000_000n,
+    programPath,
+    heapFree: () => bump.limit - bump.next,
+    maxAppAddress: 0x7fff_fffe_ffffn,
+    /** GetProcAddress: a pseudo-address per implemented function (the harness has no thunks). */
+    procAddress(dll, name) {
+      if (!findShim(dll, name, SHIM)?.fn) return undefined;
+      let i = procs.indexOf(`${dll}!${name}`);
+      if (i < 0) i = procs.push(`${dll}!${name}`) - 1;
+      return PROC_BASE + 16n * BigInt(i);
+    },
   };
   mem.setU64(STATE + BigInt(STATE_GS_BASE), TEB);
   const env = {
-    mem, out, calls, host, data,
+    mem, out, calls, host, data, vfs: fs, procs,
+    /** The calling thread's last error. */
+    lastError: () => env.ctx().lastError(),
+    setLastError: (v) => env.ctx().setLastError(v),
+    /** Reads a NUL-terminated UTF-16 string. */
+    wstr(a) {
+      let s = '';
+      for (let p = a; ; p += 2n) { const c = mem.u16(p); if (!c) return s; s += String.fromCharCode(c); }
+    },
     stdout: () => out.stdout.join(''),
     stderr: () => out.stderr.join(''),
     /** Registers a JS guest function and returns its address. */
@@ -97,3 +130,6 @@ export function shimEnv({ argv = ['prog.exe'], image = null, pages = 128 } = {})
 
 export const msvcrt = (env, name, ...args) => env.call('msvcrt.dll', name, ...args);
 export const kernel32 = (env, name, ...args) => env.call('kernel32.dll', name, ...args);
+export const advapi32 = (env, name, ...args) => env.call('advapi32.dll', name, ...args);
+export const oleaut32 = (env, name, ...args) => env.call('oleaut32.dll', name, ...args);
+export const user32 = (env, name, ...args) => env.call('user32.dll', name, ...args);

@@ -1,0 +1,22 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 287977 bytes (282 KiB)
+
+Extracting archive: 7z-copy.7z
+--
+Path = 7z-copy.7z
+Type = 7z
+Physical Size = 287977
+Headers Size = 364
+Method = Copy
+Solid = -
+Blocks = 8
+
+Everything is Ok
+
+Folders: 3
+Files: 9
+Size:       287613
+Compressed: 287977

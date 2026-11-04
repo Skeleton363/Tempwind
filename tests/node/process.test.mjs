@@ -42,7 +42,32 @@ test('import thunks, lookup slots and the IAT', async () => {
   // The lookup table: header at 0x8000_0000, at least 4096 slots in the runtime heap.
   assert.equal(p.mem.u64(LOOKUP_HEADER_ADDR + BigInt(LOOKUP_MASK)), 4095n);
   assert.ok(p.mem.u64(LOOKUP_HEADER_ADDR + BigInt(LOOKUP_SLOTS)) >= 0x8010_0000n);
-  assert.deepEqual(p.linker.lookup(TEXT), { func: 1, entry: 0 }, 'AOT block');
+  // Table slot 1 is the blocking host function (runtime.md, "Guest threads"); the AOT module follows.
+  assert.equal(p.blockingIndex, 1);
+  assert.deepEqual(p.linker.lookup(TEXT), { func: 2, entry: 0 }, 'AOT block');
+});
+
+test('GetProcAddress thunks: created on demand after the imports, one per function', async () => {
+  const p = await load();
+  const n = p.imports.length;
+  const a = p.procAddress('KERNEL32.dll', 'SetDefaultDllDirectories');
+  assert.equal(a, THUNK_BASE + 16n * BigInt(n));
+  assert.deepEqual([...p.mem.read(a, 16)], [0x0f, 0x0b, ...new Array(14).fill(0xcc)]);
+  assert.deepEqual(p.linker.lookup(a), { func: 0, entry: n });
+  assert.equal(p.imports[n].name, 'SetDefaultDllDirectories');
+  assert.equal(p.procAddress('kernel32.dll', 'SetDefaultDllDirectories'), a);
+  assert.equal(p.procAddress('kernel32.dll', 'NoSuchFunction'), undefined);
+  assert.equal(p.imports.length, n + 1);
+});
+
+test('the file system: the program is C:\\tempwind\\<file>, read-only; C:\\work is empty', async () => {
+  const p = await load();
+  const node = p.vfs.stat(p.programPath);
+  assert.equal(p.programPath, `C:\\tempwind\\${p.plan.file}`);
+  assert.equal(node.attrs, 0x21);
+  assert.equal(node.size, exe.length);
+  assert.equal(p.vfs.cwd, 'C:\\work');
+  assert.equal(p.vfs.stat('C:\\work').children.size, 0);
 });
 
 test('PEB and TEB fields', async () => {
@@ -189,8 +214,8 @@ test('run-time translation: request, link, continue', async () => {
   assert.deepEqual(r.code, exe.subarray(0x400, 0x500));
   const thunks = Array.from({ length: 5 }, (_, i) => THUNK_BASE + 16n * BigInt(i));
   assert.deepEqual([...r.known], [...thunks, TEXT], 'every key, sorted');
-  assert.deepEqual(p.linker.lookup(target), { func: 2, entry: 0 });
-  assert.deepEqual(p.linker.lookup(TEXT), { func: 1, entry: 0 }, 'the AOT block wins');
+  assert.deepEqual(p.linker.lookup(target), { func: 3, entry: 0 });
+  assert.deepEqual(p.linker.lookup(TEXT), { func: 2, entry: 0 }, 'the AOT block wins');
   assert.equal(p.translations, 1);
   assert.match(lines.join('\n'), /^exit LEFT_CODE rip=0x140001040$/m);
   assert.match(lines.join('\n'), /^translate 0x140001040: 2 blocks \(1 new\), \d+ wasm bytes, [\d.]+ ms$/m);

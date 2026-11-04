@@ -1,0 +1,22 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 106231 bytes (104 KiB)
+
+Extracting archive: 7z-bcj-lzma2.7z
+--
+Path = 7z-bcj-lzma2.7z
+Type = 7z
+Physical Size = 106231
+Headers Size = 379
+Method = LZMA2:384k BCJ
+Solid = +
+Blocks = 1
+
+Everything is Ok
+
+Folders: 3
+Files: 9
+Size:       287613
+Compressed: 106231

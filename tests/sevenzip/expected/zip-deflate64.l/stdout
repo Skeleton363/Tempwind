@@ -1,0 +1,230 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 128031 bytes (126 KiB)
+
+Listing archive: zip-deflate64.zip
+
+--
+Path = zip-deflate64.zip
+Type = zip
+Physical Size = 128031
+
+----------
+Path = tree
+Folder = +
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 08:50:46.0000000
+Created = 
+Accessed = 
+Attributes = D
+Encrypted = -
+Comment = 
+CRC = 
+Method = Store
+Characteristics = NTFS
+Host OS = FAT
+Version = 20
+Volume Index = 0
+Offset = 0
+
+Path = tree\code.bin
+Folder = -
+Size = 49152
+Packed Size = 23291
+Modified = 2024-01-02 13:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = 141D9447
+Method = Deflate64
+Characteristics = NTFS
+Host OS = FAT
+Version = 21
+Volume Index = 0
+Offset = 35
+
+Path = tree\empty
+Folder = -
+Size = 0
+Packed Size = 0
+Modified = 2024-01-02 11:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = 00000000
+Method = Store
+Characteristics = NTFS
+Host OS = FAT
+Version = 10
+Volume Index = 0
+Offset = 23369
+
+Path = tree\hello.txt
+Folder = -
+Size = 12
+Packed Size = 12
+Modified = 2024-01-02 03:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = C4C55DFF
+Method = Store
+Characteristics = NTFS
+Host OS = FAT
+Version = 10
+Volume Index = 0
+Offset = 23409
+
+Path = tree\lorem.txt
+Folder = -
+Size = 60000
+Packed Size = 10926
+Modified = 2024-01-02 05:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = 4CF914A4
+Method = Deflate64
+Characteristics = NTFS
+Host OS = FAT
+Version = 21
+Volume Index = 0
+Offset = 23465
+
+Path = tree\numbers.txt
+Folder = -
+Size = 108894
+Packed Size = 25531
+Modified = 2024-01-02 07:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = 45C35897
+Method = Deflate64
+Characteristics = NTFS
+Host OS = FAT
+Version = 21
+Volume Index = 0
+Offset = 34435
+
+Path = tree\random.bin
+Folder = -
+Size = 65536
+Packed Size = 65536
+Modified = 2024-01-02 09:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = 6DEE80D4
+Method = Store
+Characteristics = NTFS
+Host OS = FAT
+Version = 10
+Volume Index = 0
+Offset = 60012
+
+Path = tree\sub
+Folder = +
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 10:50:46.0000000
+Created = 
+Accessed = 
+Attributes = D
+Encrypted = -
+Comment = 
+CRC = 
+Method = Store
+Characteristics = NTFS
+Host OS = FAT
+Version = 20
+Volume Index = 0
+Offset = 125593
+
+Path = tree\sub\deeper
+Folder = +
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 06:50:46.0000000
+Created = 
+Accessed = 
+Attributes = D
+Encrypted = -
+Comment = 
+CRC = 
+Method = Store
+Characteristics = NTFS
+Host OS = FAT
+Version = 20
+Volume Index = 0
+Offset = 125632
+
+Path = tree\sub\deeper\more.txt
+Folder = -
+Size = 4000
+Packed Size = 990
+Modified = 2024-01-02 19:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = 2936F203
+Method = Deflate64
+Characteristics = NTFS
+Host OS = FAT
+Version = 21
+Volume Index = 0
+Offset = 125678
+
+Path = tree\sub\deeper\nested.txt
+Folder = -
+Size = 12
+Packed Size = 12
+Modified = 2024-01-02 17:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = 22945282
+Method = Store
+Characteristics = NTFS
+Host OS = FAT
+Version = 10
+Volume Index = 0
+Offset = 126722
+
+Path = tree\sub\other.txt
+Folder = -
+Size = 7
+Packed Size = 7
+Modified = 2024-01-02 15:04:06.0000000
+Created = 
+Accessed = 
+Attributes = A
+Encrypted = -
+Comment = 
+CRC = 060FC07E
+Method = Store
+Characteristics = NTFS
+Host OS = FAT
+Version = 10
+Volume Index = 0
+Offset = 126790
+

@@ -1,0 +1,21 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 25566 bytes (25 KiB)
+
+Listing archive: numbers.txt.gz
+
+--
+Path = numbers.txt.gz
+Type = gzip
+Headers Size = 22
+
+----------
+Path = numbers.txt
+Size = 108894
+Packed Size = 25566
+Modified = 2024-01-02 07:04:06
+Host OS = FAT
+CRC = 45C35897
+

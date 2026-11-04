@@ -2,7 +2,7 @@
 // run-pe: runs a translated 64-bit PE program in Node (docs/design/runtime.md, "CLI").
 //
 //   node runtime/src/run-pe.mjs --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt x64wasm_rt.wasm]
-//       [--fp x64wasm_fp.wasm] [-- ARGS...]
+//       [--fp x64wasm_fp.wasm] [--dir HOST] [-- ARGS...]
 //
 // stdout and stderr are the guest's, byte for byte, and the exit code is the
 // guest's (POSIX keeps its low 8 bits). When the runtime itself stops with an
@@ -17,9 +17,11 @@ import { PlanError } from './plan.mjs';
 import { RuntimeTranslator } from './rt.mjs';
 import { loadFp } from './fp.mjs';
 import { parseTrace } from './trace.mjs';
+import { Vfs } from './win32/vfs.mjs';
+import { loadHostDir, writeBack } from './vfs-host.mjs';
 
 export const RUNTIME_ERROR_EXIT = 125;
-const USAGE = 'usage: run-pe --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt x64wasm_rt.wasm] [--fp x64wasm_fp.wasm] [-- ARGS...]';
+const USAGE = 'usage: run-pe --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json [--rt x64wasm_rt.wasm] [--fp x64wasm_fp.wasm] [--dir HOST] [-- ARGS...]';
 const DEFAULT_FP = fileURLToPath(new URL('../../target/wasm32-unknown-unknown/release/x64wasm_fp.wasm', import.meta.url));
 
 class UsageError extends Error {}
@@ -29,7 +31,10 @@ async function main(argv) {
   try {
     ({ values, positionals } = parseArgs({
       args: argv,
-      options: { exe: { type: 'string' }, aot: { type: 'string' }, plan: { type: 'string' }, rt: { type: 'string' }, fp: { type: 'string' } },
+      options: {
+        exe: { type: 'string' }, aot: { type: 'string' }, plan: { type: 'string' }, rt: { type: 'string' }, fp: { type: 'string' },
+        dir: { type: 'string' },
+      },
       strict: true, allowPositionals: true,
     }));
   } catch (e) {
@@ -64,13 +69,22 @@ async function main(argv) {
       throw e instanceof UsageError ? e : new UsageError(`cannot load the floating-point helper module ${fpPath}: ${e.message}`);
     }
   }
+  const vfs = new Vfs();
+  if (values.dir) {
+    try { loadHostDir(vfs, values.dir); } catch (e) { throw new UsageError(`cannot load --dir ${values.dir}: ${e.message}`); }
+  }
   const p = await Process.load({
-    exe, plan, aot, rt, trace, fp,
+    exe, plan, aot, rt, trace, fp, vfs,
     argv: [plan.file, ...guestArgs],
     log: (line) => process.stderr.write(`[tempwind] ${line}\n`),
     onOutput: (stream, bytes) => (stream === 'stdout' ? process.stdout : process.stderr).write(bytes),
   });
-  return p.start();
+  // C:\work goes back to HOST whatever the outcome.
+  try {
+    return await p.start();
+  } finally {
+    if (values.dir) writeBack(vfs, values.dir);
+  }
 }
 
 const known = (e) => e instanceof ProcessError || e instanceof PlanError || e instanceof UsageError;

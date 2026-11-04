@@ -1,0 +1,31 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning
+3 folders, 9 files, 287613 bytes (281 KiB)
+
+MD5                                       Size  Name
+-------------------------------- -------------  ------------
+                                                tree\
+0089421fbc5367021a0dd91a780e0557         49152  tree\code.bin
+d41d8cd98f00b204e9800998ecf8427e             0  tree\empty
+0f723ae7f9bf07744445e93ac5595156            12  tree\hello.txt
+95860043ca4c6b476a1035accb996ceb         60000  tree\lorem.txt
+e071f707df7bbeee2a6a1eb48011ddd0        108894  tree\numbers.txt
+282a17bea03db56675b66d2ffe661927         65536  tree\random.bin
+                                                tree\sub\
+                                                tree\sub\deeper\
+24c6e1e46d179f0b14ab38f005678632          4000  tree\sub\deeper\more.txt
+a47170636e9c528995092e14a81000ab            12  tree\sub\deeper\nested.txt
+59d0d19fc45ca69230d858f60a5557f8             7  tree\sub\other.txt
+-------------------------------- -------------  ------------
+a1433cd1302b983f2c914c782d40dae4-00000004        287613  
+
+Folders: 3
+Files: 9
+Size: 287613
+
+MD5    for data:              a1433cd1302b983f2c914c782d40dae4-00000004
+MD5    for data and names:    b3b3c2e80313fd6485f872f3fde5bf61-00000005
+
+Everything is Ok

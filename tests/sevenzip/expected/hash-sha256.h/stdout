@@ -1,0 +1,31 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning
+3 folders, 9 files, 287613 bytes (281 KiB)
+
+SHA256                                                                    Size  Name
+---------------------------------------------------------------- -------------  ------------
+                                                                                tree\
+4711c5d1455c1c687a61b9c320ac473bf76eaa1dbbd30e2e80ffbcb4e006f600         49152  tree\code.bin
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855             0  tree\empty
+4a1e67f2fe1d1cc7b31d0ca2ec441da4778203a036a77da10344c85e24ff0f92            12  tree\hello.txt
+7467098ca19a3b0aca9e0a382f5cd02c88b6f352189edf2345516803deefaa9c         60000  tree\lorem.txt
+f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a        108894  tree\numbers.txt
+4fb728eb1ae140e3e5b091ad5dac4192a0c71ded2adf7e7fdf26981c2a120c67         65536  tree\random.bin
+                                                                                tree\sub\
+                                                                                tree\sub\deeper\
+29bcf3e6877e7a198719730282fb1d0079f3775e15acf56eb47326f5a02db3e1          4000  tree\sub\deeper\more.txt
+414f8e9fd34ff68f66cbdab5ec63a5e738aa107f3454fa7edb51f49528abf9c6            12  tree\sub\deeper\nested.txt
+480c2336b410f1ad5f8bf1b28944490255804b65350c527787e74ebdd511e3a4             7  tree\sub\other.txt
+---------------------------------------------------------------- -------------  ------------
+df4ce798566ca496f961eaffdf92ab54fe4dffa0705dac99ae619be8e4ae5db4-00000004        287613  
+
+Folders: 3
+Files: 9
+Size: 287613
+
+SHA256 for data:              df4ce798566ca496f961eaffdf92ab54fe4dffa0705dac99ae619be8e4ae5db4-00000004
+SHA256 for data and names:    769aae6f5c27d4ce882b29c9a855f6f43b8c701604272ab139bb79c99030cf99-00000006
+
+Everything is Ok

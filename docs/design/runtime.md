@@ -133,6 +133,8 @@ The host-call function sits at table slot 0 (`abi.md`, "Host functions"). It rec
 3. Writes the function's return value (a BigInt or number) into RAX. Nothing is written for a void function.
 4. Performs the guest's `ret` and returns the status, exactly as `abi.md` says.
 
+A function that blocks returns a Promise of its value instead; steps 3 and 4 happen when it settles ("Guest threads" below). It can also stop only its thread (`threadExit`).
+
 A stop sets `state.exit = EXIT_HOST` and returns `STATUS_EXIT`, and the runtime records why: an exit code or an error.
 
 **Shim rules:**
@@ -168,7 +170,7 @@ Every value a program can observe follows `msvcrt.dll` on the reference runner (
   - `__getmainargs` builds `argv` from the runtime's command line (the program name unless more is given) and `envp` from an empty environment.
   - `_initterm` calls each non-null entry.
   - `exit` runs the `atexit` and `_onexit` handlers in reverse order, then ends the process with the code.
-- **Locks and critical sections:** no-ops with one thread. They still check their arguments.
+- **Locks and critical sections:** real owners and waiters since M5 ("Guest threads" below). They still check their arguments.
 
 ## Run loop
 
@@ -213,6 +215,7 @@ node runtime/src/run-pe.mjs --exe FILE.exe --aot FILE.wasm --plan FILE.plan.json
 
 - `--fp` (M4) names the floating-point helper module. Without it, `run-pe` uses `target/wasm32-unknown-unknown/release/x64wasm_fp.wasm` under the repository root if that file exists. A module that imports `fp` with neither fails to link, with an error that names `--fp`.
 - Arguments after `--` follow the program name in the guest's command line (`__getmainargs`), as CoreMark's seeds and iteration count need.
+- `--dir HOST` (M5) loads a host directory into the in-memory file system as `C:\work`, the current directory, and writes it back when the run ends ("Files, handles and the 7-Zip shim (M5)").
 
 - Its stdout and stderr are the guest's, byte for byte, and its exit code is the guest's.
 - When the runtime itself stops with an error, it prints `tempwind: <error>` to stderr and exits with 125.
@@ -260,6 +263,153 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
   Its rules: all floating point stays in guest code, so there are no msvcrt math imports, and every import is one the shim already has. It is checked like the M3 programs: natively on Windows in CI, and translated in Node with the exact CRLF bytes and its exit code.
 - **CoreMark** (`coremark.exe` from the targets release): a Node test runs it translated with `0x0 0x0 0x66 200` and checks what `tests/targets/smoke.sh` checks: the run type, the four CRCs, and only the "at least 10 secs" error.
 
+## Files, handles and the 7-Zip shim (M5)
+
+**Scope.** The shim implements every import that 7zz.exe executes in the command matrix (`tests/sevenzip/README.md`), by the shim rules above.
+- **Sources:**
+  - Microsoft's documentation for the contract;
+  - Wine's source (the wine-11.0 tarball: `dlls/kernelbase`, `kernel32`, `ntdll`, `advapi32`, `oleaut32`, `user32`, `msvcrt`) for the details;
+  - 7-Zip's own source (release `src-7zip-25.01`) for what 7zz actually calls.
+
+  The code is our own: Wine's is read, not copied.
+- **Stops loudly:** what the matrix doesn't execute, and these cases:
+  - **Exceptions:** `RaiseException`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx` and `RtlVirtualUnwind`, until Phase 4.
+  - **Calls that only optional switches reach:** hard links, NT security and the other `-sn*` features.
+
+**The file system** (`runtime/src/win32/vfs.mjs`) is in memory, with Win32 and NTFS semantics:
+- **One volume, `C:`:**
+  - NTFS, with a fixed serial number and fixed free space;
+  - directories `C:\Windows`, `C:\Windows\System32` and `C:\work`;
+  - the program itself, read-only, at `C:\tempwind\<plan file name>`, which `GetModuleFileNameW(NULL)` returns.
+- **Names:** UTF-16, case-insensitive and case-preserving, compared by their upper-cased code units. `< > : " | ? *` and control characters are invalid. Win32 path rules apply: `\` and `/`, `.` and `..`, trailing dots and spaces, and `\\?\` prefixes taken literally. Other drives and UNC paths fail with `ERROR_PATH_NOT_FOUND`.
+- **Nodes:**
+  - **Files:** bytes, attributes, and the creation, last-access and last-write FILETIMEs.
+  - **Directories:** their entries. Enumeration (`FindFirstFileW`/`FindNextFileW`, Win32 `*` and `?` matching) follows NTFS order: `.` and `..` first, then names in ordinal order of the upper-cased name.
+  - **Attributes:** new files get `FILE_ATTRIBUTE_ARCHIVE` (0x20) and directories `FILE_ATTRIBUTE_DIRECTORY` (0x10). `FILE_ATTRIBUTE_NORMAL` means none.
+  - **Times:** a new node gets the current time for all three. A write updates the last-write time, and the last-access time isn't updated.
+  - **No hard links, alternate data streams or reparse points:** `FindFirstStreamW` reports only `::$DATA`.
+- **Errors:** every failure sets the error Windows sets, for example:
+  - `ERROR_FILE_NOT_FOUND`, `ERROR_PATH_NOT_FOUND`, `ERROR_ALREADY_EXISTS`/`ERROR_FILE_EXISTS`;
+  - `ERROR_ACCESS_DENIED`, `ERROR_DIR_NOT_EMPTY`, `ERROR_NO_MORE_FILES`, `ERROR_INVALID_NAME`;
+  - `ERROR_SHARING_VIOLATION`: share modes are enforced between open handles.
+- **`run-pe --dir HOST`** loads the host directory into `C:\work`, which is the current directory.
+  - Each file keeps its contents and mtime, which becomes all three times. Files get 0x20, directories 0x10.
+  - Host names must be valid for the file system (no `< > : " | ? * / \`, no control characters, no DOS device names such as `aux.txt`) and unique without case; otherwise `run-pe` fails at start with a usage error naming the file.
+  - When the run ends, whatever the outcome, `C:\work` is written back to HOST: new and changed files with their mtimes, new directories, and deletions. A host file the guest replaced by a directory (or the reverse) is removed first, then written.
+  - Without `--dir`, `C:\work` is empty. msvcrt's file functions use the same file system: `fopen` resolves its path as `CreateFileA` does (code page 1252, then the same lookup as `CreateFileW`); an absent file or directory gives NULL with `ENOENT` and last error 2 or 3, an existing one or an invalid name stops (reading files through msvcrt is not implemented).
+
+**Handles:**
+- **Kinds:** one table holds files, find handles, events, semaphores and file mappings, numbered from `0x100` in steps of 4.
+- **Std handles:** the fixed std handles stay `0x3`, `0x7` and `0xB`.
+- **Pseudo-handles and modules:**
+  - `GetCurrentProcess` is −1;
+  - a module handle is the image base for the program, or a fixed pseudo-base for a system DLL that `GetModuleHandleW`/`LoadLibrary*W` name and the reference Windows has;
+  - `LoadLibrary*W`: a bare name or a `C:\Windows\System32` path for a DLL outside the table stops, naming the DLL (the reference Windows may have it; there is no made-up failure). A path outside System32 is looked up in the file system: absent gives `ERROR_MOD_NOT_FOUND`, present stops (Phase 1 loads no guest DLLs);
+  - `GetModuleHandleW`: a table DLL that is not loaded gives `ERROR_MOD_NOT_FOUND`; a name outside the table stops, since a real process may have it loaded as a dependency; the program's own name gives the image base.
+- **`GetProcAddress`** returns a thunk, allocated on demand, for a function the shim implements. A function the shim lacks stops loudly with its name, so a run never silently takes a fallback that native Windows wouldn't take.
+- **An unknown handle** is an error stop, as before.
+
+**Guest threads (M5): cooperative, on one JS thread.** 7-Zip runs extra threads even with `-mmt1`:
+- the coder mixer (`NCoderMixer2::CMixerMT`) for 7z archives with BCJ, BCJ2 or AES, when encoding and decoding;
+- the LZMA2 match finder (`MatchFinderMt`) for xz.
+
+`-mtf=off` doesn't help: native 7-Zip fails with it. Real parallel threads (Workers, shared memory) are Phase 4. Until then, guest threads take turns on one JS thread.
+- **Mechanism:** JSPI (`WebAssembly.Suspending` and `WebAssembly.promising`; Node 24, Chromium 137+). The code is `runtime/src/threads.mjs` (scheduler, waits, locks) and `process.mjs` (thread start and end).
+  - Every guest thread runs `run(state)` through `WebAssembly.promising`.
+  - Host calls that can block go through a second host function, wrapped in `WebAssembly.Suspending`, in table slot 1 (modules follow from slot 2): the waits, `EnterCriticalSection`, msvcrt's `_lock`, `Sleep` and `SwitchToThread` (shim entries marked `blocks: true`). When such a call can't complete, it returns a Promise. That suspends the thread's whole wasm stack, and the scheduler resumes another thread.
+  - All other host calls stay synchronous: no Promise, no suspension cost.
+  - A thread exit (`_endthreadex`, `ExitThread`) isn't a suspension: it is a stop like `ExitProcess` that unwinds the thread's wasm stack, and only that thread ends.
+  - V8 throws when a `Suspending` import runs without `promising` on the stack, even if it returns no Promise. So while the host calls into guest code (`callNested`), slot 1 holds the plain host function.
+- **Scheduling** is deterministic and non-preemptive. A thread runs until it blocks, yields (`Sleep`, `SwitchToThread`) or ends; the scheduler then resumes the thread that has been runnable longest (a FIFO queue; a yielding thread goes to its end). Signaling an object (`SetEvent`, `ReleaseSemaphore`, `LeaveCriticalSection`, a thread's end) makes waiters runnable, in the order they started waiting, but doesn't switch threads.
+- **Threads** come from `_beginthreadex` (and `CreateThread` where a program imports it). Each has:
+  - **its own state:** a state block (host region), a TEB (TLS slots, last error, `ClientId`), a stack from the guest heap, the image's TLS data block (a copy of the template), the FP defaults of a new thread, and its own errno (the main thread's is the CRT's; a thread's errno block comes from the CRT heap and goes back to it when the thread ends).
+    - **Stack size**, by Windows' rule (`RtlCreateUserStack`): the requested size is a reservation with `STACK_SIZE_PARAM_IS_A_RESERVATION`, else a commit size; the reservation is that, or the image's stack reserve, at least the commit size and 1 MiB, rounded up to 64 KiB.
+    - **Thread ids** are 0x1008, 0x100C, ... (the main thread is 0x1004). A later thread with the same stack size reuses an ended thread's state block, TEB and stack.
+  - **a start like the main thread's:** RCX = the argument, RSP = top − 0x38 with `[RSP]` = `SENTINEL_RET`, RIP = the start address. The image's TLS callbacks run first with `DLL_THREAD_ATTACH`, as on Windows.
+  - **an end:** returning to the sentinel, `_endthreadex` or `ExitThread`. The return value or the argument becomes its exit code, and the TLS callbacks run with `DLL_THREAD_DETACH`.
+  - **`CREATE_SUSPENDED`:** it waits for `ResumeThread`.
+  - **its handle:** signaled when the thread ends; `GetExitCodeThread` reads the code (`STILL_ACTIVE`, 259, until then). `GetThreadId`, `ResumeThread` and `SetThreadAffinityMask` take it too.
+  - `_beginthreadex` with security attributes, or flags other than `CREATE_SUSPENDED` and `STACK_SIZE_PARAM_IS_A_RESERVATION`, stops. `ExitThread` or `_endthreadex` on the main thread stops (Windows would keep the process until its last thread ends). `CreateThread` waits for a program that imports it.
+- **The process ends** when the main thread calls `ExitProcess` or `exit`, or returns from the entry point, whatever the other threads are doing.
+- **`depth`** (the call-depth guard) belongs to each thread: it is saved when a thread suspends and restored when it resumes.
+- **Synchronization objects** follow Windows:
+  - events, manual- or auto-reset;
+  - semaphores;
+  - critical sections, with an owner, a recursion count and waiters (`TryEnterCriticalSection` fails while another thread owns one). The last `LeaveCriticalSection` hands it to the first waiter at once. The guest sees `OwningThread` (the thread id), `RecursionCount` and `LockCount` (−1 free; held: −2, minus 4 per waiter). msvcrt's `_lock`/`_unlock` locks behave the same;
+  - `WaitForSingleObject`, and `WaitForMultipleObjects` with "all" or "any".
+  - `OpenEventW` and `OpenFileMappingW` find no named objects (`ERROR_FILE_NOT_FOUND`).
+  - `TlsAlloc` and `TlsFree` clear the slot in every thread, as Windows does.
+- **Timeouts:**
+  - `INFINITE` blocks;
+  - 0 polls;
+  - a finite timeout blocks until the object is signaled or no other thread can run, and then returns `WAIT_TIMEOUT`, since no real time passes between turns. When several threads wait with finite timeouts, the one that has waited longest times out first.
+  - `Sleep(0)` and `SwitchToThread` yield. `Sleep(n)` with n > 0 yields too, and lets time pass: with no other runnable thread, the longest finite wait times out. `Sleep(INFINITE)` waits forever.
+- **Deadlock:** when every thread waits with `INFINITE`, the run stops with an error naming each thread's wait, for example `deadlock: no thread can run; thread 0x1004 waits in WaitForSingleObject(0x104, INFINITE); thread 0x1008 waits in EnterCriticalSection(0x10002340), held by thread 0x1004; thread 0x100c is suspended (CREATE_SUSPENDED, never resumed)`. The thread that blocks last, or the thread whose end leaves no thread runnable, finds it.
+- **Limit:** blocking inside a call from the host into guest code (`callNested`, for example a `qsort` comparator) is an error stop. Waits that complete at once still work there, and a yield returns without switching. A finite wait that no other thread could interrupt (nothing runnable, no other finite waiter) returns `WAIT_TIMEOUT` at once, as outside `callNested`.
+- **Outputs** don't depend on the interleaving, and the schedule itself is deterministic.
+
+**Console:**
+- stdout and stderr are redirected, not consoles. `GetConsoleMode` and `GetConsoleScreenBufferInfo` fail with `ERROR_INVALID_HANDLE`, and `_isatty` returns 0.
+- `SetConsoleCtrlHandler` records the handler and returns TRUE; the handler is never called.
+- stdin is empty: reads return 0 bytes.
+
+**Time:**
+- UTC with no daylight saving: `FileTimeToLocalFileTime` and `LocalFileTimeToFileTime` are the identity.
+- `GetSystemTimeAsFileTime` is the host's current time.
+- `GetTickCount` counts milliseconds since the process started.
+- `FileTimeToSystemTime`, `DosDateTimeToFileTime`, `FileTimeToDosDateTime` and `CompareFileTime` follow Windows exactly, invalid inputs included.
+- `GetProcessTimes` reports the process start time and the host's CPU time.
+
+**The machine profile:**
+- **`GetSystemInfo`:** AMD64, 1 processor, active mask 1, 4 KiB pages, 64 KiB allocation granularity, and the guest's application address range.
+- **Affinity:** `GetProcessAffinityMask` reports 1 and 1. Setting the mask to 1 succeeds; other masks fail with `ERROR_INVALID_PARAMETER`.
+- **`GlobalMemoryStatusEx`:** 4 GiB of physical memory, with the guest heap's free bytes available.
+- **`IsProcessorFeaturePresent`** agrees with the CPUID profile: SSE and SSE2, CMPXCHG16B and NX are present; SSE3, AVX, RDRAND and the rest are not.
+- **`GetLargePageMinimum`** is 0.
+- **`GetVersion`** follows Windows' compatibility rule. A program whose manifest doesn't declare Windows 10 sees 6.2.9200; otherwise it sees 10.0.26100, like the PEB.
+- **`RtlGetVersion`** (ntdll, reached through `GetProcAddress`) always reports the real version: 10.0.26100, platform 2, no service pack.
+  - With `RTL_OSVERSIONINFOEXW` it adds a workstation: `wProductType` = `VER_NT_WORKSTATION` and `wSuiteMask` = `VER_SUITE_SINGLEUSERTS`.
+  - Tempwind presents a desktop Windows. The windows-2025 reference runner is a server, but no matrix output depends on the product type; only `7zz b` and `7zz i` print it.
+  - A size other than the two structures' stops.
+- **Directories:** `GetWindowsDirectoryW` is `C:\Windows` and `GetSystemDirectoryW` is `C:\Windows\System32`. `GetTempPathW` follows its documented order (TMP, TEMP, USERPROFILE, then the Windows directory), so it returns `C:\Windows\` with the empty environment.
+- **Drives:** `GetLogicalDriveStringsW` lists `C:\`, `GetDriveTypeW` reports `DRIVE_FIXED`, and `GetVolumeInformationW` reports NTFS.
+- **Command line:** `GetCommandLineW` is the command line Windows would hold. That is the program path, then the arguments, quoted by the rules `CommandLineToArgvW` reverses; 7-Zip parses it itself.
+
+**The rest:**
+- **Environment and registry:**
+  - `getenv` finds nothing, since the environment is empty;
+  - `RegOpenKeyExW` fails with `ERROR_FILE_NOT_FOUND`;
+  - registry writes stop loudly.
+- **Tokens and privileges** (`OpenProcessToken`, `LookupPrivilegeValueW`, `AdjustTokenPrivileges`) behave as for a normal user. A privilege that isn't held gives `ERROR_NOT_ALL_ASSIGNED`.
+- **`SystemFunction036` (RtlGenRandom)** returns random bytes. Matrix outputs must not depend on it.
+- **BSTRs** (`SysAllocString`, `SysAllocStringLen`, `SysFreeString`, `SysStringLen`) use Windows' layout: a 4-byte length prefix and a NUL terminator, in the guest heap.
+- **`VariantClear` and `VariantCopy`** handle the VARIANT types 7-Zip uses (VT_EMPTY, VT_BOOL, VT_UI4, VT_UI8, VT_BSTR, VT_FILETIME); others stop.
+- **user32:** `CharUpperW` takes a string or a single character in the low word. `CharPrevExA` works on code page 1252.
+- **Memory:** `VirtualAlloc` and `VirtualFree` reserve and commit in the guest heap with 64 KiB granularity, and `MapViewOfFile` and `UnmapViewOfFile` stop unless the matrix needs them.
+
+**Values the implementation fixes** (M5; the spec above left them open):
+- **Volume `C:`:** serial number `0x54454D50`, an empty label, `NTFS` with flags `0x03E702FF` and 255-character components; 256 GiB in all and 128 GiB free, in 4 KiB clusters of 8 sectors of 512 bytes. `GetFileInformationByHandle` reports one link and the node's number as the file index. There are no 8.3 names: `cAlternateFileName` is empty and masks match long names only.
+- **Program:** `C:\tempwind\<plan file>` has attributes `0x21` (read-only, archive). The command line starts with that path.
+- **Code pages:** conversions take the ANSI code page 1252 and the OEM code page 437 (`CP_OEMCP`; `GetOEMCP` is 437, as on an en-US Windows). 7-Zip writes console text through `CP_OEMCP` after `SetFileApisToOEM`.
+- **Modules:** pseudo-bases `0x7FFA_0000_0000` + n × `0x100_0000` for `kernel32`, `kernelbase`, `ntdll`, `advapi32`, `user32`, `oleaut32` and `msvcrt` (loaded at start) and `psapi`, `version` and `shell32` (loaded by `LoadLibrary*W`, also by full path in `C:\Windows\System32`); other names stop ("Pseudo-handles and modules"). `GetProcAddress` thunks are allocated after the import thunks, one per function; the functions 7zz asks for in the matrix are `SetDefaultDllDirectories`, `GetActiveProcessorGroupCount` and `GetActiveProcessorCount`.
+- **`GetVersion`:** the compatibility rule reads the manifest: Windows 10 values when the image's `.rsrc` holds the Windows 10 `supportedOS` GUID (7zz's does), else 6.2.9200.
+- **Memory:** `GetSystemInfo` reports processor level 6, revision 0 (the CPUID profile's family 6, model 0) and the highest application address as the guest memory size − `0x10001`. `GlobalMemoryStatusEx`: total physical memory and page file 4 GiB, available = min(free guest heap, 4 GiB), total virtual `0x7FFF_FFFE_0000`. `VirtualAlloc` also takes `MEM_COMMIT` alone (with no address it reserves too); released regions are reused first-fit and zeroed.
+- **`IsProcessorFeaturePresent`:** present means reported by the CPUID profile: 2 (CMPXCHG8B), 3 (MMX), 6 (SSE), 10 (SSE2), 12 (NX), 14 (CMPXCHG16B). PAE (9) is absent, since the profile doesn't report it.
+- **`FormatMessageW`:** only `FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS` (with or without `ALLOCATE_BUFFER`), language 0, and the English texts of the errors the shim sets (every code in `errors.mjs`, as Microsoft's "System Error Codes" pages give them); anything else stops. With `ALLOCATE_BUFFER` the buffer comes from the CRT heap and `LocalFree` returns it; `LocalFree` of any other address stops.
+- **Write-back:** times reach the host through `utimes` in seconds, exact for whole seconds and to about 0.25 µs otherwise.
+
+**Windows details the implementation follows** (checked against Wine 11 and Microsoft's documentation):
+- A file with no attributes set reports `FILE_ATTRIBUTE_NORMAL` (0x80) from `GetFileAttributesW`, `FindFirstFileW`/`FindNextFileW` and `GetFileInformationByHandle`, as NTFS does (the value is valid only when used alone). `SetFileAttributesW` with 0 or 0x80 clears the set; the shim stores the set without the NORMAL bit.
+- An open with no read, write or delete access (attributes only) takes no part in share checks.
+- `RemoveDirectoryW` on the current directory or an ancestor fails with `ERROR_SHARING_VIOLATION` before the emptiness check.
+- `FindFirstFileW` on `file\*` fails with `ERROR_DIRECTORY`; an empty mask (`dir\`) with `ERROR_FILE_NOT_FOUND`; a missing directory with `ERROR_PATH_NOT_FOUND`. Find handles enumerate a snapshot taken by `FindFirstFileW`.
+- `SetFileTime` with `0xFFFFFFFF_FFFFFFFF`, or an explicit time, stops later writes through that handle from updating the time; 0 means "unchanged". A new or removed entry updates its directory's last-write time.
+- `SetFilePointer` and `GetFileSize` set the last error to 0 when the low part they return is `0xFFFFFFFF`. `SetFilePointer` with no `lpDistanceToMoveHigh` and a new position above 32 bits fails with `ERROR_INVALID_PARAMETER`, returns `INVALID_SET_FILE_POINTER` and leaves the pointer where it was (Microsoft's documentation; Wine 11 truncates instead).
+
+**Tests:**
+- unit tests per module in `tests/node/`, through `shim-harness.mjs`;
+- the translated 7-Zip matrix as the acceptance test.
+
 ## Benchmarks (M4)
 
 `tests/bench/coremark.mjs` translates `coremark.exe` (all entries), runs it translated in Node with `0x0 0x0 0x66 0`, and natively under wine64 with the same arguments. Iteration count 0 makes CoreMark calibrate itself to a run of at least 10 seconds, so a valid run prints "Correct operation validated". The script prints one JSON line with:
@@ -271,6 +421,6 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 A run that isn't validated fails the script.
 
 `.github/workflows/bench.yml` runs it on every push to `main` and on pull requests, and also runs `coremark.exe` natively on windows-2025 for the record.
-- **On main,** it appends the JSON line to `coremark.jsonl` on the orphan branch `bench-data`, which the workflow creates on its first run. The commit comes from the workflow's bot, with `contents: write` for this job only.
+- **On main,** it appends the JSON line to `coremark.jsonl` on the orphan branch `bench-data`, which the workflow creates on its first run. The commit comes from the workflow's bot, with `contents: write` for this job only. Each benchmark records on its own: if one job fails, the other's result is still appended.
 - **On pull requests,** it compares the ratio with the last line on `bench-data` and emits a warning annotation, never a failure, when it is more than 10 % worse.
 

@@ -111,6 +111,7 @@ pub fn exclusion(insn: &Instruction) -> Option<&'static str> {
         | Verr | Verw | Clac | Stac | Xsetbv => Some("privileged or system"),
         Syscall | Sysenter => Some("syscall"),
         Cpuid | Rdtsc | Rdtscp | Rdrand | Rdseed => Some("nondeterministic"),
+        Int1 => Some("debug trap"),
         Mov => {
             let special = (0..insn.op_count()).any(|i| {
                 matches!(insn.op_kind(i), OpKind::Register) && {
@@ -1116,6 +1117,7 @@ mod tests {
         assert_eq!(exclusion(&decode(&[0x0f, 0x05])), Some("syscall"));
         assert_eq!(exclusion(&decode(&[0x0f, 0xa2])), Some("nondeterministic")); // cpuid
         assert_eq!(exclusion(&decode(&[0x0f, 0x31])), Some("nondeterministic")); // rdtsc
+        assert_eq!(exclusion(&decode(&[0xf1])), Some("debug trap")); // int1 (ICEBP)
         assert_eq!(
             exclusion(&decode(&[0x0f, 0x20, 0xc0])), // mov rax, cr0
             Some("privileged or system")

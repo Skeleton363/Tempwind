@@ -13,8 +13,9 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('../../', import.meta.url).pathname;
+const root = fileURLToPath(new URL('../../', import.meta.url));
 const { values } = parseArgs({
   options: {
     exe: { type: 'string', default: `${root}target/targets/coremark.exe` },

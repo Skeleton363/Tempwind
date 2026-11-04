@@ -1,0 +1,138 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 106231 bytes (104 KiB)
+
+Listing archive: 7z-bcj-lzma2.7z
+
+--
+Path = 7z-bcj-lzma2.7z
+Type = 7z
+Physical Size = 106231
+Headers Size = 379
+Method = LZMA2:384k BCJ
+Solid = +
+Blocks = 1
+
+----------
+Path = tree
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 08:50:46.0000000
+Attributes = D
+CRC = 
+Encrypted = -
+Method = 
+Block = 
+
+Path = tree\sub
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 10:50:46.0000000
+Attributes = D
+CRC = 
+Encrypted = -
+Method = 
+Block = 
+
+Path = tree\sub\deeper
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 06:50:46.0000000
+Attributes = D
+CRC = 
+Encrypted = -
+Method = 
+Block = 
+
+Path = tree\empty
+Size = 0
+Packed Size = 0
+Modified = 2024-01-02 11:04:06.0000000
+Attributes = A
+CRC = 
+Encrypted = -
+Method = 
+Block = 
+
+Path = tree\code.bin
+Size = 49152
+Packed Size = 105852
+Modified = 2024-01-02 13:04:06.0000000
+Attributes = A
+CRC = 141D9447
+Encrypted = -
+Method = BCJ LZMA2:384k
+Block = 0
+
+Path = tree\hello.txt
+Size = 12
+Packed Size = 
+Modified = 2024-01-02 03:04:06.0000000
+Attributes = A
+CRC = C4C55DFF
+Encrypted = -
+Method = BCJ LZMA2:384k
+Block = 0
+
+Path = tree\lorem.txt
+Size = 60000
+Packed Size = 
+Modified = 2024-01-02 05:04:06.0000000
+Attributes = A
+CRC = 4CF914A4
+Encrypted = -
+Method = BCJ LZMA2:384k
+Block = 0
+
+Path = tree\numbers.txt
+Size = 108894
+Packed Size = 
+Modified = 2024-01-02 07:04:06.0000000
+Attributes = A
+CRC = 45C35897
+Encrypted = -
+Method = BCJ LZMA2:384k
+Block = 0
+
+Path = tree\random.bin
+Size = 65536
+Packed Size = 
+Modified = 2024-01-02 09:04:06.0000000
+Attributes = A
+CRC = 6DEE80D4
+Encrypted = -
+Method = BCJ LZMA2:384k
+Block = 0
+
+Path = tree\sub\deeper\more.txt
+Size = 4000
+Packed Size = 
+Modified = 2024-01-02 19:04:06.0000000
+Attributes = A
+CRC = 2936F203
+Encrypted = -
+Method = BCJ LZMA2:384k
+Block = 0
+
+Path = tree\sub\deeper\nested.txt
+Size = 12
+Packed Size = 
+Modified = 2024-01-02 17:04:06.0000000
+Attributes = A
+CRC = 22945282
+Encrypted = -
+Method = BCJ LZMA2:384k
+Block = 0
+
+Path = tree\sub\other.txt
+Size = 7
+Packed Size = 
+Modified = 2024-01-02 15:04:06.0000000
+Attributes = A
+CRC = 060FC07E
+Encrypted = -
+Method = BCJ LZMA2:384k
+Block = 0
+

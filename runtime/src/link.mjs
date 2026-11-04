@@ -199,6 +199,16 @@ export class Linker {
     this.table.set(HOST_FUNC_INDEX, hostFunction(fn));
   }
 
+  /**
+   * Adds another host function (a JS function or a WebAssembly.Suspending)
+   * in a new table slot and returns its index. Call it before linking modules.
+   */
+  addHostFunction(fn) {
+    const index = this.table.length;
+    this.table.grow(1, hostFunction(fn));
+    return index;
+  }
+
   /** Probes for `key`: {func, entry} or null. Follows abi.md's probe exactly. */
   lookup(key) {
     key = BigInt.asUintN(64, BigInt(key));

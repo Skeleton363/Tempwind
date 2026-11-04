@@ -84,11 +84,19 @@ const i64Const = (v) => {
  * the entry point.
  */
 export function hostCallAot(id, regs) {
-  if (typeof regs === 'bigint') regs = { rcx: regs };
+  return hostCallsAot([[id, regs]]);
+}
+
+/** Like hostCallAot for several imports in a row: `calls` is [[id, regs], ...]; the last one decides the exit. */
+export function hostCallsAot(calls) {
   const offsets = { rcx: 8, rdx: 16, r8: 64, r9: 72 };
+  const setRegs = (regs) => Object.entries(typeof regs === 'bigint' ? { rcx: regs } : regs)
+    .flatMap(([r, v]) => [0x20, 0, ...i64Const(v), 0x37, 3, offsets[r]]);
+  const call = (id) => [0x20, 0, 0x41, id, ...i64Const(-1n), 0x41, 0, 0x11, 1, 0]; // call_indirect (type 1) table[0](state, id, NO_RET)
   const run = [
-    ...Object.entries(regs).flatMap(([r, v]) => [0x20, 0, ...i64Const(v), 0x37, 3, offsets[r]]),
-    0x20, 0, 0x41, id, ...i64Const(-1n), 0x41, 0, 0x11, 1, 0, // call_indirect (type 1) table[0](state, id, NO_RET)
+    ...calls.slice(0, -1).flatMap(([id, regs]) => [...setRegs(regs), ...call(id), 0x1a]),
+    ...setRegs(calls.at(-1)[1]),
+    ...call(calls.at(-1)[0]),
     0x41, 2, 0x46, // status == STATUS_EXIT
     0x04, 0x7f,
     0x20, 0, 0x28, 2, 0x90, 0x01, // state.exit

@@ -1,0 +1,245 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 296960 bytes (290 KiB)
+
+Listing archive: tar.tar
+
+--
+Path = tar.tar
+Type = tar
+Physical Size = 296960
+Headers Size = 7168
+Code Page = UTF-8
+Characteristics = GNU ASCII
+
+----------
+Path = tree
+Folder = +
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 08:50:46
+Created = 
+Accessed = 
+Mode = drwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 5 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\code.bin
+Folder = -
+Size = 49152
+Packed Size = 49152
+Modified = 2024-01-02 13:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\empty
+Folder = -
+Size = 0
+Packed Size = 0
+Modified = 2024-01-02 11:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\hello.txt
+Folder = -
+Size = 12
+Packed Size = 512
+Modified = 2024-01-02 03:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\lorem.txt
+Folder = -
+Size = 60000
+Packed Size = 60416
+Modified = 2024-01-02 05:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\numbers.txt
+Folder = -
+Size = 108894
+Packed Size = 109056
+Modified = 2024-01-02 07:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\random.bin
+Folder = -
+Size = 65536
+Packed Size = 65536
+Modified = 2024-01-02 09:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\sub
+Folder = +
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 10:50:46
+Created = 
+Accessed = 
+Mode = drwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 5 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\sub\deeper
+Folder = +
+Size = 0
+Packed Size = 0
+Modified = 2024-01-03 06:50:46
+Created = 
+Accessed = 
+Mode = drwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 5 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\sub\deeper\more.txt
+Folder = -
+Size = 4000
+Packed Size = 4096
+Modified = 2024-01-02 19:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\sub\deeper\nested.txt
+Folder = -
+Size = 12
+Packed Size = 512
+Modified = 2024-01-02 17:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+
+Path = tree\sub\other.txt
+Folder = -
+Size = 7
+Packed Size = 512
+Modified = 2024-01-02 15:04:06
+Created = 
+Accessed = 
+Mode = -rwxrwxrwx
+User = 
+Group = 
+User ID = 0
+Group ID = 0
+Symbolic Link = 
+Hard Link = 
+Characteristics = 0 GNU ASCII
+Comment = 
+Device Major = 
+Device Minor = 
+

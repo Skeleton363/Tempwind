@@ -15,5 +15,25 @@
     "commit": "",
     "pr": "",
     "sessionUrl": false
+  },
+  "permissions": {
+    "deny": [
+      "Edit(/crates/testkit/fixtures/**)",
+      "Write(/crates/testkit/fixtures/**)",
+      "Bash(playwright install)",
+      "Bash(playwright install *)",
+      "Bash(npx playwright install)",
+      "Bash(npx playwright install *)",
+      "Bash(service docker start)",
+      "Bash(service docker start *)",
+      "Bash(git push --force)",
+      "Bash(git push --force *)",
+      "Bash(git push -f)",
+      "Bash(git push -f *)",
+      "Bash(git push * --force)",
+      "Bash(git push * --force *)",
+      "Bash(git push * -f)",
+      "Bash(git push * -f *)"
+    ]
   }
 }

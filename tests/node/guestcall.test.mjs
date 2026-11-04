@@ -120,7 +120,7 @@ test('a guest call inside a host call translates at run time synchronously', asy
   assert.equal(await p.start(), 9);
   assert.equal(inner, 77n);
   assert.equal(p.translations, 1);
-  assert.deepEqual(p.linker.lookup(target), { func: 2, entry: 0 });
+  assert.deepEqual(p.linker.lookup(target), { func: 3, entry: 0 }, 'after the host functions (0, 1) and the AOT module');
 });
 
 test('an exit inside a nested guest call stops the whole process', async () => {

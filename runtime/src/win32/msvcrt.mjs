@@ -6,6 +6,11 @@
 
 import { CrtHeap, HeapError } from './crtheap.mjs';
 import { formatPrintf, FormatError } from './printf.mjs';
+import { addHandle } from './handles.mjs';
+import { Win32Error, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND } from './errors.mjs';
+import { VfsStop } from './vfs.mjs';
+import { CP1252_TO_UNICODE } from './cp1252.mjs';
+import { Lock, threadsOf } from '../threads.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
 const enc = new TextEncoder();
@@ -17,6 +22,8 @@ export const FILE_FLAG = 24n;
 export const FILE_FILE = 28n;
 export const _IOREAD = 0x1;
 export const _IOWRT = 0x2;
+export const _IOEOF = 0x10;
+export const _IOERR = 0x20;
 export const _O_TEXT = 0x4000;
 export const EOF = 0xffff_ffff; // (int)-1 as the u32 a function returns in EAX
 
@@ -62,7 +69,7 @@ export function crt(ctx) {
       userMathErr: 0n,
       newMode: 0,
       signals: new Map(SIGNALS.map((s) => [s, SIG_DFL])),
-      locks: new Array(TOTAL_LOCKS).fill(0),
+      locks: Array.from({ length: TOTAL_LOCKS }, (_, i) => new Lock(`msvcrt lock ${i}`)),
       strerrorBuffer: 0n,
       lconv: 0n,
       mainArgs: null,
@@ -70,7 +77,19 @@ export function crt(ctx) {
   });
 }
 
-const setErrno = (ctx, v) => ctx.write32(crt(ctx).errno, v);
+/** The calling thread's errno: the CRT's for the main thread, its own for each other thread. */
+function errnoAddress(ctx) {
+  const t = threadsOf(ctx).of(ctx);
+  if (t.main) return crt(ctx).errno;
+  const heap = crt(ctx).heap;
+  return t.local('msvcrt.errno', () => {
+    const p = heap.alloc(4n);
+    ctx.write32(p, 0);
+    return p;
+  }, () => heap.freeBlock(t.locals.get('msvcrt.errno')));
+}
+const setErrno = (ctx, v) => ctx.write32(errnoAddress(ctx), v);
+const CREATE_SUSPENDED = 0x4, STACK_SIZE_PARAM_IS_A_RESERVATION = 0x1_0000;
 
 function heapCall(ctx, f) {
   try { return f(crt(ctx).heap); } catch (e) {
@@ -394,19 +413,40 @@ export default {
   // Exceptions do not exist in Phase 1; reaching the handler means something faulted.
   __C_specific_handler: fn(4, (ctx) => { ctx.fail('structured exception handling is not supported'); }),
 
-  // --- locks (no-ops with one thread; they still check their arguments) ---
-  _lock: fn(1, (ctx) => {
-    const n = ctx.argI32(0);
-    if (n < 0 || n >= TOTAL_LOCKS) ctx.fail(`lock number ${n} is out of range`);
-    crt(ctx).locks[n]++;
-  }),
+  // --- locks: owners, recursion and waiters, like critical sections ---
+  _lock: {
+    args: 1,
+    blocks: true,
+    fn(ctx) {
+      const n = ctx.argI32(0);
+      if (n < 0 || n >= TOTAL_LOCKS) ctx.fail(`lock number ${n} is out of range`);
+      return threadsOf(ctx).lock(ctx, crt(ctx).locks[n], `_lock(${n})`);
+    },
+  },
   _unlock: fn(1, (ctx) => {
     const n = ctx.argI32(0);
     if (n < 0 || n >= TOTAL_LOCKS) ctx.fail(`lock number ${n} is out of range`);
-    const c = crt(ctx);
-    if (c.locks[n] === 0) ctx.fail(`lock ${n} is not held`);
-    c.locks[n]--;
+    const lock = crt(ctx).locks[n];
+    if (lock.owner === null) ctx.fail(`lock ${n} is not held`);
+    threadsOf(ctx).unlock(ctx, lock);
   }),
+
+  // --- threads (runtime.md, "Guest threads") ---
+  // uintptr_t _beginthreadex(void *security, unsigned stack_size, start_address, void *arglist, unsigned initflag, unsigned *thrdaddr)
+  _beginthreadex: fn(6, (ctx) => {
+    const security = ctx.arg(0), stack = BigInt(ctx.arg32(1)), start = ctx.arg(2), arg = ctx.arg(3), flags = ctx.arg32(4), idP = ctx.arg(5);
+    if (security !== 0n) ctx.fail('security attributes are not supported');
+    if (start === 0n) ctx.fail('start_address is NULL');
+    if (flags & ~(CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION)) ctx.fail(`initflag ${hex(flags)} is not supported`);
+    if (!ctx.host.createThread) ctx.fail('threads are not available in this context');
+    const t = ctx.host.createThread({
+      start, arg, stack, reservation: (flags & STACK_SIZE_PARAM_IS_A_RESERVATION) !== 0, suspended: (flags & CREATE_SUSPENDED) !== 0,
+    });
+    if (idP !== 0n) ctx.write32(idP, t.id);
+    return addHandle(ctx, t.object);
+  }),
+  // void _endthreadex(unsigned retval)
+  _endthreadex: fn(1, (ctx) => { ctx.exitThread(ctx.arg32(0)); }),
 
   // --- locale: the C locale ---
   ___lc_codepage_func: fn(0, () => 0),
@@ -427,7 +467,7 @@ export default {
   }),
 
   // --- errno ---
-  _errno: fn(0, (ctx) => crt(ctx).errno),
+  _errno: fn(0, (ctx) => errnoAddress(ctx)),
   strerror: fn(1, (ctx) => {
     let n = ctx.argI32(0);
     if (n < 0 || n >= SYS_ERRLIST.length) n = SYS_ERRLIST.length - 1;
@@ -505,9 +545,49 @@ export default {
     return i < 0 ? 0n : s + BigInt(i);
   }),
 
+  strstr: fn(2, (ctx) => {
+    const s = ctx.arg(0);
+    const hay = ctx.readCString(s), needle = ctx.readCString(ctx.arg(1));
+    if (!needle.length) return s;
+    outer: for (let i = 0; i + needle.length <= hay.length; i++) {
+      for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+      return s + BigInt(i);
+    }
+    return 0n;
+  }),
+  wcscmp: fn(2, (ctx) => {
+    const a = ctx.readWString(ctx.arg(0)), b = ctx.readWString(ctx.arg(1));
+    for (let i = 0; ; i++) {
+      const x = a[i] ?? 0, y = b[i] ?? 0;
+      if (x !== y || x === 0) return x > y ? 1 : x < y ? -1 : 0;
+    }
+  }),
+  wcsstr: fn(2, (ctx) => {
+    const s = ctx.arg(0);
+    const hay = ctx.readWString(s), needle = ctx.readWString(ctx.arg(1));
+    if (!needle.length) return s;
+    outer: for (let i = 0; i + needle.length <= hay.length; i++) {
+      for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+      return s + 2n * BigInt(i);
+    }
+    return 0n;
+  }),
+
+  // --- environment: empty (runtime.md, "Environment and registry") ---
+  getenv: fn(1, (ctx) => { ctx.readCString(ctx.arg(0)); return 0n; }),
+
   // --- numbers ---
   strtol: fn(3, (ctx) => strtoX(ctx, false, { max: 0x7fff_ffffn, min: -0x8000_0000n }) & 0xffff_ffffn),
   _strtoi64: fn(3, (ctx) => strtoX(ctx, false, null)),
+  // Wine's _strtoul_l: _strtoi64, then ULONG_MAX above the range and 1 below -ULONG_MAX, both with ERANGE.
+  strtoul: fn(3, (ctx) => {
+    const nptr = ctx.arg(0), endptr = ctx.arg(1), base = ctx.argI32(2);
+    let { value, end, overflow } = parseInteger(ctx, nptr, base, false);
+    if (value > 0xffff_ffffn) { value = 0xffff_ffffn; overflow = true; } else if (value < -0xffff_ffffn) { value = 1n; overflow = true; }
+    if (overflow) setErrno(ctx, ERANGE);
+    if (endptr !== 0n) ctx.write64(endptr, end);
+    return BigInt.asUintN(32, value);
+  }),
   _strtoui64: fn(3, (ctx) => strtoX(ctx, true, null)),
   // msvcrt.dll's own atoi: optional sign, decimal digits, int wrap-around, no errno.
   atoi: fn(1, (ctx) => {
@@ -544,7 +624,40 @@ export default {
   // --- stdio ---
   __iob_func: fn(0, (ctx) => crt(ctx).iob),
 
-  // FILE *fopen(const char *path, const char *mode): Phase 1 has an empty file system.
+  // Low-level I/O: descriptors 0-2 are the standard handles, redirected (not consoles).
+  _fileno: fn(1, (ctx) => streamIndex(ctx, ctx.arg(0))),
+  _get_osfhandle: fn(1, (ctx) => {
+    const fd = ctx.argI32(0);
+    if (fd >= 0 && fd <= 2) return [0x3n, 0x7n, 0xbn][fd];
+    ctx.fail(`_get_osfhandle(${fd}): only descriptors 0-2 are open`);
+  }),
+  _isatty: fn(1, (ctx) => {
+    const fd = ctx.argI32(0);
+    if (fd < 0 || fd > 2) ctx.fail(`_isatty(${fd}): only descriptors 0-2 are open`);
+    return 0;
+  }),
+  // int fflush(FILE *): output is written through, so there is nothing to flush.
+  fflush: fn(1, (ctx) => { if (ctx.arg(0) !== 0n) streamIndex(ctx, ctx.arg(0)); return 0; }),
+  feof: fn(1, (ctx) => {
+    const f = ctx.arg(0);
+    streamIndex(ctx, f);
+    return ctx.read32(f + FILE_FLAG) & _IOEOF;
+  }),
+  ferror: fn(1, (ctx) => {
+    const f = ctx.arg(0);
+    streamIndex(ctx, f);
+    return ctx.read32(f + FILE_FLAG) & _IOERR;
+  }),
+  // int fgetc(FILE *): stdin is empty, so the first read hits the end.
+  fgetc: fn(1, (ctx) => {
+    const f = ctx.arg(0);
+    if (streamIndex(ctx, f) !== 0) ctx.fail('fgetc from an output stream');
+    ctx.write32(f + FILE_FLAG, ctx.read32(f + FILE_FLAG) | _IOEOF);
+    return EOF;
+  }),
+
+  // FILE *fopen(const char *path, const char *mode): the path is resolved as CreateFileA does (code page 1252, then
+  // the in-memory file system). Absent files give NULL with ENOENT; reading an existing file is not implemented.
   fopen: fn(2, (ctx) => {
     const path = ctx.arg(0), modeP = ctx.arg(1);
     if (path === 0n || modeP === 0n) ctx.fail('path or mode is NULL');
@@ -554,8 +667,19 @@ export default {
     if (!m) ctx.fail(`mode "${mode}" is not supported`);
     if (m[1] !== 'r' || m[2] || m[3].includes('+')) ctx.fail(`fopen("${name}", "${mode}"): creating or writing files is not supported`);
     if (!name) ctx.fail('fopen with an empty path');
-    setErrno(ctx, ENOENT); // no file exists
-    return 0n;
+    let wide = '';
+    for (const b of ctx.readCString(path)) wide += String.fromCharCode(CP1252_TO_UNICODE[b]);
+    try {
+      ctx.vfs.stat(wide);
+    } catch (e) {
+      if (e instanceof VfsStop) ctx.fail(e.message);
+      if (!(e instanceof Win32Error)) throw e;
+      if (e.code !== ERROR_FILE_NOT_FOUND && e.code !== ERROR_PATH_NOT_FOUND) ctx.fail(`fopen("${name}"): invalid name (${e.message})`);
+      ctx.setLastError(e.code);
+      setErrno(ctx, ENOENT);
+      return 0n;
+    }
+    ctx.fail(`fopen("${name}", "${mode}"): reading files through msvcrt is not implemented`);
   }),
 
   fwrite: fn(4, (ctx) => {

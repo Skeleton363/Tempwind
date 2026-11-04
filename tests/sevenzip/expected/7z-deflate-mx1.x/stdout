@@ -1,0 +1,22 @@
+
+7-Zip (z) 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 142795 bytes (140 KiB)
+
+Extracting archive: 7z-deflate-mx1.7z
+--
+Path = 7z-deflate-mx1.7z
+Type = 7z
+Physical Size = 142795
+Headers Size = 369
+Method = Deflate
+Solid = +
+Blocks = 1
+
+Everything is Ok
+
+Folders: 3
+Files: 9
+Size:       287613
+Compressed: 142795
