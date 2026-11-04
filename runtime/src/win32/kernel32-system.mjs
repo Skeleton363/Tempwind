@@ -294,7 +294,11 @@ function clearTlsSlot(ctx, i) {
 
 // --- FormatMessage -----------------------------------------------------------------
 
-/** System message texts (English, as Windows prints them) for the errors the shim sets. */
+/**
+ * System message texts (English, as Windows prints them) for the errors the shim sets, from Microsoft's
+ * "System Error Codes" pages (learn.microsoft.com; source: MicrosoftDocs/win32,
+ * desktop-src/Debug/system-error-codes--*.md).
+ */
 export const SYSTEM_MESSAGES = new Map([
   [0, 'The operation completed successfully.'],
   [1, 'Incorrect function.'],
@@ -303,15 +307,31 @@ export const SYSTEM_MESSAGES = new Map([
   [5, 'Access is denied.'],
   [6, 'The handle is invalid.'],
   [8, 'Not enough memory resources are available to process this command.'],
+  [13, 'The data is invalid.'],
   [18, 'There are no more files.'],
+  [24, 'The program issued a command but the command length is incorrect.'],
   [32, 'The process cannot access the file because it is being used by another process.'],
   [38, 'Reached the end of the file.'],
+  [50, 'The request is not supported.'],
   [80, 'The file exists.'],
   [87, 'The parameter is incorrect.'],
+  [122, 'The data area passed to a system call is too small.'],
   [123, 'The filename, directory name, or volume label syntax is incorrect.'],
+  [126, 'The specified module could not be found.'],
+  [127, 'The specified procedure could not be found.'],
+  [131, 'An attempt was made to move the file pointer before the beginning of the file.'],
   [145, 'The directory is not empty.'],
   [183, 'Cannot create a file when that file already exists.'],
+  [203, 'The system could not find the environment option that was entered.'],
+  [234, 'More data is available.'],
+  [259, 'No more data is available.'],
   [267, 'The directory name is invalid.'],
+  [298, 'Too many posts were made to a semaphore.'],
+  [317, 'The system cannot find message text for message number 0x%1 in the message file for %2.'],
+  [487, 'Attempt to access invalid address.'],
+  [1004, 'Invalid flags.'],
+  [1300, 'Not all privileges or groups referenced are assigned to the caller.'],
+  [1313, 'A specified privilege does not exist.'],
 ]);
 
 const FORMAT_MESSAGE_ALLOCATE_BUFFER = 0x100, FORMAT_MESSAGE_IGNORE_INSERTS = 0x200;

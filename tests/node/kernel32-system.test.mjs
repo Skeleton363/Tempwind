@@ -5,7 +5,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vfs } from '../../runtime/src/win32/vfs.mjs';
 import { shimEnv, kernel32, PROC_BASE } from './shim-harness.mjs';
-import { quoteArg, commandLine, timeFields, fieldsToTime, SYSTEM_DLLS } from '../../runtime/src/win32/kernel32-system.mjs';
+import { quoteArg, commandLine, timeFields, fieldsToTime, SYSTEM_DLLS, SYSTEM_MESSAGES } from '../../runtime/src/win32/kernel32-system.mjs';
+import * as errors from '../../runtime/src/win32/errors.mjs';
 
 const K32 = SYSTEM_DLLS.get('kernel32.dll').base;
 const image = (extra = []) => ({ base: 0x1_4000_0000n, size: 0x10_0000n, sizeOfHeaders: 0x400n, sections: extra });
@@ -263,6 +264,16 @@ test('FormatMessageW: system texts, allocated or in a buffer; LocalFree', () => 
   assert.equal(kernel32(env, 'FormatMessageW', 0x1200, 0, 5, 0, buf, 19, 0), 0n);
   assert.equal(env.lastError(), 122);
   assert.match(env.stop('kernel32.dll', 'FormatMessageW', 0x1200, 0, 99999, 0, buf, 32, 0).error, /no message text/);
+});
+
+test('FormatMessageW: a text for every error the shim sets (errors.mjs); inserts stay as they are', () => {
+  const missing = Object.entries(errors).filter(([k, v]) => k.startsWith('ERROR_') && !SYSTEM_MESSAGES.has(v)).map(([k]) => k);
+  assert.deepEqual(missing, [], 'errors.mjs codes without a message text');
+  const env = shimEnv();
+  const buf = env.zeros(256);
+  const text = 'The system cannot find message text for message number 0x%1 in the message file for %2.\r\n';
+  assert.equal(kernel32(env, 'FormatMessageW', 0x1200, 0, 317, 0, buf, 128, 0), BigInt(text.length));
+  assert.equal(env.wstr(buf), text);
 });
 
 test('process and thread identity, process times', () => {

@@ -127,13 +127,13 @@ export class OpenFile {
   get canWrite() { return (this.access & (GENERIC_WRITE | GENERIC_ALL | FILE_WRITE_DATA | FILE_APPEND_DATA)) !== 0; }
 }
 
-/** The data access an open asks for, for share-mode checks: read, write, delete. */
 /** The attributes Windows reports: a file with none set is FILE_ATTRIBUTE_NORMAL (valid only when used alone). */
 export const reportedAttributes = (n) => n.attrs || FILE_ATTRIBUTE_NORMAL;
 
 /** Whether an open handle takes part in share checks: it has read, write or delete access. */
 const takesPartInSharing = (o) => { const a = dataAccess(o.access); return a.read || a.write || a.delete; };
 
+/** The data access an open asks for, for share-mode checks: read, write, delete. */
 function dataAccess(access) {
   return {
     read: (access & (GENERIC_READ | GENERIC_ALL | GENERIC_EXECUTE | FILE_READ_DATA)) !== 0,
