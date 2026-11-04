@@ -14,11 +14,8 @@ import { Lock, threadsOf, INFINITE } from '../threads.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
 
-export const ERROR_SUCCESS = 0;
-export const ERROR_BAD_LENGTH = 24;
-export const ERROR_INVALID_PARAMETER = 87;
-export const ERROR_INSUFFICIENT_BUFFER = 122;
-export const ERROR_INVALID_FLAGS = 1004;
+import { ERROR_SUCCESS, ERROR_BAD_LENGTH, ERROR_INVALID_PARAMETER, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FLAGS } from './errors.mjs';
+export { ERROR_SUCCESS, ERROR_BAD_LENGTH, ERROR_INVALID_PARAMETER, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FLAGS };
 
 // Memory protection constants and MEMORY_BASIC_INFORMATION (winnt.h).
 export const PAGE_NOACCESS = 0x01, PAGE_READONLY = 0x02, PAGE_READWRITE = 0x04, PAGE_WRITECOPY = 0x08;

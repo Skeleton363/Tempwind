@@ -296,7 +296,7 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
   - Each file keeps its contents and mtime, which becomes all three times. Files get 0x20, directories 0x10.
   - Host names must be valid for the file system (no `< > : " | ? * / \`, no control characters, no DOS device names such as `aux.txt`) and unique without case; otherwise `run-pe` fails at start with a usage error naming the file.
   - When the run ends, whatever the outcome, `C:\work` is written back to HOST: new and changed files with their mtimes, new directories, and deletions. A host file the guest replaced by a directory (or the reverse) is removed first, then written.
-  - Without `--dir`, `C:\work` is empty. msvcrt's file functions use the same file system.
+  - Without `--dir`, `C:\work` is empty. msvcrt's file functions use the same file system: `fopen` resolves its path as `CreateFileA` does (code page 1252, then the same lookup as `CreateFileW`); an absent file or directory gives NULL with `ENOENT` and last error 2 or 3, an existing one or an invalid name stops (reading files through msvcrt is not implemented).
 
 **Handles:**
 - **Kinds:** one table holds files, find handles, events, semaphores and file mappings, numbered from `0x100` in steps of 4.
@@ -304,7 +304,8 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - **Pseudo-handles and modules:**
   - `GetCurrentProcess` is −1;
   - a module handle is the image base for the program, or a fixed pseudo-base for a system DLL that `GetModuleHandleW`/`LoadLibrary*W` name and the reference Windows has;
-  - other DLLs fail with `ERROR_MOD_NOT_FOUND`.
+  - `LoadLibrary*W`: a bare name or a `C:\Windows\System32` path for a DLL outside the table stops, naming the DLL (the reference Windows may have it; there is no made-up failure). A path outside System32 is looked up in the file system: absent gives `ERROR_MOD_NOT_FOUND`, present stops (Phase 1 loads no guest DLLs);
+  - `GetModuleHandleW`: a table DLL that is not loaded gives `ERROR_MOD_NOT_FOUND`; a name outside the table stops, since a real process may have it loaded as a dependency; the program's own name gives the image base.
 - **`GetProcAddress`** returns a thunk, allocated on demand, for a function the shim implements. A function the shim lacks stops loudly with its name, so a run never silently takes a fallback that native Windows wouldn't take.
 - **An unknown handle** is an error stop, as before.
 
@@ -344,7 +345,7 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
   - a finite timeout blocks until the object is signaled or no other thread can run, and then returns `WAIT_TIMEOUT`, since no real time passes between turns. When several threads wait with finite timeouts, the one that has waited longest times out first.
   - `Sleep(0)` and `SwitchToThread` yield. `Sleep(n)` with n > 0 yields too, and lets time pass: with no other runnable thread, the longest finite wait times out. `Sleep(INFINITE)` waits forever.
 - **Deadlock:** when every thread waits with `INFINITE`, the run stops with an error naming each thread's wait, for example `deadlock: no thread can run; thread 0x1004 waits in WaitForSingleObject(0x104, INFINITE); thread 0x1008 waits in EnterCriticalSection(0x10002340), held by thread 0x1004; thread 0x100c is suspended (CREATE_SUSPENDED, never resumed)`. The thread that blocks last, or the thread whose end leaves no thread runnable, finds it.
-- **Limit:** blocking inside a call from the host into guest code (`callNested`, for example a `qsort` comparator) is an error stop. Waits that complete at once still work there, and a yield returns without switching.
+- **Limit:** blocking inside a call from the host into guest code (`callNested`, for example a `qsort` comparator) is an error stop. Waits that complete at once still work there, and a yield returns without switching. A finite wait that no other thread could interrupt (nothing runnable, no other finite waiter) returns `WAIT_TIMEOUT` at once, as outside `callNested`.
 - **Outputs** don't depend on the interleaving, and the schedule itself is deterministic.
 
 **Console:**
@@ -390,7 +391,7 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - **Volume `C:`:** serial number `0x54454D50`, an empty label, `NTFS` with flags `0x03E702FF` and 255-character components; 256 GiB in all and 128 GiB free, in 4 KiB clusters of 8 sectors of 512 bytes. `GetFileInformationByHandle` reports one link and the node's number as the file index. There are no 8.3 names: `cAlternateFileName` is empty and masks match long names only.
 - **Program:** `C:\tempwind\<plan file>` has attributes `0x21` (read-only, archive). The command line starts with that path.
 - **Code pages:** conversions take the ANSI code page 1252 and the OEM code page 437 (`CP_OEMCP`; `GetOEMCP` is 437, as on an en-US Windows). 7-Zip writes console text through `CP_OEMCP` after `SetFileApisToOEM`.
-- **Modules:** pseudo-bases `0x7FFA_0000_0000` + n × `0x100_0000` for `kernel32`, `kernelbase`, `ntdll`, `advapi32`, `user32`, `oleaut32` and `msvcrt` (loaded at start) and `psapi`, `version` and `shell32` (loaded by `LoadLibrary*W`, also by full path in `C:\Windows\System32`). `GetProcAddress` thunks are allocated after the import thunks, one per function; the functions 7zz asks for in the matrix are `SetDefaultDllDirectories`, `GetActiveProcessorGroupCount` and `GetActiveProcessorCount`.
+- **Modules:** pseudo-bases `0x7FFA_0000_0000` + n × `0x100_0000` for `kernel32`, `kernelbase`, `ntdll`, `advapi32`, `user32`, `oleaut32` and `msvcrt` (loaded at start) and `psapi`, `version` and `shell32` (loaded by `LoadLibrary*W`, also by full path in `C:\Windows\System32`); other names stop ("Pseudo-handles and modules"). `GetProcAddress` thunks are allocated after the import thunks, one per function; the functions 7zz asks for in the matrix are `SetDefaultDllDirectories`, `GetActiveProcessorGroupCount` and `GetActiveProcessorCount`.
 - **`GetVersion`:** the compatibility rule reads the manifest: Windows 10 values when the image's `.rsrc` holds the Windows 10 `supportedOS` GUID (7zz's does), else 6.2.9200.
 - **Memory:** `GetSystemInfo` reports processor level 6, revision 0 (the CPUID profile's family 6, model 0) and the highest application address as the guest memory size − `0x10001`. `GlobalMemoryStatusEx`: total physical memory and page file 4 GiB, available = min(free guest heap, 4 GiB), total virtual `0x7FFF_FFFE_0000`. `VirtualAlloc` also takes `MEM_COMMIT` alone (with no address it reserves too); released regions are reused first-fit and zeroed.
 - **`IsProcessorFeaturePresent`:** present means reported by the CPUID profile: 2 (CMPXCHG8B), 3 (MMX), 6 (SSE), 10 (SSE2), 12 (NX), 14 (CMPXCHG16B). PAE (9) is absent, since the profile doesn't report it.

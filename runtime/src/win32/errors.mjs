@@ -9,6 +9,7 @@ export const ERROR_INVALID_HANDLE = 6;
 export const ERROR_NOT_ENOUGH_MEMORY = 8;
 export const ERROR_INVALID_DATA = 13;
 export const ERROR_NO_MORE_FILES = 18;
+export const ERROR_BAD_LENGTH = 24;
 export const ERROR_SHARING_VIOLATION = 32;
 export const ERROR_HANDLE_EOF = 38;
 export const ERROR_NOT_SUPPORTED = 50;
@@ -27,7 +28,10 @@ export const ERROR_DIRECTORY = 267;
 export const ERROR_TOO_MANY_POSTS = 298;
 export const ERROR_MR_MID_NOT_FOUND = 317;
 export const ERROR_INVALID_ADDRESS = 487;
+export const ERROR_NO_MORE_ITEMS = 259;
+export const ERROR_INVALID_FLAGS = 1004;
 export const ERROR_NOT_ALL_ASSIGNED = 1300;
+export const ERROR_NO_SUCH_PRIVILEGE = 1313;
 
 /** A Win32 failure: the API sets `code` as the last error and returns its failure value. */
 export class Win32Error extends Error {

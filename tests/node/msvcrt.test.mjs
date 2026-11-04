@@ -87,11 +87,21 @@ test('stdio: _iob, text mode, fwrite/fputc/fputs/puts/putchar/fprintf/vfprintf/p
   assert.match(env.stop('msvcrt.dll', 'printf', env.put('%f'), 0).error, /floating-point conversion %f is not supported/);
 });
 
-test('fopen: the Phase 1 file system is empty', () => {
+test('fopen: looks in the in-memory file system; absent is ENOENT, present or invalid stops', () => {
   const env = shimEnv();
   const errno = msvcrt(env, '_errno');
+  env.vfs.createDirectory('dir');
+  env.vfs.open('here.txt', { access: 0x4000_0000, share: 0, disposition: 2 });
+  env.setLastError(0);
+  assert.equal(msvcrt(env, 'fopen', env.put('nothing.txt'), env.put('rb')), 0n);
+  assert.equal(env.mem.u32(errno), 2, 'ENOENT');
+  assert.equal(env.lastError(), 2, 'ERROR_FILE_NOT_FOUND');
   assert.equal(msvcrt(env, 'fopen', env.put('this\\file\\does\\not\\exist.txt'), env.put('rb')), 0n);
   assert.equal(env.mem.u32(errno), 2, 'ENOENT');
+  assert.equal(env.lastError(), 3, 'ERROR_PATH_NOT_FOUND');
+  assert.match(env.stop('msvcrt.dll', 'fopen', env.put('HERE.txt'), env.put('r')).error, /reading files through msvcrt is not implemented/);
+  assert.match(env.stop('msvcrt.dll', 'fopen', env.put('dir'), env.put('r')).error, /reading files through msvcrt is not implemented/);
+  assert.match(env.stop('msvcrt.dll', 'fopen', env.put('bad?name'), env.put('r')).error, /invalid/);
   assert.match(env.stop('msvcrt.dll', 'fopen', env.put('out.txt'), env.put('w')).error, /creating or writing files is not supported/);
   assert.match(env.stop('msvcrt.dll', 'fopen', env.put('x'), env.put('q')).error, /mode "q" is not supported/);
 });

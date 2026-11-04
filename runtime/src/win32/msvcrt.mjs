@@ -7,6 +7,9 @@
 import { CrtHeap, HeapError } from './crtheap.mjs';
 import { formatPrintf, FormatError } from './printf.mjs';
 import { addHandle } from './handles.mjs';
+import { Win32Error, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND } from './errors.mjs';
+import { VfsStop } from './vfs.mjs';
+import { CP1252_TO_UNICODE } from './cp1252.mjs';
 import { Lock, threadsOf } from '../threads.mjs';
 
 const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
@@ -653,7 +656,8 @@ export default {
     return EOF;
   }),
 
-  // FILE *fopen(const char *path, const char *mode): Phase 1 has an empty file system.
+  // FILE *fopen(const char *path, const char *mode): the path is resolved as CreateFileA does (code page 1252, then
+  // the in-memory file system). Absent files give NULL with ENOENT; reading an existing file is not implemented.
   fopen: fn(2, (ctx) => {
     const path = ctx.arg(0), modeP = ctx.arg(1);
     if (path === 0n || modeP === 0n) ctx.fail('path or mode is NULL');
@@ -663,8 +667,19 @@ export default {
     if (!m) ctx.fail(`mode "${mode}" is not supported`);
     if (m[1] !== 'r' || m[2] || m[3].includes('+')) ctx.fail(`fopen("${name}", "${mode}"): creating or writing files is not supported`);
     if (!name) ctx.fail('fopen with an empty path');
-    setErrno(ctx, ENOENT); // no file exists
-    return 0n;
+    let wide = '';
+    for (const b of ctx.readCString(path)) wide += String.fromCharCode(CP1252_TO_UNICODE[b]);
+    try {
+      ctx.vfs.stat(wide);
+    } catch (e) {
+      if (e instanceof VfsStop) ctx.fail(e.message);
+      if (!(e instanceof Win32Error)) throw e;
+      if (e.code !== ERROR_FILE_NOT_FOUND && e.code !== ERROR_PATH_NOT_FOUND) ctx.fail(`fopen("${name}"): invalid name (${e.message})`);
+      ctx.setLastError(e.code);
+      setErrno(ctx, ENOENT);
+      return 0n;
+    }
+    ctx.fail(`fopen("${name}", "${mode}"): reading files through msvcrt is not implemented`);
   }),
 
   fwrite: fn(4, (ctx) => {

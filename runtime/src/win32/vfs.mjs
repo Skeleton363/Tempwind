@@ -128,6 +128,9 @@ export class OpenFile {
 }
 
 /** The data access an open asks for, for share-mode checks: read, write, delete. */
+/** Whether an open handle takes part in share checks: it has read, write or delete access. */
+const takesPartInSharing = (o) => { const a = dataAccess(o.access); return a.read || a.write || a.delete; };
+
 function dataAccess(access) {
   return {
     read: (access & (GENERIC_READ | GENERIC_ALL | GENERIC_EXECUTE | FILE_READ_DATA)) !== 0,
@@ -331,7 +334,7 @@ export class Vfs {
     if (r.trailing) throw new Win32Error(ERROR_INVALID_NAME, `${path}: a file with a trailing backslash`);
     if (n.attrs & FILE_ATTRIBUTE_READONLY) throw new Win32Error(ERROR_ACCESS_DENIED, `${path} is read-only`);
     for (const o of n.opens) {
-      if (!(o.share & FILE_SHARE_DELETE)) throw new Win32Error(ERROR_SHARING_VIOLATION, `${path} is open`);
+      if (takesPartInSharing(o) && !(o.share & FILE_SHARE_DELETE)) throw new Win32Error(ERROR_SHARING_VIOLATION, `${path} is open`);
     }
     if (n.opens.size) throw new VfsStop(`DeleteFileW(${path}) on a file with open handles is not supported`);
     this.unlink(n);
@@ -343,7 +346,7 @@ export class Vfs {
     if (!src.node) throw new Win32Error(ERROR_FILE_NOT_FOUND, `${from} not found`);
     const n = src.node;
     if (n === this.root) throw new Win32Error(ERROR_ACCESS_DENIED, 'the root directory');
-    for (const o of n.opens) if (!(o.share & FILE_SHARE_DELETE)) throw new Win32Error(ERROR_SHARING_VIOLATION, `${from} is open`);
+    for (const o of n.opens) if (takesPartInSharing(o) && !(o.share & FILE_SHARE_DELETE)) throw new Win32Error(ERROR_SHARING_VIOLATION, `${from} is open`);
     if (n.isDir && this.isCwdOrAbove(n)) throw new Win32Error(ERROR_SHARING_VIOLATION, `${from} is in use`);
     const dst = this.locate(to);
     for (let p = dst.parent; p; p = p.parent) {
@@ -431,6 +434,7 @@ export class Vfs {
     // An open without read, write or delete access takes no part in sharing.
     if (!want.read && !want.write && !want.delete) return;
     for (const o of n.opens) {
+      if (!takesPartInSharing(o)) continue;
       const have = dataAccess(o.access);
       const conflict = (want.read && !(o.share & FILE_SHARE_READ)) || (want.write && !(o.share & FILE_SHARE_WRITE))
         || (want.delete && !(o.share & FILE_SHARE_DELETE)) || (have.read && !(share & FILE_SHARE_READ))

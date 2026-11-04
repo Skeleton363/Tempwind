@@ -8,12 +8,13 @@
 import { INVALID_HANDLE_VALUE, PROCESS_ID, OS_VERSION } from '../abi.mjs';
 import { threadsOf, INFINITE, WAIT_FAILED } from '../threads.mjs';
 import {
-  Win32Error, ERROR_INVALID_PARAMETER, ERROR_INVALID_HANDLE, ERROR_FILE_NOT_FOUND, ERROR_MOD_NOT_FOUND,
+  Win32Error, ERROR_INVALID_PARAMETER, ERROR_INVALID_HANDLE, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_MOD_NOT_FOUND,
   ERROR_INSUFFICIENT_BUFFER, ERROR_TOO_MANY_POSTS, ERROR_INVALID_ADDRESS, ERROR_NOT_ENOUGH_MEMORY,
 } from './errors.mjs';
 import { addHandle, getHandle, removeHandle, isStdHandle, CURRENT_PROCESS, CURRENT_THREAD } from './handles.mjs';
 import { hex, fn, wstr, utf16, copyOut, writeWString, win32 } from './util.mjs';
 import { crt } from './msvcrt.mjs';
+import { VfsStop } from './vfs.mjs';
 import { TEB_TLS_SLOTS, TLS_MINIMUM_AVAILABLE } from './kernel32.mjs';
 
 // --- the machine profile -----------------------------------------------------
@@ -101,9 +102,13 @@ function getModuleHandle(ctx, name) {
   const dll = dllName(name);
   const prog = ctx.programPath;
   if (name.toLowerCase() === prog.toLowerCase() || dll === prog.slice(prog.lastIndexOf('\\') + 1).toLowerCase()) return ctx.image.base;
-  if (dll && SYSTEM_DLLS.has(dll) && sys(ctx).loaded.has(dll)) return SYSTEM_DLLS.get(dll).base;
-  ctx.setLastError(ERROR_MOD_NOT_FOUND);
-  return 0n;
+  if (dll && SYSTEM_DLLS.has(dll)) {
+    if (sys(ctx).loaded.has(dll)) return SYSTEM_DLLS.get(dll).base;
+    ctx.setLastError(ERROR_MOD_NOT_FOUND);
+    return 0n;
+  }
+  // A real process may have it loaded as a dependency of another DLL.
+  ctx.fail(`GetModuleHandle(${name}): module not in the shim's table of system DLLs; the reference Windows may have it loaded`);
 }
 
 function loadLibrary(ctx, name) {
@@ -112,8 +117,20 @@ function loadLibrary(ctx, name) {
     sys(ctx).loaded.add(dll);
     return SYSTEM_DLLS.get(dll).base;
   }
-  ctx.setLastError(ERROR_MOD_NOT_FOUND);
-  return 0n;
+  if (dll) ctx.fail(`LoadLibrary(${name}): ${dll} is not in the shim's table of system DLLs; the reference Windows may have it`);
+  // A path outside System32: Phase 1 loads no guest DLLs.
+  try {
+    ctx.vfs.stat(name);
+  } catch (e) {
+    if (e instanceof VfsStop) ctx.fail(e.message);
+    if (!(e instanceof Win32Error)) throw e;
+    if (e.code === ERROR_FILE_NOT_FOUND || e.code === ERROR_PATH_NOT_FOUND) {
+      ctx.setLastError(ERROR_MOD_NOT_FOUND);
+      return 0n;
+    }
+    ctx.fail(`LoadLibrary(${name}): ${e.message}`);
+  }
+  ctx.fail(`LoadLibrary(${name}): loading a DLL from the file system is not supported (Phase 1 loads no guest DLLs)`);
 }
 
 /** GetVersion's compatibility rule: Windows 10 values only for a manifest that declares Windows 10. */

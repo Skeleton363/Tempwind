@@ -5,14 +5,13 @@
 
 import { CURRENT_PROCESS, addHandle, getHandle } from './handles.mjs';
 import { hex, fn, wstr } from './util.mjs';
-import { ERROR_SUCCESS, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_NOT_ALL_ASSIGNED, ERROR_INVALID_HANDLE } from './errors.mjs';
+import { ERROR_SUCCESS, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_NOT_ALL_ASSIGNED, ERROR_INVALID_HANDLE, ERROR_NO_MORE_ITEMS, ERROR_NO_SUCH_PRIVILEGE, ERROR_ACCESS_DENIED } from './errors.mjs';
 
 /** The predefined registry keys (HKEY_CLASSES_ROOT .. HKEY_CURRENT_USER_LOCAL_SETTINGS). */
 const PREDEFINED_KEYS = new Map([
   [0x8000_0000n, 'HKEY_CLASSES_ROOT'], [0x8000_0001n, 'HKEY_CURRENT_USER'], [0x8000_0002n, 'HKEY_LOCAL_MACHINE'],
   [0x8000_0003n, 'HKEY_USERS'], [0x8000_0004n, 'HKEY_PERFORMANCE_DATA'], [0x8000_0005n, 'HKEY_CURRENT_CONFIG'],
 ]);
-const ERROR_NO_MORE_ITEMS = 259;
 
 /** The privilege names and their LUIDs (winnt.h SE_*_PRIVILEGE). */
 export const PRIVILEGES = [
@@ -77,7 +76,7 @@ export default {
     if (ctx.arg(0) !== 0n) ctx.fail('lpSystemName must be NULL (the local system)');
     const name = wstr(ctx, ctx.arg(1), 'lpName').toLowerCase();
     const luid = PRIVILEGES.findIndex((p) => p && p.toLowerCase() === name);
-    if (luid < 0) { ctx.setLastError(1313); return 0; } // ERROR_NO_SUCH_PRIVILEGE
+    if (luid < 0) { ctx.setLastError(ERROR_NO_SUCH_PRIVILEGE); return 0; }
     ctx.write64(ctx.arg(2), BigInt(luid));
     return 1;
   }),
@@ -85,7 +84,7 @@ export default {
   //   DWORD BufferLength, PTOKEN_PRIVILEGES PreviousState, PDWORD ReturnLength)
   AdjustTokenPrivileges: fn(6, (ctx) => {
     const tok = getHandle(ctx, ctx.arg(0), 'TokenHandle', 'token');
-    if (!(tok.access & TOKEN_ADJUST_PRIVILEGES)) { ctx.setLastError(5); return 0; }
+    if (!(tok.access & TOKEN_ADJUST_PRIVILEGES)) { ctx.setLastError(ERROR_ACCESS_DENIED); return 0; }
     if (ctx.arg32(1) !== 0) ctx.fail('DisableAllPrivileges is not supported');
     if (ctx.arg(4) !== 0n || ctx.arg(5) !== 0n) ctx.fail('PreviousState is not supported');
     const p = ctx.arg(2);

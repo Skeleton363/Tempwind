@@ -306,3 +306,22 @@ test('directory handles: FILE_FLAG_BACKUP_SEMANTICS, and SetFileTime on them', (
   assert.equal(read(env, h, 1).r, 0n);
   assert.equal(env.lastError(), 1, 'reading a directory');
 });
+
+test('an attribute-only open with share 0 takes no part in share checks; delete and rename then stop', () => {
+  const env = shimEnv();
+  kernel32(env, 'CloseHandle', create(env, 'f.txt'));
+  const attr = create(env, 'f.txt', 0x80 /* FILE_READ_ATTRIBUTES */, OPEN_EXISTING, 0);
+  assert.notEqual(attr, INVALID);
+  const data = create(env, 'f.txt', GENERIC_READ | GENERIC_WRITE, OPEN_EXISTING, 0);
+  assert.notEqual(data, INVALID, 'a data open succeeds beside the attribute-only one');
+  kernel32(env, 'CloseHandle', data);
+  assert.match(env.stop('kernel32.dll', 'DeleteFileW', env.putW('f.txt')).error, /open handles/);
+  assert.match(env.stop('kernel32.dll', 'MoveFileW', env.putW('f.txt'), env.putW('g.txt')).error, /open handles/);
+  // A data open with share 0 still blocks both.
+  const d2 = create(env, 'f.txt', GENERIC_READ, OPEN_EXISTING, 0);
+  assert.equal(kernel32(env, 'DeleteFileW', env.putW('f.txt')), 0n);
+  assert.equal(env.lastError(), 32);
+  assert.equal(kernel32(env, 'MoveFileW', env.putW('f.txt'), env.putW('g.txt')), 0n);
+  assert.equal(env.lastError(), 32);
+  kernel32(env, 'CloseHandle', d2);
+});

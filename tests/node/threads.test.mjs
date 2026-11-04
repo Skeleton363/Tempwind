@@ -481,3 +481,30 @@ test('a wait that would block inside a call from the host into guest code stops;
   const p = await load(scripts);
   await assert.rejects(p.start(), new RegExp(`kernel32.dll!EnterCriticalSection: EnterCriticalSection\\(${h(cs)}\\) would block inside a call from the host into guest code`));
 });
+
+test('a finite wait inside a call from the host into guest code times out at once when nothing else could run', async () => {
+  const seen = [];
+  let ev;
+  const comparator = function* () {
+    seen.push(yield k32('WaitForSingleObject', ev, 50));
+    return 0;
+  };
+  const scripts = new Map([
+    [1n, function* (s) {
+      ev = yield k32('CreateEventW', 0, 1, 0, 0); // manual-reset, not signaled
+      const base = s.p.guestHeap.alloc(16n);
+      scripts.set(base, comparator);
+      scripts.set(base + 8n, comparator);
+      yield crt('qsort', base, 2, 8, TEXT);
+      assert.deepEqual(seen, [258n], 'WAIT_TIMEOUT, as outside a nested call');
+      // Another thread is waiting with a timeout: the wait would switch to it, so it stops.
+      yield start(91);
+      yield k32('Sleep', 0);
+      yield crt('qsort', base, 2, 8, TEXT);
+      throw new Error('not reached');
+    }],
+    [91n, function* () { yield k32('WaitForSingleObject', ev, 1000); }],
+  ]);
+  const p = await load(scripts);
+  await assert.rejects(p.start(), /WaitForSingleObject.*would block inside a call from the host into guest code/);
+});

@@ -219,11 +219,14 @@ export class Threads {
   /**
    * Blocks the calling thread until `wait` is satisfied: a Promise of the
    * call's value, or the value itself if a finite wait times out at once.
-   * Stops on a deadlock, inside a call from the host into guest code, and
-   * without JSPI.
+   * Stops on a deadlock, without JSPI, and inside a call from the host into
+   * guest code unless a finite wait times out at once there.
    */
   block(ctx, t, wait) {
     if (this.nesting() > 0) {
+      // A finite wait that no other thread could interrupt times out at once, as it does outside a nested call.
+      const other = this.queue.length > 0 || this.threads.some((o) => o !== t && o.status === 'blocked' && o.wait.finite);
+      if (wait.finite && !wait.lock && !other) return WAIT_TIMEOUT;
       ctx.fail(`${wait.label} would block inside a call from the host into guest code, which cannot suspend (runtime.md, "Guest threads")`);
     }
     t.wait = { ...wait, seq: this.seq++ };

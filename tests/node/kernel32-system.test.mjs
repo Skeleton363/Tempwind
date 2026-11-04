@@ -21,9 +21,19 @@ test('module handles: the program, loaded system DLLs, LoadLibrary, unknown DLLs
   assert.equal(psapi, SYSTEM_DLLS.get('psapi.dll').base);
   assert.equal(kernel32(env, 'GetModuleHandleW', env.putW('psapi.dll')), psapi);
   assert.equal(kernel32(env, 'LoadLibraryExW', env.putW('C:\\Windows\\System32\\version.dll'), 0, 8), SYSTEM_DLLS.get('version.dll').base);
+  // A path outside System32 is looked up in the file system: absent is ERROR_MOD_NOT_FOUND, present stops.
   assert.equal(kernel32(env, 'LoadLibraryW', env.putW('C:\\other\\version.dll')), 0n);
   assert.equal(env.lastError(), 126);
-  assert.equal(kernel32(env, 'LoadLibraryW', env.putW('nosuch.dll')), 0n);
+  env.vfs.open('C:\\work\\mine.dll', { access: 0x4000_0000, share: 0, disposition: 2 });
+  assert.equal(kernel32(env, 'LoadLibraryW', env.putW('C:\\work\\nope.dll')), 0n);
+  assert.equal(env.lastError(), 126);
+  assert.match(env.stop('kernel32.dll', 'LoadLibraryW', env.putW('C:\\work\\mine.dll')).error, /loading a DLL from the file system/);
+  // A bare name or System32 path outside the table stops, naming the DLL; no made-up failure.
+  assert.match(env.stop('kernel32.dll', 'LoadLibraryW', env.putW('nosuch.dll')).error, /nosuch\.dll/);
+  assert.match(env.stop('kernel32.dll', 'LoadLibraryExW', env.putW('C:\\Windows\\System32\\other.dll'), 0, 0).error, /other\.dll/);
+  // GetModuleHandleW: outside the table stops; a table DLL that is not loaded fails.
+  assert.match(env.stop('kernel32.dll', 'GetModuleHandleW', env.putW('nosuch.dll')).error, /nosuch\.dll/);
+  assert.equal(kernel32(env, 'GetModuleHandleW', env.putW('shell32.dll')), 0n);
   assert.equal(env.lastError(), 126);
   assert.equal(kernel32(env, 'FreeLibrary', psapi), 1n);
   assert.match(env.stop('kernel32.dll', 'FreeLibrary', 0x1234n).error, /unknown module handle/);
