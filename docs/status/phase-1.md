@@ -1,6 +1,6 @@
 # Phase 1 status: Translator
 
-**M1-M4 are done (M4, SSE floating point, x87 and CoreMark: PR #6, merged); M5 (7-Zip exactly like native) is in progress.** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**M1-M5 are done. M4 (SSE floating point, x87 and CoreMark) merged as PR #6; M5 (7-Zip exactly like native) is in its draft PR, awaiting review. Next is M6, speed and close-out.** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
 - **Session 1, continued (2026-10-23/24):**
@@ -9,6 +9,9 @@
   - paused once and resumed.
 - **Session 1, continued (2026-10-24/30):** M3 with the oracle, translator and CRT-runtime agents (deep-worker each) and the builder, paused twice to stay within the owner's weekly usage.
 - **Session 1, continued (2026-10-30/31):** M4 with the soft-float, fixtures, SSE-translator and x87-translator agents (deep-worker each) and the builder, paused twice for the owner's usage limits and once by a worker restart.
+- **Session 1, continued (2026-10-30 to 11-04):**
+  - M5 with the shim and the guest-threads agents (deep-worker each) and the builder (the matrix, the workflow changes, the review fixes);
+  - paused for the owner's usage limits, and resumed after a session restart.
 
 ## Lessons for future sessions
 
@@ -198,23 +201,6 @@ Phase 0's lessons still hold. New ones from M1:
   - fnstenv stores ES and B as they were, then clears them.
 - **Neighbouring x87 forms come along:** the x87 lowering covers forms that share code with the scope but have no fixtures yet (fsub/fsubr, the fi* arithmetic, fst/fist without pop, fcom/fucom/fcompp, fld1, fstcw/fstsw/fclex/fstenv).
 
-## M5 progress (paused 2026-10-30)
-
-**Committed:**
-- **Contracts** (`4562517`): the file system and shim spec in `runtime.md`, the matrix spec in `tests/sevenzip/README.md`, and `int1` excluded, so `census --check` passes on all programs.
-- **The matrix** (`f62e516`, `e78ebc5`, `bbb608e`):
-  - 138 steps in 40 groups, covering 7z, zip, tar, gz, bz2 and xz, the hashes, and AES round trips;
-  - `expected/` (472 files, 5.7 MB), from two identical Wine runs;
-  - CI: windows-x64 runs the native matrix and linux-x64 the translated one, both gating, and the census includes 7zz.exe;
-  - `7z b 2 -mmt1 -md18` in `bench.yml`.
-- **The shim, in progress** (WIP `57ff6b9`, `82c37ec`): the file system and its host mount, handles, kernel32 files and system calls, advapi32, oleaut32, user32, cp437 and msvcrt additions. Agent S was stopped mid-work; at the stop it had a 7-Zip command completing and was comparing its output with Wine.
-- **`bench-data`** exists, with the first CoreMark line (on an AMD EPYC 9V45 runner).
-
-**On resume:**
-1. **Read the result of CI run 41138603006** (a `workflow_dispatch` of `ci.yml` at `bbb608e`): does the windows-x64 native matrix match `expected/`? Wine may differ from Windows in zip's NTFS extra field or the file attributes. If it differs, correct `expected/` from the run's uploaded results before the shim targets it. The translated linux step fails until the shim is done.
-2. **Resume agent S** (or a fresh deep-worker from the committed docs and code) until `matrix.mjs --mode translated` matches `expected/`.
-3. **Integration:** measurements, this note, then PR "[Phase 1] 7-Zip exactly like native" with CI green.
-
 ## Decisions taken in M5
 
 - **Gap-only forms (the M5 gate):**
@@ -230,8 +216,8 @@ Phase 0's lessons still hold. New ones from M1:
 - **An in-memory file system with Win32 and NTFS semantics** (`runtime.md`, "Files, handles and the 7-Zip shim (M5)"). `run-pe --dir` loads a host directory as `C:\work` and writes it back. It ports to browsers (OPFS) later.
 - **The shim stays strict:**
   - **Exceptions:** stop loudly (Phase 4).
-  - **Thread creation:** stops loudly (Phase 1 has one thread, `-mmt1`).
-  - **`GetProcAddress`:** stops on a function the shim lacks rather than returning NULL, so no run takes a fallback that native Windows wouldn't.
+  - **Threads:** cooperative, see below. (The first plan stopped at thread creation; 7-Zip needs threads even with `-mmt1`.)
+  - **`GetProcAddress`:** stops on a function the shim lacks rather than returning NULL, so no run takes a fallback that native Windows wouldn't. `LoadLibrary*W` and `GetModuleHandleW` follow the same rule for a system DLL outside the shim's table (from the spec review).
   - **Machine profile:** fixed and documented: 1 processor, UTC, an empty registry and environment, redirected stdout.
 - **Cooperative guest threads with JSPI, in M5** (your decision, 2026-10-31). 7-Zip always runs a second thread for 7z archives with BCJ, BCJ2 or AES, and for xz, whatever `-mmt` says. `-mtf=off` makes native 7-Zip fail, so no switch avoids it. So guest threads take turns on one JS thread, suspending their wasm stacks at blocking calls through JSPI (`runtime.md`, "Guest threads (M5)").
   - It keeps all 138 matrix steps, and lets common real-world archives extract.
@@ -240,6 +226,13 @@ Phase 0's lessons still hold. New ones from M1:
   - deterministic inputs and switches;
   - expected outputs committed from a native run, with real Windows gating them in CI and Node gating the translated run;
   - encryption is checked by round trip only, since its salt and IV are random.
+- **`expected/` comes from Wine, and Windows confirms it.** Two Wine runs gave identical results (472 files, 5.7 MB). The native matrix on windows-x64 (CI run 41138603006) matched them byte for byte, so no correction was needed.
+- **Values the spec left open are fixed in `runtime.md`** ("Values the implementation fixes"): the volume, code pages 1252 and 437, module pseudo-bases, `GetVersion` by manifest, memory, processor features and `FormatMessageW`.
+- **`RtlGetVersion` reports the real version** (10.0.26100, a workstation), which `7z b` prints; `GetVersion` keeps the manifest rule.
+- **Workflow:**
+  - **Research** (your decision, 2026-10-31): a research pass over official and community sources at the start of each milestone, and a digest every two weeks (the "Workflow research digest" routine), logged in `docs/dev/research.md`.
+  - **Structure:** fixed rules in `.claude/agents/`, path-scoped rules in `.claude/rules/`, procedures as skills (`/pause`, `milestone-close`, `diverge`), deny rules in `.claude/settings.json`, and `ARCHITECTURE.md` as the map. `CLAUDE.md` keeps only what every session needs.
+- **Close-out review in two stages** (`milestone-close`): a code review (7 correctness findings, all fixed in `5709b87`), then a spec-compliance review (6 findings fixed, 6 untested promises given tests).
 
 ## What works
 
@@ -271,6 +264,13 @@ Phase 0's lessons still hold. New ones from M1:
 | **hello.exe, `l2_float.exe` and CoreMark** translated | Node: exact CRLF output and exit codes (hello 0, l2_float 23 with 401 lines); CoreMark's run type and CRCs as in `smoke.sh`. All programs translate with 0 unsupported sites. |
 | **Runtime for M4:** the `fp` namespace in every host, `run-pe --fp` and `-- ARGS`, `QueryPerformanceCounter`/`Frequency`, the thread's FP state | Node tests (152 in all). |
 | **CoreMark benchmark** (`tests/bench/coremark.mjs`, `bench.yml`) | Validated runs translated and under wine64 (measurements below). |
+
+| **In-memory file system** (`runtime/src/win32/vfs.mjs`): Win32 and NTFS semantics (names without case, share modes, attributes, times, find masks); `run-pe --dir` mounts a host directory as `C:\work` and writes it back at exit | `vfs.test.mjs`, `kernel32-files.test.mjs` and `run-pe.test.mjs`. |
+| **The 7-Zip shim:** handles, kernel32 files and system calls, advapi32, oleaut32, user32, msvcrt additions, ntdll's `RtlGetVersion`, code pages 1252 and 437 | `shim-m5.test.mjs`, `kernel32-system.test.mjs`, `msvcrt.test.mjs` and `ntdll.test.mjs`. |
+| **Cooperative guest threads** (`runtime/src/threads.mjs`, JSPI):<br>• `CreateThread` and `_beginthreadex`<br>• events, semaphores and critical sections<br>• waits with timeouts<br>• TLS and errno per thread<br>• a deterministic round-robin<br>• deadlock detection | `threads.test.mjs`, on translated driver code. The matrix's 7z steps with BCJ, BCJ2 or AES and its xz steps need a second thread. |
+| **The 7-Zip command matrix** (`tests/sevenzip/`): 138 steps in 40 groups (7z, zip, tar, gz, bz2, xz, the hashes, AES round trips) | Translated in Node: 138/138 identical to `expected/` (output, exit codes and every file written). Native on windows-x64 in CI: identical too. |
+| **`7z b`** (`tests/bench/sevenzip.mjs`, `bench.yml`) | Runs to its "Tot:" line translated and under wine64 (measurements below). |
+| **The census gate on every program** | `census --check`: 614 of 614 forms, 7zz.exe included. CI gates it. |
 
 ### Test summary (local, M4, Node 24.22.0)
 
@@ -440,8 +440,8 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 ## Known issues and risks
 
 - **Calls are expensive** (10-20× native) until M6 syncs only live registers at boundaries.
-- **22 forms occur only in gap sweeps** (likely data read as code: `std`, `cmc`, `int1`, `loop`, …). The rule as decided counts them; the M5 gate decides whether to drop them.
-- **`testkit census --check` on 7zz.exe** misses only the gap-only `int1`; the M5 gate decides on gap-only forms. CI gates basic.exe, coremark.exe, hello.exe and the L2 programs, which pass.
+- **Guest threads take turns; they don't run in parallel** (Phase 4). A thread switches only at a blocking call, so a thread that spins on memory without one never lets the others run. 7-Zip doesn't do that.
+- **The research digest has not reached the repository yet.** Its routine session starts without a checkout, and both runs so far (2026-11-01 and a test on 2026-11-04) stopped there. The owner selects Skeleton363/Tempwind for the "Workflow research digest" routine on claude.ai; until then, research happens at each milestone's start.
 - **Floating point is slow:** about 7× native in a dot product (XMM in the state block, an MXCSR load and operand tests per operation). x87 code is large (400-600 wasm bytes per instruction). Both are M6's.
 - **Unmasked floating-point exceptions** exit with `EXIT_UNSUPPORTED` until Windows exceptions (Phase 4).
 - **Checked only on Intel so far:**
@@ -455,28 +455,32 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
   - `strerror` is verified only for EACCES, ENOENT, EINVAL and EEXIST;
   - best-fit character mapping is missing;
   - `VirtualQuery` works only inside the image;
-  - TLS callbacks don't get DLL_PROCESS_DETACH at exit.
+  - TLS callbacks don't get DLL_PROCESS_DETACH at exit;
+  - msvcrt's `fopen` doesn't open existing files, and `MapViewOfFile` isn't implemented;
+  - deleting or renaming a file that still has open handles isn't supported;
+  - `LoadLibrary*W` loads only the DLLs in the shim's table, and no guest DLLs;
+  - `FormatMessageW` has system messages only, without inserts.
 
   Each of these stops loudly.
 - **7zz.exe's module is large under Cranelift:** 27.6 MB after M4. M6 narrows the state syncs at boundaries.
 - **5 of 138 jump tables in 7zz.exe aren't recovered:** 4 load the table base earlier in the function, and 1 sits in a handler nothing reaches. Run-time translation covers them.
 - **The run-time translator compiles on first use** (about 24 ms). Compiling it while the image loads would hide that.
 - **Runtime limits in Phase 1:**
-  - one thread;
   - images only at their preferred base (no relocation);
   - no SEH or exceptions;
   - KUSER_SHARED_DATA is zeroed;
-  - shim v0 has three functions.
+  - the shim covers what the target programs import and call, nothing more.
 - **wasmtime loop timings depend on code placement** on this VM. Benchmark baselines in M4/M5 should come from V8 and same-machine native runs.
 - **apt installs in CI were flaky:** the Azure Ubuntu mirror trickled at about 40 KB/s, and 3 targets runs hung or timed out. `scripts/apt-install.sh` now limits each attempt and retries without that mirror; a mock test covered both the stall and the failure path.
 - **One release publish failed with a transient 403.** The `targets` run of `6d4536c` was refused by the GitHub releases API with "Resource not accessible by integration", although its token had `contents: write`. `hello-7613c87` published 38 s later, and the same step published `targets-7613c87` on the next commit. If it recurs, re-run the job once, or retry the publish step.
-- **Phase 0's translator gaps remain until M3:** `lock` and atomics, FS/GS, the 67h prefix, precise faults.
 
-## Next step: M5 (7-Zip exactly like native)
+## Next step: M6 (speed and close-out)
 
-`docs/plan.md`: the command matrix (formats, methods, `t`, `l`, `x`, `h`) matches native Windows byte for byte, every in-scope form has fixtures with replay at 100 %, and `7z b` is tracked.
+`docs/plan.md`: register-sync and flag liveness, loop structuring and a call fast path; the cost of the guest-memory checks is measured on real code. Phase 1 closes with M6: the fixtures pass, 7-Zip matches native, and CoreMark and `7z b` are tracked in CI.
 
-1. **The gap-only forms:** decide whether the 22 forms seen only in gap sweeps (`int1`, `std`, `cmc`, `loop`, …) stay in scope. That closes `census --check` on 7zz.exe.
-2. **The shim for 7zz.exe's imports** (189 functions: kernel32 113, msvcrt 54, advapi32 14, oleaut32 6, user32 2), with an in-memory file system for archives and trees. It stays strict, following Microsoft's documentation and Wine's source.
-3. **The command matrix:** native outputs from windows-2025 in CI, translated runs in Node, compared byte for byte, with fixed timestamps so archives are deterministic.
-4. **`7zz b -mmt1`** in `bench.yml` next to CoreMark.
+1. **Research pass** (`docs/dev/research.md`): code generation in binary translators that target WebAssembly, V8's tiers and memory64 bounds checks.
+2. **Baselines:** CoreMark at 0.30 of native and `7z b` at the ratio above; calls cost 10-20x native.
+3. **Liveness:** at calls, returns and host calls, store and reload only the live registers and flags, instead of the whole state.
+4. **Loop structuring and the call fast path**, measured against the baselines after each step.
+5. **The guest-memory checks:** measure what they cost on CoreMark and `7z b`.
+6. **Close Phase 1:** a summary in this note, then plan Phase 2.
