@@ -12,7 +12,7 @@ import {
 } from './errors.mjs';
 import {
   FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS, VOLUME_SERIAL, VOLUME_TOTAL_BYTES, VOLUME_FREE_BYTES,
-  CLUSTER_BYTES, nameKey, FILE_WRITE_ATTRIBUTES, GENERIC_WRITE, GENERIC_ALL,
+  CLUSTER_BYTES, reportedAttributes, nameKey, FILE_WRITE_ATTRIBUTES, GENERIC_WRITE, GENERIC_ALL,
 } from './vfs.mjs';
 import { addHandle, getHandle, handleTable } from './handles.mjs';
 import { hex, fn, wstr, utf16, copyOut, win32, writeWString } from './util.mjs';
@@ -136,7 +136,7 @@ function matchPart(name, n, mask, m) {
 function findData(name, node) {
   const b = new Uint8Array(WIN32_FIND_DATAW_SIZE);
   const dv = new DataView(b.buffer);
-  dv.setUint32(0, node.attrs, true);
+  dv.setUint32(0, reportedAttributes(node), true);
   dv.setBigUint64(4, node.ctime, true);
   dv.setBigUint64(12, node.atime, true);
   dv.setBigUint64(20, node.mtime, true);
@@ -331,7 +331,7 @@ export default {
     const b = new Uint8Array(BY_HANDLE_FILE_INFORMATION_SIZE);
     const dv = new DataView(b.buffer);
     const size = n.isDir ? 0 : n.size;
-    dv.setUint32(0, n.attrs, true);
+    dv.setUint32(0, reportedAttributes(n), true);
     dv.setBigUint64(4, n.ctime, true);
     dv.setBigUint64(12, n.atime, true);
     dv.setBigUint64(20, n.mtime, true);
@@ -349,7 +349,7 @@ export default {
   GetFileAttributesW: fn(1, (ctx) => win32(ctx, INVALID_FILE_ATTRIBUTES, () => {
     const p = ctx.arg(0);
     if (p === 0n) ctx.fail('lpFileName is NULL');
-    return ctx.vfs.stat(wstr(ctx, p)).attrs;
+    return reportedAttributes(ctx.vfs.stat(wstr(ctx, p)));
   })),
 
   // BOOL SetFileAttributesW(LPCWSTR lpFileName, DWORD dwFileAttributes)

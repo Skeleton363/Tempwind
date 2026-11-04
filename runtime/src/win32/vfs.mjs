@@ -128,6 +128,9 @@ export class OpenFile {
 }
 
 /** The data access an open asks for, for share-mode checks: read, write, delete. */
+/** The attributes Windows reports: a file with none set is FILE_ATTRIBUTE_NORMAL (valid only when used alone). */
+export const reportedAttributes = (n) => n.attrs || FILE_ATTRIBUTE_NORMAL;
+
 /** Whether an open handle takes part in share checks: it has read, write or delete access. */
 const takesPartInSharing = (o) => { const a = dataAccess(o.access); return a.read || a.write || a.delete; };
 

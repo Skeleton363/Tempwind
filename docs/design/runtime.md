@@ -399,6 +399,7 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - **Write-back:** times reach the host through `utimes` in seconds, exact for whole seconds and to about 0.25 µs otherwise.
 
 **Windows details the implementation follows** (checked against Wine 11 and Microsoft's documentation):
+- A file with no attributes set reports `FILE_ATTRIBUTE_NORMAL` (0x80) from `GetFileAttributesW`, `FindFirstFileW`/`FindNextFileW` and `GetFileInformationByHandle`, as NTFS does (the value is valid only when used alone). `SetFileAttributesW` with 0 or 0x80 clears the set; the shim stores the set without the NORMAL bit.
 - An open with no read, write or delete access (attributes only) takes no part in share checks.
 - `RemoveDirectoryW` on the current directory or an ancestor fails with `ERROR_SHARING_VIOLATION` before the emptiness check.
 - `FindFirstFileW` on `file\*` fails with `ERROR_DIRECTORY`; an empty mask (`dir\`) with `ERROR_FILE_NOT_FOUND`; a missing directory with `ERROR_PATH_NOT_FOUND`. Find handles enumerate a snapshot taken by `FindFirstFileW`.

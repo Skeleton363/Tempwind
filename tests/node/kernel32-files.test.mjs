@@ -325,3 +325,26 @@ test('an attribute-only open with share 0 takes no part in share checks; delete 
   assert.equal(env.lastError(), 32);
   kernel32(env, 'CloseHandle', d2);
 });
+
+test('a file with no attributes reports FILE_ATTRIBUTE_NORMAL; setting 0 or 0x80 clears them', () => {
+  const env = shimEnv();
+  const h = create(env, 'a.txt');
+  const name = env.putW('a.txt');
+  assert.equal(kernel32(env, 'GetFileAttributesW', name), 0x20n, 'archive after the create');
+  assert.equal(kernel32(env, 'SetFileAttributesW', name, 0x2 | 0x20), 1n);
+  assert.equal(kernel32(env, 'GetFileAttributesW', name), 0x22n);
+  assert.equal(kernel32(env, 'SetFileAttributesW', name, 0), 1n);
+  assert.equal(kernel32(env, 'GetFileAttributesW', name), 0x80n, 'none set: NORMAL');
+  assert.equal(kernel32(env, 'SetFileAttributesW', name, 0x2), 1n);
+  assert.equal(kernel32(env, 'SetFileAttributesW', name, 0x80), 1n);
+  assert.equal(kernel32(env, 'GetFileAttributesW', name), 0x80n, '0x80 clears the set');
+  const data = env.zeros(WIN32_FIND_DATAW_SIZE);
+  const fh = kernel32(env, 'FindFirstFileW', name, data);
+  assert.equal(env.mem.u32(data), 0x80, 'FindFirstFileW');
+  kernel32(env, 'FindClose', fh);
+  const info = env.zeros(52);
+  assert.equal(kernel32(env, 'GetFileInformationByHandle', h, info), 1n);
+  assert.equal(env.mem.u32(info), 0x80, 'GetFileInformationByHandle');
+  assert.equal(kernel32(env, 'SetFileAttributesW', name, 0x20), 1n);
+  assert.equal(kernel32(env, 'GetFileAttributesW', name), 0x20n);
+});

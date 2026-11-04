@@ -508,3 +508,147 @@ test('a finite wait inside a call from the host into guest code times out at onc
   const p = await load(scripts);
   await assert.rejects(p.start(), /WaitForSingleObject.*would block inside a call from the host into guest code/);
 });
+
+/** _beginthreadex with a stack size and flags. */
+const startSized = (fnId, stack, flags = 0) => crt('_beginthreadex', 0, stack, TEXT, fnId, flags, 0);
+const RESERVATION = 0x1_0000; // STACK_SIZE_PARAM_IS_A_RESERVATION
+
+test('stack size: the reservation or the image\'s, at least the commit size and 1 MiB, in 64 KiB steps; an ended thread\'s block is reused for the same size', async () => {
+  const seen = [];
+  const record = function* (s) {
+    const t = s.thread();
+    seen.push({ size: t.stackBase - t.stackLimit, state: t.state, teb: t.teb, stackLimit: t.stackLimit });
+  };
+  const run = function* (stack, flags) {
+    const t = yield startSized(61, stack, flags);
+    yield k32('WaitForSingleObject', t, INFINITE);
+  };
+  const scripts = new Map([
+    [1n, function* () {
+      yield* run(0, 0); // the image's reserve (2 MiB)
+      yield* run(0x40_0000, 0); // a commit size above it
+      yield* run(0x1000, RESERVATION); // below the 1 MiB minimum
+      yield* run(0x12_3456, RESERVATION); // rounded up to 64 KiB
+      yield* run(0, 0); // same size as the first: its block again
+      yield* run(0x1000, RESERVATION); // same as the third
+      return 0;
+    }],
+    [61n, record],
+  ]);
+  assert.equal(await (await load(scripts)).start(), 0);
+  assert.deepEqual(seen.map((x) => x.size), [0x20_0000n, 0x40_0000n, 0x10_0000n, 0x13_0000n, 0x20_0000n, 0x10_0000n]);
+  for (const [a, b] of [[0, 4], [2, 5]]) {
+    assert.equal(seen[b].state, seen[a].state, `state block reused (${a}, ${b})`);
+    assert.equal(seen[b].teb, seen[a].teb, `TEB reused (${a}, ${b})`);
+    assert.equal(seen[b].stackLimit, seen[a].stackLimit, `stack reused (${a}, ${b})`);
+  }
+  assert.notEqual(seen[1].teb, seen[0].teb, 'a different size gets its own block');
+});
+
+test('ExitThread and _endthreadex on the main thread stop', async () => {
+  for (const [name, fn, dll] of [['ExitThread', k32, 'kernel32'], ['_endthreadex', crt, 'msvcrt']]) {
+    const p = await load(new Map([[1n, function* () { yield fn(name, 3); }]]));
+    await assert.rejects(p.start(), /ExitThread or _endthreadex on the main thread is not supported/, `${dll}!${name}`);
+  }
+});
+
+test('_beginthreadex rejects security attributes, a NULL start and unknown flags', async () => {
+  const bad = [
+    [[1, 0, TEXT, 0, 0, 0], /security attributes/],
+    [[0, 0, 0, 0, 0, 0], /start_address is NULL/],
+    [[0, 0, TEXT, 0, 0x8, 0], /initflag 0x8 is not supported/],
+  ];
+  for (const [args, re] of bad) {
+    const p = await load(new Map([[1n, function* () { yield crt('_beginthreadex', ...args); }]]));
+    await assert.rejects(p.start(), re);
+  }
+});
+
+test('the process ends through ExitProcess or a return from main while other threads are alive', async () => {
+  // Main returns while a thread has not run yet.
+  let log = [];
+  let p = await load(new Map([
+    [1n, function* () { yield start(62); yield start(63, CREATE_SUSPENDED); return 6; }],
+    [62n, function* () { log.push('62 ran'); }],
+    [63n, function* () { log.push('63 ran'); }],
+  ]));
+  assert.equal(await p.start(), 6);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(log, [], 'no other thread runs after the main thread returns');
+  // ExitProcess from main with a thread waiting forever and one ready.
+  log = [];
+  p = await load(new Map([
+    [1n, function* () {
+      yield start(64);
+      yield k32('Sleep', 0); // 64 runs to its wait
+      yield start(62);
+      yield k32('ExitProcess', 9);
+    }],
+    [64n, function* () { log.push('64 waits'); yield k32('Sleep', INFINITE); log.push('64 woke'); }],
+    [62n, function* () { log.push('62 ran'); }],
+  ]));
+  assert.equal(await p.start(), 9);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(log, ['64 waits']);
+  // ExitProcess from a secondary thread while main waits.
+  p = await load(new Map([
+    [1n, function* () { const t = yield start(65); yield k32('WaitForSingleObject', t, INFINITE); throw new Error('not reached'); }],
+    [65n, function* () { yield k32('ExitProcess', 11); }],
+  ]));
+  assert.equal(await p.start(), 11);
+});
+
+test('several finite waiters: the one that has waited longest times out first', async () => {
+  const log = [];
+  let ev;
+  const waiter = (name, ms) => function* () {
+    assert.equal(yield k32('WaitForSingleObject', ev, ms), WAIT_TIMEOUT);
+    log.push(name);
+  };
+  const scripts = new Map([
+    [1n, function* () {
+      ev = yield k32('CreateEventW', 0, 1, 0, 0);
+      const a = yield start(66);
+      yield k32('Sleep', 0); // A waits first (1000 ms)
+      const b = yield start(67);
+      yield k32('Sleep', 0); // B waits second (10 ms)
+      yield k32('Sleep', 10);
+      log.push('main after first sleep');
+      yield k32('Sleep', 10);
+      yield k32('WaitForSingleObject', a, INFINITE);
+      yield k32('WaitForSingleObject', b, INFINITE);
+      return 0;
+    }],
+    [66n, waiter('A', 1000)],
+    [67n, waiter('B', 10)],
+  ]);
+  assert.equal(await (await load(scripts)).start(), 0);
+  assert.deepEqual(log.slice(0, 2), ['A', 'main after first sleep'], 'A, which waited longest, times out before B');
+  assert.equal(log[2], 'B');
+});
+
+test('TlsAlloc and TlsFree clear the slot in other live threads', async () => {
+  let slot, p;
+  const scripts = new Map([
+    [1n, function* (s) {
+      p = s.p;
+      slot = Number(yield k32('TlsAlloc'));
+      yield k32('TlsSetValue', slot, 0x111);
+      const t = yield start(68);
+      yield k32('Sleep', 0); // the thread sets its value and yields
+      assert.equal(yield k32('TlsFree', slot), 1n);
+      assert.equal(Number(yield k32('TlsAlloc')), slot, 'the freed slot is reused');
+      assert.equal(yield k32('TlsGetValue', slot), 0n, 'cleared in the main thread');
+      yield k32('Sleep', 0); // the thread checks its own
+      yield k32('WaitForSingleObject', t, INFINITE);
+      return 0;
+    }],
+    [68n, function* () {
+      yield k32('TlsSetValue', slot, 0x222);
+      assert.equal(yield k32('TlsGetValue', slot), 0x222n);
+      yield k32('Sleep', 0);
+      assert.equal(yield k32('TlsGetValue', slot), 0n, 'cleared in the other thread');
+    }],
+  ]);
+  assert.equal(await (await load(scripts)).start(), 0);
+});

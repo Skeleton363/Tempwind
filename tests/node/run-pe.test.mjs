@@ -3,24 +3,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STDOUT_HANDLE, STDERR_HANDLE } from '../../runtime/src/abi.mjs';
-import { fakeExe, fakePlan, hostCallAot, DATA, GREETING, ID } from './pe-fixture.mjs';
+import { fakeExe, fakePlan, hostCallAot, hostCallsAot, DATA, IDATA, GREETING, ID } from './pe-fixture.mjs';
 
 const CLI = new URL('../../runtime/src/run-pe.mjs', import.meta.url).pathname;
 const dir = mkdtempSync(join(tmpdir(), 'run-pe-test-'));
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 let n = 0;
-async function runPe({ aot, edit, env = {}, args } = {}) {
+async function runPe({ aot, edit, env = {}, args, patch, extra = [] } = {}) {
   const exe = fakeExe();
+  patch?.(exe);
   const base = join(dir, `case${n++}`);
   writeFileSync(`${base}.exe`, exe);
   writeFileSync(`${base}.plan.json`, JSON.stringify(await fakePlan(exe, edit)));
   writeFileSync(`${base}.wasm`, aot);
-  const r = spawnSync(process.execPath, [CLI, ...(args ?? ['--exe', `${base}.exe`, '--aot', `${base}.wasm`, '--plan', `${base}.plan.json`])], {
+  const r = spawnSync(process.execPath, [CLI, ...(args ?? ['--exe', `${base}.exe`, '--aot', `${base}.wasm`, '--plan', `${base}.plan.json`, ...extra])], {
     env: { ...process.env, TEMPWIND_TRACE: '', ...env },
   });
   return { status: r.status, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
@@ -61,3 +62,19 @@ for (const [label, opts, err] of [
     if (typeof err === 'string') assert.equal(r.stderr, err); else assert.match(r.stderr, err);
   });
 }
+
+test('--dir: C:\\work is written back after an error stop', async () => {
+  const host = join(dir, 'work-after-error');
+  mkdirSync(host);
+  const name = 'newdir';
+  // CreateDirectoryW(L"newdir", NULL), then an unimplemented API: the run stops with an error.
+  const r = await runPe({
+    aot: hostCallsAot([[5, { rcx: DATA + 0x100n, rdx: 0n }], [ID.MessageBoxA, 0n]]),
+    edit: (j) => { j.imports.push({ dll: 'KERNEL32.dll', functions: [{ name: 'CreateDirectoryW', ordinal: null, iat: '0x' + (IDATA + 48n).toString(16) }] }); },
+    patch: (exe) => exe.set(new TextEncoder().encode(name + '\0').reduce((a, c) => [...a, c, 0], []), 0x700),
+    extra: ['--dir', host],
+  });
+  assert.equal(r.status, 125, r.stderr);
+  assert.match(r.stderr, /unimplemented API user32.dll!MessageBoxA/);
+  assert.ok(existsSync(join(host, name)), 'the directory the guest created is on the host');
+});
