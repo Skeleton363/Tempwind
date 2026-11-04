@@ -432,6 +432,26 @@ test('per-thread state: TLS slots, the static TLS block, last error, errno, dept
   assert.deepEqual(seen.callbacks, [[1, 0x1004], [2, 0x1008], [3, 0x1008]], 'process attach, then thread attach and detach on the thread');
 });
 
+test('many short threads reuse their errno blocks', async () => {
+  const N = 300;
+  const errnos = new Set();
+  let p;
+  const scripts = new Map([
+    [1n, function* (s) {
+      p = s.p;
+      for (let i = 0; i < N; i++) {
+        const t = yield start(71);
+        yield k32('WaitForSingleObject', t, INFINITE);
+      }
+      return 0;
+    }],
+    [71n, function* () { errnos.add(yield crt('_errno')); return 0; }],
+  ]);
+  const proc = await load(scripts);
+  assert.equal(await proc.start(), 0);
+  assert.ok(errnos.size <= 2, `${errnos.size} distinct errno blocks for ${N} sequential threads`);
+});
+
 test('a wait that would block inside a call from the host into guest code stops; one that need not, runs', async () => {
   let cs, ev;
   const scripts = new Map([

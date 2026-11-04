@@ -74,6 +74,19 @@ test('CreateFileW: unsupported arguments stop loudly', () => {
   assert.match(env.stop('kernel32.dll', 'CreateFileW', env.putW('\\\\.\\C:'), GENERIC_READ, 3, 0, OPEN_EXISTING, 0, 0).error, /device path/);
 });
 
+test('SetFilePointer without lpDistanceToMoveHigh fails when the new position exceeds 32 bits', () => {
+  const env = shimEnv();
+  const h = create(env, 'big.bin');
+  assert.equal(kernel32(env, 'SetFilePointer', h, 10, 0, 0), 10n);
+  env.setLastError(0);
+  assert.equal(kernel32(env, 'SetFilePointer', h, 0x7fff_ffff, 0, 1), 0x8000_0009n, 'still fits 32 bits');
+  assert.equal(kernel32(env, 'SetFilePointer', h, 0x7fff_ffff, 0, 1), 0xffff_ffffn, 'FILE_CURRENT past 4 GiB');
+  assert.equal(env.lastError(), 87);
+  const cur = env.zeros(4);
+  env.mem.setU32(cur, 0);
+  assert.equal(kernel32(env, 'SetFilePointer', h, 0, cur, 1), 0x8000_0009n, 'the pointer did not move');
+});
+
 test('ReadFile, WriteFile, SetFilePointer, GetFileSize, SetEndOfFile', () => {
   const env = shimEnv();
   const h = create(env, 'f.bin');

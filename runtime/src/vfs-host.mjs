@@ -3,7 +3,7 @@
 // Node only (node:fs); the file system itself (win32/vfs.mjs) is pure JS.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { UNIX_EPOCH_FILETIME, nameKey, FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY } from './win32/vfs.mjs';
+import { UNIX_EPOCH_FILETIME, nameKey, validName, DOS_DEVICES, FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY } from './win32/vfs.mjs';
 
 export const WORK_DIR = 'C:\\work';
 
@@ -22,6 +22,7 @@ export function loadHostDir(vfs, hostDir) {
   const load = (dirNode, hostPath) => {
     for (const ent of fs.readdirSync(hostPath, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const hp = path.join(hostPath, ent.name);
+      if (!validName(ent.name) || DOS_DEVICES.test(ent.name)) throw new Error(`--dir: ${hp} is not a valid Windows file name`);
       if (dirNode.children.has(nameKey(ent.name))) throw new Error(`--dir: ${hp} differs from another name only in case`);
       const st = fs.statSync(hp, { bigint: true });
       const t = toFileTime(st.mtimeNs);
@@ -63,11 +64,15 @@ export function writeBack(vfs, hostDir) {
     }
     for (const n of dirNode.sortedChildren()) {
       const hp = path.join(hostPath, n.name);
+      // A file replaced by a directory, or the reverse: remove the host entry first.
+      const hst = fs.lstatSync(hp, { throwIfNoEntry: false });
+      const replaced = hst && hst.isDirectory() !== n.isDir;
+      if (replaced) fs.rmSync(hp, { recursive: true, force: true });
       if (n.isDir) {
         if (!fs.existsSync(hp)) fs.mkdirSync(hp);
         sync(n, hp);
-        if (n.dirty || !n.host) dirTimes.push([hp, n]);
-      } else if (n.dirty || !n.host || !fs.existsSync(hp)) {
+        if (replaced || n.dirty || !n.host) dirTimes.push([hp, n]);
+      } else if (replaced || n.dirty || !n.host || !fs.existsSync(hp)) {
         fs.writeFileSync(hp, vfs.contents(n));
         fs.utimesSync(hp, toUnixSeconds(n.atime), toUnixSeconds(n.mtime));
       }

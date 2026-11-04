@@ -294,7 +294,8 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
   - `ERROR_SHARING_VIOLATION`: share modes are enforced between open handles.
 - **`run-pe --dir HOST`** loads the host directory into `C:\work`, which is the current directory.
   - Each file keeps its contents and mtime, which becomes all three times. Files get 0x20, directories 0x10.
-  - When the run ends, whatever the outcome, `C:\work` is written back to HOST: new and changed files with their mtimes, new directories, and deletions.
+  - Host names must be valid for the file system (no `< > : " | ? * / \`, no control characters, no DOS device names such as `aux.txt`) and unique without case; otherwise `run-pe` fails at start with a usage error naming the file.
+  - When the run ends, whatever the outcome, `C:\work` is written back to HOST: new and changed files with their mtimes, new directories, and deletions. A host file the guest replaced by a directory (or the reverse) is removed first, then written.
   - Without `--dir`, `C:\work` is empty. msvcrt's file functions use the same file system.
 
 **Handles:**
@@ -320,7 +321,7 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
   - V8 throws when a `Suspending` import runs without `promising` on the stack, even if it returns no Promise. So while the host calls into guest code (`callNested`), slot 1 holds the plain host function.
 - **Scheduling** is deterministic and non-preemptive. A thread runs until it blocks, yields (`Sleep`, `SwitchToThread`) or ends; the scheduler then resumes the thread that has been runnable longest (a FIFO queue; a yielding thread goes to its end). Signaling an object (`SetEvent`, `ReleaseSemaphore`, `LeaveCriticalSection`, a thread's end) makes waiters runnable, in the order they started waiting, but doesn't switch threads.
 - **Threads** come from `_beginthreadex` (and `CreateThread` where a program imports it). Each has:
-  - **its own state:** a state block (host region), a TEB (TLS slots, last error, `ClientId`), a stack from the guest heap, the image's TLS data block (a copy of the template), the FP defaults of a new thread, and its own errno (the main thread's is the CRT's).
+  - **its own state:** a state block (host region), a TEB (TLS slots, last error, `ClientId`), a stack from the guest heap, the image's TLS data block (a copy of the template), the FP defaults of a new thread, and its own errno (the main thread's is the CRT's; a thread's errno block comes from the CRT heap and goes back to it when the thread ends).
     - **Stack size**, by Windows' rule (`RtlCreateUserStack`): the requested size is a reservation with `STACK_SIZE_PARAM_IS_A_RESERVATION`, else a commit size; the reservation is that, or the image's stack reserve, at least the commit size and 1 MiB, rounded up to 64 KiB.
     - **Thread ids** are 0x1008, 0x100C, ... (the main thread is 0x1004). A later thread with the same stack size reuses an ended thread's state block, TEB and stack.
   - **a start like the main thread's:** RCX = the argument, RSP = top − 0x38 with `[RSP]` = `SENTINEL_RET`, RIP = the start address. The image's TLS callbacks run first with `DLL_THREAD_ATTACH`, as on Windows.
@@ -393,7 +394,7 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - **`GetVersion`:** the compatibility rule reads the manifest: Windows 10 values when the image's `.rsrc` holds the Windows 10 `supportedOS` GUID (7zz's does), else 6.2.9200.
 - **Memory:** `GetSystemInfo` reports processor level 6, revision 0 (the CPUID profile's family 6, model 0) and the highest application address as the guest memory size − `0x10001`. `GlobalMemoryStatusEx`: total physical memory and page file 4 GiB, available = min(free guest heap, 4 GiB), total virtual `0x7FFF_FFFE_0000`. `VirtualAlloc` also takes `MEM_COMMIT` alone (with no address it reserves too); released regions are reused first-fit and zeroed.
 - **`IsProcessorFeaturePresent`:** present means reported by the CPUID profile: 2 (CMPXCHG8B), 3 (MMX), 6 (SSE), 10 (SSE2), 12 (NX), 14 (CMPXCHG16B). PAE (9) is absent, since the profile doesn't report it.
-- **`FormatMessageW`:** only `FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS` (with or without `ALLOCATE_BUFFER`), language 0, and the English texts of the errors the shim sets; anything else stops.
+- **`FormatMessageW`:** only `FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS` (with or without `ALLOCATE_BUFFER`), language 0, and the English texts of the errors the shim sets; anything else stops. With `ALLOCATE_BUFFER` the buffer comes from the CRT heap and `LocalFree` returns it; `LocalFree` of any other address stops.
 - **Write-back:** times reach the host through `utimes` in seconds, exact for whole seconds and to about 0.25 µs otherwise.
 
 **Windows details the implementation follows** (checked against Wine 11 and Microsoft's documentation):
@@ -401,7 +402,7 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - `RemoveDirectoryW` on the current directory or an ancestor fails with `ERROR_SHARING_VIOLATION` before the emptiness check.
 - `FindFirstFileW` on `file\*` fails with `ERROR_DIRECTORY`; an empty mask (`dir\`) with `ERROR_FILE_NOT_FOUND`; a missing directory with `ERROR_PATH_NOT_FOUND`. Find handles enumerate a snapshot taken by `FindFirstFileW`.
 - `SetFileTime` with `0xFFFFFFFF_FFFFFFFF`, or an explicit time, stops later writes through that handle from updating the time; 0 means "unchanged". A new or removed entry updates its directory's last-write time.
-- `SetFilePointer` and `GetFileSize` set the last error to 0 when the low part they return is `0xFFFFFFFF`.
+- `SetFilePointer` and `GetFileSize` set the last error to 0 when the low part they return is `0xFFFFFFFF`. `SetFilePointer` with no `lpDistanceToMoveHigh` and a new position above 32 bits fails with `ERROR_INVALID_PARAMETER`, returns `INVALID_SET_FILE_POINTER` and leaves the pointer where it was (Microsoft's documentation; Wine 11 truncates instead).
 
 **Tests:**
 - unit tests per module in `tests/node/`, through `shim-harness.mjs`;
@@ -418,6 +419,6 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 A run that isn't validated fails the script.
 
 `.github/workflows/bench.yml` runs it on every push to `main` and on pull requests, and also runs `coremark.exe` natively on windows-2025 for the record.
-- **On main,** it appends the JSON line to `coremark.jsonl` on the orphan branch `bench-data`, which the workflow creates on its first run. The commit comes from the workflow's bot, with `contents: write` for this job only.
+- **On main,** it appends the JSON line to `coremark.jsonl` on the orphan branch `bench-data`, which the workflow creates on its first run. The commit comes from the workflow's bot, with `contents: write` for this job only. Each benchmark records on its own: if one job fails, the other's result is still appended.
 - **On pull requests,** it compares the ratio with the last line on `bench-data` and emits a warning annotation, never a failure, when it is more than 10 % worse.
 

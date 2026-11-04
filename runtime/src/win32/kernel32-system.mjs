@@ -13,6 +13,7 @@ import {
 } from './errors.mjs';
 import { addHandle, getHandle, removeHandle, isStdHandle, CURRENT_PROCESS, CURRENT_THREAD } from './handles.mjs';
 import { hex, fn, wstr, utf16, copyOut, writeWString, win32 } from './util.mjs';
+import { crt } from './msvcrt.mjs';
 import { TEB_TLS_SLOTS, TLS_MINIMUM_AVAILABLE } from './kernel32.mjs';
 
 // --- the machine profile -----------------------------------------------------
@@ -65,7 +66,6 @@ export const SYSTEM_DLLS = new Map([
 
 const sys = (ctx) => ctx.dllState('tempwind:system', () => ({
   loaded: new Set([...SYSTEM_DLLS].filter(([, d]) => d.loaded).map(([n]) => n)),
-  tickStart: Date.now(),
   commandLine: 0n,
   tlsUsed: new Set(),
   vm: null,
@@ -512,7 +512,7 @@ export default {
   // void GetSystemTimeAsFileTime(LPFILETIME)
   GetSystemTimeAsFileTime: fn(1, (ctx) => { ctx.write64(ctx.arg(0), ctx.vfs.now()); }),
   // DWORD GetTickCount(void): milliseconds since the process started.
-  GetTickCount: fn(0, (ctx) => (Date.now() - sys(ctx).tickStart) >>> 0),
+  GetTickCount: fn(0, (ctx) => Number((ctx.vfs.now() - ctx.startTime) / 10_000n) >>> 0),
   // BOOL FileTimeToLocalFileTime(const FILETIME *, LPFILETIME): UTC, so the identity.
   FileTimeToLocalFileTime: fn(2, (ctx) => { ctx.write64(ctx.arg(1), ctx.read64(ctx.arg(0))); return 1; }),
   // BOOL LocalFileTimeToFileTime(const FILETIME *, LPFILETIME)
@@ -688,6 +688,7 @@ export default {
     s.localBlocks ??= new Set();
     if (!s.localBlocks.has(p)) ctx.fail(`LocalFree(${hex(p)}): not a block the shim allocated`);
     s.localBlocks.delete(p);
+    crt(ctx).heap.freeBlock(p);
     return 0n;
   }),
 
@@ -704,7 +705,7 @@ export default {
     if (text === undefined) ctx.fail(`no message text for error ${id}`);
     const msg = text + '\r\n';
     if (flags & FORMAT_MESSAGE_ALLOCATE_BUFFER) {
-      const p = ctx.alloc(BigInt(2 * msg.length + 2));
+      const p = crt(ctx).heap.alloc(BigInt(2 * msg.length + 2));
       writeWString(ctx, p, msg);
       const s = sys(ctx);
       s.localBlocks ??= new Set();

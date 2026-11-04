@@ -78,7 +78,12 @@ export function crt(ctx) {
 function errnoAddress(ctx) {
   const t = threadsOf(ctx).of(ctx);
   if (t.main) return crt(ctx).errno;
-  return t.local('msvcrt.errno', () => ctx.alloc(4n));
+  const heap = crt(ctx).heap;
+  return t.local('msvcrt.errno', () => {
+    const p = heap.alloc(4n);
+    ctx.write32(p, 0);
+    return p;
+  }, () => heap.freeBlock(t.locals.get('msvcrt.errno')));
 }
 const setErrno = (ctx, v) => ctx.write32(errnoAddress(ctx), v);
 const CREATE_SUSPENDED = 0x4, STACK_SIZE_PARAM_IS_A_RESERVATION = 0x1_0000;

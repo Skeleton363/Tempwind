@@ -182,3 +182,41 @@ test('--dir: a host directory loads into C:\\work and writes back', () => {
     rmSync(host, { recursive: true, force: true });
   }
 });
+
+test('--dir write-back: a file replaced by a directory and a directory by a file', () => {
+  const host = mkdtempSync(join(tmpdir(), 'tempwind-vfs-'));
+  try {
+    mkdirSync(join(host, 'd'));
+    writeFileSync(join(host, 'd', 'inner.txt'), 'in');
+    writeFileSync(join(host, 'f'), 'file');
+    const vfs = new Vfs({ now: testClock() });
+    loadHostDir(vfs, host);
+    vfs.deleteFile('f');
+    vfs.createDirectory('f');
+    const { file } = vfs.open('f\\g.txt', { access: GENERIC_WRITE, share: 0, disposition: CREATE_ALWAYS });
+    vfs.write(file, new TextEncoder().encode('g'));
+    vfs.close(file);
+    vfs.deleteFile('d\\inner.txt');
+    vfs.removeDirectory('d');
+    const w = vfs.open('d', { access: GENERIC_WRITE, share: 0, disposition: CREATE_ALWAYS });
+    vfs.write(w.file, new TextEncoder().encode('now a file'));
+    vfs.close(w.file);
+    writeBack(vfs, host);
+    assert.equal(readFileSync(join(host, 'f', 'g.txt'), 'utf8'), 'g');
+    assert.equal(readFileSync(join(host, 'd'), 'utf8'), 'now a file');
+  } finally {
+    rmSync(host, { recursive: true, force: true });
+  }
+});
+
+test('--dir: host names the file system rejects fail up front, naming the file', () => {
+  for (const name of ['a:b', 'x?', 'aux.txt']) {
+    const host = mkdtempSync(join(tmpdir(), 'tempwind-vfs-'));
+    try {
+      writeFileSync(join(host, name), 'x');
+      assert.throws(() => loadHostDir(new Vfs({ now: testClock() }), host), (e) => e.message.includes(name) && /--dir/.test(e.message), name);
+    } finally {
+      rmSync(host, { recursive: true, force: true });
+    }
+  }
+});

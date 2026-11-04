@@ -44,12 +44,17 @@ export class Thread {
     this.depth = 0;
     /** Per-thread values of the shim DLLs (msvcrt's errno, ...). */
     this.locals = new Map();
+    this.releases = [];
     this.resume = null;
     this.object = { kind: 'thread', thread: this };
   }
 
-  local(key, init) {
-    if (!this.locals.has(key)) this.locals.set(key, init());
+  /** The per-thread value for `key`, made by `init` on first use; `release` (if given) runs when the thread ends. */
+  local(key, init, release) {
+    if (!this.locals.has(key)) {
+      this.locals.set(key, init());
+      if (release) this.releases.push(release);
+    }
     return this.locals.get(key);
   }
 }
@@ -322,6 +327,7 @@ export class Threads {
     t.status = 'done';
     t.exitCode = code >>> 0;
     t.wait = null;
+    for (const release of t.releases.splice(0)) release();
     this.byState.delete(t.state);
     if (this.current === t) this.current = null;
     this.signal();

@@ -70,7 +70,7 @@ export function validName(name) {
 }
 
 const isSep = (c) => c === '\\' || c === '/';
-const DOS_DEVICES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\s*\..*)?$/i;
+export const DOS_DEVICES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\s*\..*)?$/i;
 
 export class Node {
   constructor(kind, name, time) {

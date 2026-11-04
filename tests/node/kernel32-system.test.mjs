@@ -3,6 +3,7 @@
 // shim-harness.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Vfs } from '../../runtime/src/win32/vfs.mjs';
 import { shimEnv, kernel32, PROC_BASE } from './shim-harness.mjs';
 import { quoteArg, commandLine, timeFields, fieldsToTime, SYSTEM_DLLS } from '../../runtime/src/win32/kernel32-system.mjs';
 
@@ -266,4 +267,29 @@ test('process and thread identity, process times', () => {
   assert.equal(env.mem.u64(t[1]), 0n);
   assert.equal(kernel32(env, 'lstrlenW', env.putW('abc')), 3n);
   assert.equal(kernel32(env, 'lstrlenW', 0), 0n);
+});
+
+test('GetTickCount counts from the process start, not from the first use of the system state', () => {
+  const start = 133_485_408_000_000_000n;
+  let now = start + 5_000n * 10_000n;
+  const env = shimEnv({ vfs: new Vfs({ now: () => now }) });
+  assert.equal(kernel32(env, 'GetTickCount'), 5000n, 'the first call already counts the 5 s since the start');
+  now += 250n * 10_000n;
+  assert.equal(kernel32(env, 'GetTickCount'), 5250n);
+});
+
+test('FormatMessageW(ALLOCATE_BUFFER) and LocalFree in a loop do not grow the guest heap', () => {
+  const env = shimEnv();
+  const pp = env.zeros(8);
+  const once = () => {
+    assert.equal(kernel32(env, 'FormatMessageW', 0x1300, 0, 2, 0, pp, 0, 0), 44n);
+    assert.equal(kernel32(env, 'LocalFree', env.mem.u64(pp)), 0n);
+  };
+  once(); // the CRT heap takes its first arena
+  const before = env.host.heapFree();
+  for (let i = 0; i < 20000; i++) once();
+  assert.equal(env.host.heapFree(), before);
+  assert.equal(kernel32(env, 'LocalFree', 0), 0n, 'LocalFree(NULL) is a no-op');
+  assert.match(env.stop('kernel32.dll', 'LocalFree', env.mem.u64(pp)).error, /not a block/, 'a double free stops');
+  assert.match(env.stop('kernel32.dll', 'LocalFree', 0x1234).error, /not a block/);
 });

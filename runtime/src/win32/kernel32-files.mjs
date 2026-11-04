@@ -272,6 +272,8 @@ export default {
     else { ctx.setLastError(ERROR_INVALID_PARAMETER); return INVALID_SET_FILE_POINTER; }
     if (pos < 0n) { ctx.setLastError(ERROR_NEGATIVE_SEEK); return INVALID_SET_FILE_POINTER; }
     if (pos >= 1n << 53n) ctx.fail(`file position ${pos} is too large`);
+    // Without lpDistanceToMoveHigh the new position must fit the returned 32 bits; the pointer stays.
+    if (highP === 0n && pos > 0xffff_ffffn) { ctx.setLastError(ERROR_INVALID_PARAMETER); return INVALID_SET_FILE_POINTER; }
     f.pos = pos;
     if (highP !== 0n) ctx.write32(highP, Number(pos >> 32n));
     const lowPart = Number(pos & 0xffff_ffffn);

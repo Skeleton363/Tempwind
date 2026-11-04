@@ -156,7 +156,8 @@ jobs:
           if-no-files-found: error
 
   record:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    # Each result records on its own: a failed or cancelled benchmark job leaves the other one's result recorded.
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && (needs.coremark.result == 'success' || needs.sevenzip.result == 'success') }}
     needs: [coremark, sevenzip]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -167,9 +168,11 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v8
+        if: ${{ needs.coremark.result == 'success' }}
         with:
           name: coremark-result
       - uses: actions/download-artifact@v8
+        if: ${{ needs.sevenzip.result == 'success' }}
         with:
           name: sevenzip-result
       - name: Append to coremark.jsonl and sevenzip.jsonl on bench-data
@@ -188,9 +191,12 @@ jobs:
             else
               git checkout -q --orphan bench-data   # first run: create the orphan branch
             fi
-            cat ../coremark-result.json >> coremark.jsonl
-            cat ../sevenzip-result.json >> sevenzip.jsonl
-            git add coremark.jsonl sevenzip.jsonl
+            for name in coremark sevenzip; do
+              if [ -f "../$name-result.json" ]; then
+                cat "../$name-result.json" >> "$name.jsonl"
+                git add "$name.jsonl"
+              fi
+            done
             git commit -q -m "bench: ${GITHUB_SHA::7}"
             if git push -q origin bench-data; then exit 0; fi
             echo "push raced with another run (attempt $attempt); retrying"

@@ -13,9 +13,10 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const root = new URL('../../', import.meta.url).pathname;
+const root = fileURLToPath(new URL('../../', import.meta.url));
 const { values } = parseArgs({
   options: {
     exe: { type: 'string', default: `${root}target/targets/7zz.exe` },
@@ -51,19 +52,22 @@ if (!aotDir) {
   tmp = mkdtempSync(join(tmpdir(), 'sevenzip-'));
   aotDir = tmp;
 }
-if (!existsSync(`${aotDir}/7zz.wasm`)) {
-  const r = sh('cargo', ['run', '-q', '-p', 'x64wasm-cli', '--release', '--', 'translate-pe', exe, '--out-dir', aotDir], { cwd: root, encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`translate-pe failed:\n${r.stderr}`);
-}
-const wasm = `${root}target/wasm32-unknown-unknown/release`;
 const translated = [];
-for (let i = 0; i < runs; i++) {
-  const a = ['--exe', exe, '--aot', `${aotDir}/7zz.wasm`, '--plan', `${aotDir}/7zz.plan.json`, '--rt', `${wasm}/x64wasm_rt.wasm`, '--fp', `${wasm}/x64wasm_fp.wasm`];
-  const r = sh(process.execPath, [`${root}runtime/src/run-pe.mjs`, ...a, '--', ...ARGS], { encoding: 'utf8', env: { ...process.env, TEMPWIND_TRACE: '' } });
-  translated.push(parse(r, `translated run ${i + 1}`));
-  process.stderr.write(`translated ${i + 1}/${runs}: Tot rating ${translated[i]} MIPS\n`);
+try {
+  if (!existsSync(`${aotDir}/7zz.wasm`)) {
+    const r = sh('cargo', ['run', '-q', '-p', 'x64wasm-cli', '--release', '--', 'translate-pe', exe, '--out-dir', aotDir], { cwd: root, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`translate-pe failed:\n${r.stderr}`);
+  }
+  const wasm = `${root}target/wasm32-unknown-unknown/release`;
+  for (let i = 0; i < runs; i++) {
+    const a = ['--exe', exe, '--aot', `${aotDir}/7zz.wasm`, '--plan', `${aotDir}/7zz.plan.json`, '--rt', `${wasm}/x64wasm_rt.wasm`, '--fp', `${wasm}/x64wasm_fp.wasm`];
+    const r = sh(process.execPath, [`${root}runtime/src/run-pe.mjs`, ...a, '--', ...ARGS], { encoding: 'utf8', env: { ...process.env, TEMPWIND_TRACE: '' } });
+    translated.push(parse(r, `translated run ${i + 1}`));
+    process.stderr.write(`translated ${i + 1}/${runs}: Tot rating ${translated[i]} MIPS\n`);
+  }
+} finally {
+  if (tmp) rmSync(tmp, { recursive: true, force: true });
 }
-if (tmp) rmSync(tmp, { recursive: true, force: true });
 
 // --- native under wine64
 const native = [];
