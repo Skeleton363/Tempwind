@@ -1,6 +1,6 @@
 # Phase 1 status: Translator
 
-**M1-M5 are done. M4 (SSE floating point, x87 and CoreMark) merged as PR #6; M5 (7-Zip exactly like native) is in PR #7 (draft), awaiting review. Next is M6, speed and close-out.** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**M1-M5 are done and merged (M5, 7-Zip exactly like native: PR #7). M6, speed and close-out, is planned (below) and paused before its contracts.** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
 - **Session 1, continued (2026-10-23/24):**
@@ -233,6 +233,62 @@ Phase 0's lessons still hold. New ones from M1:
   - **Research** (your decision, 2026-10-31): a research pass over official and community sources at the start of each milestone, and a digest every two weeks (the "Workflow research digest" routine), logged in `docs/dev/research.md`.
   - **Structure:** fixed rules in `.claude/agents/`, path-scoped rules in `.claude/rules/`, procedures as skills (`/pause`, `milestone-close`, `diverge`), deny rules in `.claude/settings.json`, and `ARCHITECTURE.md` as the map. `CLAUDE.md` keeps only what every session needs.
 - **Close-out review in two stages** (`milestone-close`): a code review (7 correctness findings, all fixed in `5709b87`), then a spec-compliance review: 7 findings (6 fixed in `52adb0e` and `46644f7`, the 7th a stale line in this note), and 6 promised behaviours that had no test got one.
+
+## Decisions taken in M6 (planning, 2026-11-04)
+
+The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-04: M6, translator speed".
+
+- **Measurement first (WP1, builder):**
+  - `tests/bench/profile.mjs`: `node --cpu-prof` ticks per wasm function, with chunk names carrying the guest's COFF symbol;
+  - `Options::counters`: entries (fast and generic), `$dispatch` iterations, local indirect dispatches, calls, probes, unwinds, values synced, guest loads and stores, plus host calls per import;
+  - a multi-block loop bench case.
+
+  The numbers decide the emphasis between WP2 and WP3. They also decide whether memcpy, memset and strlen move from JS into wasm.
+- **Register and flag liveness, and the call fast path (WP2, deep-worker; new `sync.rs`):**
+  - **Values:** the 16 GPRs plus the flag record as one unit.
+  - **Stores:** a forward may-dirty analysis. Calls, returns and tail transfers store their dirty set. Cold leaves pass their own dirty set as a constant mask to one shared epilogue, so a stale local is never stored.
+  - **Entries:** backward liveness. `entry == start` loads live-in(start); any other entry loads the chunk's union, so every block stays an entry.
+  - **After a call:** reload live-after ∩ MOD(callee). MOD is a fixpoint over the module's direct calls and tail transfers; indirect, probed and host targets count as "all".
+  - **Optional:** no depth guard for leaf callees.
+  - `sync_all` keeps today's behaviour as the reference.
+- **Loop structuring (WP3, deep-worker):**
+  - loop forests by recursive SCC decomposition (Tarjan, `func.rs`), ordered as LLVM's CFGSort does and emitted as CFGStackify does, with one wasm `loop` per loop;
+  - a selector local for entries into a loop's interior;
+  - `$dispatch` only where something needs it.
+
+  `structured: false` keeps today's behaviour. It is built in a new `emit/structure.rs` (WP3a, in parallel with WP2), then integrated into `emit.rs` (WP3b).
+- **Memory checks (WP4, deep-worker, after WP2):**
+  - `null_check` (addr < 0x10000 → `EXIT_FAULT`) and `store_check` (a page byte for code and write-watch → `EXIT_UNSUPPORTED` until invalidation exists), inserted in the lifter's central load and store builders before any side effect;
+  - measured last on CoreMark and `7z b` in four variants. The numbers feed `guest-memory.md`'s decision and Phase 2's defaults.
+- **Not in M6:** XMM caching in locals.
+- **Correctness:**
+  - the reference modes join the spike option sweep, with new spike cases (merges before calls, values held across calls in loops, clobbering callees, host calls that unwind, multi-block loops with interior entries);
+  - `crates/testkit/tests/sync_diff.rs` runs random CFGs in every mode;
+  - L1, L2, CoreMark and the 7-Zip matrix run in both modes.
+- **Order:**
+  1. the contracts (`translator.md`, `abi.md` :111, `runtime.md`) and an `Options` stub commit;
+  2. WP1;
+  3. WP2 and WP3a in parallel;
+  4. WP3b and WP4;
+  5. the close-out (WP5) and PR "[Phase 1] Speed and close-out".
+
+  At most two deep-workers run at once.
+- **Estimates, to be measured:** calls drop from 10-20× to about 4-7× native; CoreMark and `7z b` rise from 0.30 and 0.35 to perhaps 0.45-0.6.
+- **The research digest routine** now runs on Sonnet 5.5 (your choice). Its effort is set on its page on claude.ai.
+
+## M6 progress (paused 2026-11-04)
+
+**Done:**
+- the routine's model;
+- the branch restarted from `main` after PR #7;
+- the research log: the M6 entry, and the digest entry of PR #8 restored. The merge of `main` into the M5 branch (`99d24a3`) had dropped it.
+
+**On resume:**
+1. **Your decisions:**
+   - the digest's three proposals (`docs/dev/research.md`, "2026-11-04: Claude Code workflow digest"): hard caps on subagents, a `medium` effort pilot for deep-worker, two rules for builder and deep-worker;
+   - whether Reddit, Hacker News and `learn.microsoft.com` were added to the environment's allowed domains (then update `CLAUDE.md` and `docs/dev/commands.md`).
+2. **The contracts commit**, then the `Options` stub (`crates/x64wasm/src/lib.rs`: `sync_all`, `structured`, `counters`, `null_check`, `store_check`).
+3. **WP1 with the builder**, then the rest in the order above.
 
 ## What works
 
