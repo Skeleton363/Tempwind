@@ -451,67 +451,16 @@
     i64.or
   )
   (func $fn_0x140001000 (;3;) (type 2) (param $state i64) (param $entry i32) (param $ret i64) (result i32)
-    (local $rax i64) (local $rcx i64) (local $rdx i64) (local $rbx i64) (local $rsp i64) (local $rbp i64) (local $rsi i64) (local $rdi i64) (local $r8 i64) (local $r9 i64) (local $r10 i64) (local $r11 i64) (local $r12 i64) (local $r13 i64) (local $r14 i64) (local $r15 i64) (local $rip i64) (local $cc_a i64) (local $cc_b i64) (local $cc_r i64) (local $scratch i64) (local $t0 i64) (local $t1 i64) (local $cc_op i32) (local $status i32) (local $func i32)
+    (local $rax i64) (local $rcx i64) (local $rdx i64) (local $rbx i64) (local $rsp i64) (local $rbp i64) (local $rsi i64) (local $rdi i64) (local $r8 i64) (local $r9 i64) (local $r10 i64) (local $r11 i64) (local $r12 i64) (local $r13 i64) (local $r14 i64) (local $r15 i64) (local $rip i64) (local $cc_a i64) (local $cc_b i64) (local $cc_r i64) (local $scratch i64) (local $t0 i64) (local $t1 i64) (local $cc_op i32) (local $status i32) (local $func i32) (local $mask i32)
     local.get $state
     i64.load align=1
     local.set $rax
-    local.get $state
-    i64.load offset=8 align=1
-    local.set $rcx
-    local.get $state
-    i64.load offset=16 align=1
-    local.set $rdx
     local.get $state
     i64.load offset=24 align=1
     local.set $rbx
     local.get $state
     i64.load offset=32 align=1
     local.set $rsp
-    local.get $state
-    i64.load offset=40 align=1
-    local.set $rbp
-    local.get $state
-    i64.load offset=48 align=1
-    local.set $rsi
-    local.get $state
-    i64.load offset=56 align=1
-    local.set $rdi
-    local.get $state
-    i64.load offset=64 align=1
-    local.set $r8
-    local.get $state
-    i64.load offset=72 align=1
-    local.set $r9
-    local.get $state
-    i64.load offset=80 align=1
-    local.set $r10
-    local.get $state
-    i64.load offset=88 align=1
-    local.set $r11
-    local.get $state
-    i64.load offset=96 align=1
-    local.set $r12
-    local.get $state
-    i64.load offset=104 align=1
-    local.set $r13
-    local.get $state
-    i64.load offset=112 align=1
-    local.set $r14
-    local.get $state
-    i64.load offset=120 align=1
-    local.set $r15
-    local.get $state
-    i32.load offset=148 align=1
-    local.set $cc_op
-    local.get $state
-    i64.load offset=152 align=1
-    local.set $cc_a
-    local.get $state
-    i64.load offset=160 align=1
-    local.set $cc_b
-    local.get $state
-    i64.load offset=168 align=1
-    local.set $cc_r
     block ;; label = @1
       loop ;; label = @2
         block ;; label = @3
@@ -547,6 +496,8 @@
         local.get $ret
         i64.ne
         local.set $status
+        i32.const 65553
+        local.set $mask
         br 1 (;@1;)
       end
       unreachable
@@ -555,50 +506,8 @@
     local.get $rax
     i64.store align=1
     local.get $state
-    local.get $rcx
-    i64.store offset=8 align=1
-    local.get $state
-    local.get $rdx
-    i64.store offset=16 align=1
-    local.get $state
-    local.get $rbx
-    i64.store offset=24 align=1
-    local.get $state
     local.get $rsp
     i64.store offset=32 align=1
-    local.get $state
-    local.get $rbp
-    i64.store offset=40 align=1
-    local.get $state
-    local.get $rsi
-    i64.store offset=48 align=1
-    local.get $state
-    local.get $rdi
-    i64.store offset=56 align=1
-    local.get $state
-    local.get $r8
-    i64.store offset=64 align=1
-    local.get $state
-    local.get $r9
-    i64.store offset=72 align=1
-    local.get $state
-    local.get $r10
-    i64.store offset=80 align=1
-    local.get $state
-    local.get $r11
-    i64.store offset=88 align=1
-    local.get $state
-    local.get $r12
-    i64.store offset=96 align=1
-    local.get $state
-    local.get $r13
-    i64.store offset=104 align=1
-    local.get $state
-    local.get $r14
-    i64.store offset=112 align=1
-    local.get $state
-    local.get $r15
-    i64.store offset=120 align=1
     local.get $state
     local.get $cc_op
     i32.store offset=148 align=1

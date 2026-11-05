@@ -522,10 +522,10 @@ mod tests {
         assert_eq!((inc.uses, inc.kills), (1 | FLAGS, 0));
         let cond = op_effect(&flags(FlagOp::Sub, Some(Value::Reg(1))));
         assert_eq!((cond.uses, cond.kills), (0b11, 0));
-        let dead = Op::Flags {
-            live: false,
-            ..flags(FlagOp::Sub, None)
-        };
+        let mut dead = flags(FlagOp::Sub, None);
+        if let Op::Flags { live, .. } = &mut dead {
+            *live = false;
+        }
         assert_eq!(op_effect(&dead), Effect::default());
         let movs = op_effect(&Op::RepString {
             op: StrOp::Movs,

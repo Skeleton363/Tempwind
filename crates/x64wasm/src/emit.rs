@@ -1603,7 +1603,13 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             locals.push((1, ValType::I32));
             L_GPR0 + n
         });
-        temps.push((t, vt, uses_fp, x87_base, l_mask));
+        temps.push(ChunkLocals {
+            t,
+            vt,
+            uses_fp,
+            x87_base,
+            l_mask,
+        });
         let mut func = Function::new(locals);
         let mut emitter = ChunkEmitter {
             prog,
@@ -1662,10 +1668,22 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
     module.finish()
 }
 
+/// What the name section needs of a chunk's locals.
+#[derive(Clone, Copy)]
+struct ChunkLocals {
+    /// Temporaries.
+    t: u32,
+    /// Vector temporaries.
+    vt: u32,
+    uses_fp: bool,
+    x87_base: Option<u32>,
+    l_mask: Option<u32>,
+}
+
 fn names(
     prog: &Program,
     part: &Partition,
-    temps: &[(u32, u32, bool, Option<u32>, Option<u32>)],
+    temps: &[ChunkLocals],
     fp: &FpImports,
     f_div128: Option<u32>,
     opts: &Options,
@@ -1717,7 +1735,14 @@ fn names(
         flags.append(i as u32, n);
     }
     locals.append(fbase + F_FLAGS, &flags);
-    for (c, &(t, vt, uses_fp, x87_base, l_mask)) in temps.iter().enumerate() {
+    for (c, l) in temps.iter().enumerate() {
+        let ChunkLocals {
+            t,
+            vt,
+            uses_fp,
+            x87_base,
+            l_mask,
+        } = *l;
         let mut chunk = NameMap::new();
         chunk.append(P_STATE, "state");
         chunk.append(P_ENTRY, "entry");
