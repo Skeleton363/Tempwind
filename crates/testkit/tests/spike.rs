@@ -39,6 +39,15 @@ fn option_sweep() -> Vec<Options> {
         o(Options::DEFAULT_MAX_FUNCTION_INSNS, 20_000, Some(0)),
         o(1, 1, Some(0)),
         o(30, 60, Some(3)),
+        // The reference sync: every value at every boundary.
+        Options {
+            sync_all: true,
+            ..Options::default()
+        },
+        Options {
+            sync_all: true,
+            ..o(1, 1, Some(0))
+        },
     ]
 }
 
@@ -130,6 +139,39 @@ fn loop_branch() {
     run_case(&spike::loop_branch(100).unwrap());
 }
 
+#[test]
+fn merge_call() {
+    for n in [0, 4, 5, 9] {
+        run_case(&spike::merge_call(n).unwrap());
+    }
+}
+
+#[test]
+fn loop_calls() {
+    for n in [0, 1, 2, 100] {
+        run_case(&spike::loop_calls(n).unwrap());
+    }
+}
+
+#[test]
+fn clobber_calls() {
+    run_case(&spike::clobber_calls().unwrap());
+}
+
+#[test]
+fn flags_across_call() {
+    for (rcx, rdx) in [(3, 9), (9, 3), (5, 5), (0, u64::MAX)] {
+        run_case(&spike::flags_across_call(rcx, rdx).unwrap());
+    }
+}
+
+#[test]
+fn unwind_dirty() {
+    for n in [0, 1, 10, 2000] {
+        run_case(&spike::unwind_dirty(n).unwrap());
+    }
+}
+
 /// Runs a case built with counters; returns the counter block.
 fn counted(case: &Case, opts: &Options) -> [u64; 12] {
     let t = case.translate(opts).unwrap();
@@ -155,12 +197,58 @@ fn counters_are_deterministic_and_validate() {
     assert_eq!(c[2], 99, "dispatches");
     assert_eq!((c[4], c[5], c[6]), (0, 0, 0), "no calls");
     assert_eq!(c[7], 1, "the final ret unwinds to the sentinel");
-    assert_eq!(
-        (c[8], c[9]),
-        (20, 20),
-        "one load and one store of the state"
-    );
+    // Entry loads what is live into the entry block (RCX, RSP); the ret
+    // stores what the function wrote: RAX, RCX, RSP and the flag record
+    // (four locals).
+    assert_eq!((c[8], c[9]), (7, 2), "stores and loads of the state");
     assert_eq!((c[10], c[11]), (1, 0), "only the ret loads from memory");
+    let all = counted(
+        &case,
+        &Options {
+            sync_all: true,
+            ..opts.clone()
+        },
+    );
+    assert_eq!(
+        (all[8], all[9]),
+        (20, 20),
+        "sync_all: one load and one store of the whole state"
+    );
+}
+
+/// Values moved per call (stores plus loads, in locals) under `opts`.
+fn moved_per_call(case: &Case, opts: &Options) -> f64 {
+    let c = counted(case, opts);
+    (c[8] + c[9]) as f64 / (c[4] + c[5]) as f64
+}
+
+#[test]
+fn sync_moves_only_live_and_dirty_values() {
+    let opts = Options {
+        counters: true,
+        ..Options::default()
+    };
+    let all = Options {
+        sync_all: true,
+        ..opts.clone()
+    };
+    for case in [
+        spike::fib_rec(15).unwrap(),
+        spike::loop_calls(50).unwrap(),
+        spike::unwind_dirty(50).unwrap(),
+    ] {
+        let (fast, reference) = (moved_per_call(&case, &opts), moved_per_call(&case, &all));
+        assert!(
+            reference >= 80.0,
+            "{}: sync_all moves {reference}",
+            case.name
+        );
+        assert!(
+            fast * 3.0 < reference,
+            "{}: {fast} values per call, sync_all {reference}",
+            case.name
+        );
+    }
 }
 
 #[test]
@@ -171,8 +259,15 @@ fn counters_count_calls() {
     };
     let c = counted(&spike::fib_rec(10).unwrap(), &opts);
     assert!(c[4] > 0, "direct calls {c:?}");
-    assert_eq!(c[8] % 20, 0);
-    assert_eq!(c[9] % 20, 0);
+    let all = counted(
+        &spike::fib_rec(10).unwrap(),
+        &Options {
+            sync_all: true,
+            ..opts
+        },
+    );
+    assert_eq!(all[8] % 20, 0);
+    assert_eq!(all[9] % 20, 0);
 }
 
 #[test]
@@ -290,6 +385,11 @@ fn manifest_follows_the_abi_doc() {
             "longjmp_like",
             "big_function",
             "loop_branch",
+            "merge_call",
+            "loop_calls",
+            "clobber_calls",
+            "flags_across_call",
+            "unwind_dirty",
         ]
     );
     let is_hex = |v: &serde_json::Value| {

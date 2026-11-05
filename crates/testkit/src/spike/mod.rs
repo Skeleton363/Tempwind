@@ -1066,6 +1066,252 @@ pub fn big_function(segments: u64) -> Result<Case> {
     ))
 }
 
+// Cases for the register and flag sync of M6 (`translator.md`, "Registers
+// and flags"): values that must be stored, kept or reloaded around calls.
+
+/// merge_call: two paths dirty different registers and merge before a call,
+/// so the store at the call covers a register one path never wrote (it must
+/// have been loaded at entry). `rcx < 5` takes the second path.
+pub fn merge_call(n: u64) -> Result<Case> {
+    let mut a = CodeAssembler::new(64)?;
+    let mut g = a.create_label();
+    let mut low = a.create_label();
+    let mut merge = a.create_label();
+    a.cmp(rcx, 5)?;
+    a.jb(low)?;
+    a.mov(ebx, 1)?;
+    a.mov(esi, 7)?;
+    a.jmp(merge)?;
+    a.set_label(&mut low)?;
+    a.mov(ebx, 2)?;
+    a.mov(edi, 9)?;
+    a.set_label(&mut merge)?;
+    a.call(g)?;
+    a.add(rax, rsi)?;
+    a.add(rax, rdi)?;
+    a.add(rax, rbx)?;
+    a.ret()?;
+    a.set_label(&mut g)?;
+    a.lea(rax, ptr(rbx + 100))?;
+    a.ret()?;
+    let (rsi0, rdi0) = (0x1000, 0x2000);
+    let (rbx1, rsi1, rdi1) = if n < 5 { (2, rsi0, 9) } else { (1, 7, rdi0) };
+    Ok(low_case(
+        "merge_call",
+        asm(&mut a, LOW_CODE)?,
+        &[("rcx", n), ("rbx", MARKER), ("rsi", rsi0), ("rdi", rdi0)],
+        &[
+            ("rax", rbx1 + 100 + rsi1 + rdi1 + rbx1),
+            ("rbx", rbx1),
+            ("rsi", rsi1),
+            ("rdi", rdi1),
+            ("rcx", n),
+        ],
+    ))
+}
+
+/// loop_calls: a loop that calls a small function each iteration and keeps
+/// its counter, its sum and a value set before the loop in registers the
+/// callee doesn't touch.
+pub fn loop_calls(n: u64) -> Result<Case> {
+    let mut a = CodeAssembler::new(64)?;
+    let mut g = a.create_label();
+    let mut top = a.create_label();
+    let mut done = a.create_label();
+    a.push(rbx)?;
+    a.push(rsi)?;
+    a.mov(rdi, rdx)?;
+    a.mov(rbx, rcx)?;
+    a.xor(esi, esi)?;
+    a.test(rbx, rbx)?;
+    a.jz(done)?;
+    a.set_label(&mut top)?;
+    a.mov(rcx, rbx)?;
+    a.call(g)?;
+    a.add(rsi, rax)?;
+    a.dec(rbx)?;
+    a.jnz(top)?;
+    a.set_label(&mut done)?;
+    a.lea(rax, ptr(rsi + rdi))?;
+    a.pop(rsi)?;
+    a.pop(rbx)?;
+    a.ret()?;
+    a.set_label(&mut g)?;
+    a.lea(rax, ptr(rcx + rcx + 1))?;
+    a.ret()?;
+    let rdx0: u64 = 0x5_0000_0000;
+    let sum = (1..=n).fold(rdx0, |acc, k| acc.wrapping_add(2 * k + 1));
+    Ok(low_case(
+        "loop_calls",
+        asm(&mut a, LOW_CODE)?,
+        &[("rcx", n), ("rdx", rdx0), ("rbx", MARKER), ("rsi", !MARKER)],
+        &[
+            ("rax", sum),
+            ("rbx", MARKER),
+            ("rsi", !MARKER),
+            ("rdi", rdx0),
+            ("rcx", n.min(1)),
+        ],
+    ))
+}
+
+/// clobber_calls: the callee saves and restores RBX and R12 with push/pop
+/// after changing them, clobbers R10 and R11 (volatile) and R13 (callee-saved,
+/// without restoring it), and leaves ZF set; the caller reads all of them.
+pub fn clobber_calls() -> Result<Case> {
+    let mut a = CodeAssembler::new(64)?;
+    let mut g = a.create_label();
+    a.push(rbx)?;
+    a.push(rbp)?;
+    a.push(r12)?;
+    a.mov(rbx, rcx)?;
+    a.mov(rbp, rdx)?;
+    a.mov(r12d, 0x55)?;
+    a.mov(r10d, 0x10)?;
+    a.mov(r13d, 0x20)?;
+    // ZF = 0 before the call (rcx != rdx).
+    a.cmp(rbx, rbp)?;
+    a.call(g)?;
+    a.setz(cl)?;
+    a.movzx(ecx, cl)?;
+    a.add(rax, rcx)?;
+    a.add(rax, r10)?;
+    a.add(rax, r11)?;
+    a.add(rax, r13)?;
+    a.add(rax, rbx)?;
+    a.add(rax, rbp)?;
+    a.add(rax, r12)?;
+    a.pop(r12)?;
+    a.pop(rbp)?;
+    a.pop(rbx)?;
+    a.ret()?;
+    a.set_label(&mut g)?;
+    a.push(rbx)?;
+    a.push(r12)?;
+    a.mov(ebx, 0x777)?;
+    a.mov(r12, rbx)?;
+    a.mov(r10d, 0x1000)?;
+    a.mov(r11d, 0x2000)?;
+    a.mov(r13d, 0x3333)?;
+    a.lea(rax, ptr(rbx + r12))?;
+    a.cmp(rbx, r12)?;
+    a.pop(r12)?;
+    a.pop(rbx)?;
+    a.ret()?;
+    let (rcx0, rdx0) = (0x1_0000, 0x2_0000);
+    let sum: u64 = 0x777 * 2 + 1 + 0x1000 + 0x2000 + 0x3333 + rcx0 + rdx0 + 0x55;
+    Ok(low_case(
+        "clobber_calls",
+        asm(&mut a, LOW_CODE)?,
+        &[
+            ("rcx", rcx0),
+            ("rdx", rdx0),
+            ("rbx", MARKER),
+            ("rbp", !MARKER),
+            ("r12", MARKER ^ 0xff),
+        ],
+        &[
+            ("rax", sum),
+            ("rcx", 1),
+            ("rbx", MARKER),
+            ("rbp", !MARKER),
+            ("r12", MARKER ^ 0xff),
+            ("r10", 0x1000),
+            ("r11", 0x2000),
+            ("r13", 0x3333),
+        ],
+    ))
+}
+
+/// flags_across_call: `cmp rcx, rdx` before a call to a function that
+/// touches no flags; the caller branches on them, reads CF again with
+/// `setb`, and returns them.
+pub fn flags_across_call(rcx0: u64, rdx0: u64) -> Result<Case> {
+    let mut a = CodeAssembler::new(64)?;
+    let mut g = a.create_label();
+    let mut below = a.create_label();
+    let mut out = a.create_label();
+    a.cmp(rcx, rdx)?;
+    a.call(g)?;
+    a.jb(below)?;
+    a.lea(rax, ptr(rax + 0x100))?;
+    a.jmp(out)?;
+    a.set_label(&mut below)?;
+    a.lea(rax, ptr(rax + 0x200))?;
+    a.set_label(&mut out)?;
+    a.setb(r10b)?;
+    a.ret()?;
+    a.set_label(&mut g)?;
+    a.lea(rax, ptr(r8 + 1))?;
+    a.mov(r9, rax)?;
+    a.ret()?;
+    let lower = rcx0 < rdx0;
+    let mut case = low_case(
+        "flags_across_call",
+        asm(&mut a, LOW_CODE)?,
+        &[("rcx", rcx0), ("rdx", rdx0), ("r8", 0x40)],
+        &[
+            ("rax", 0x41 + if lower { 0x200 } else { 0x100 }),
+            ("r9", 0x41),
+            ("r10", lower as u64),
+        ],
+    );
+    let flags = (lower as u64 * abi::flags::CF) | ((rcx0 == rdx0) as u64 * abi::flags::ZF);
+    case.expect_rflags = Some((flags, abi::flags::CF | abi::flags::ZF));
+    Ok(case)
+}
+
+/// unwind_dirty: recursion `rcx` deep (past the default call-depth limit)
+/// whose every level has written registers when it calls, so the depth
+/// guard's unwind must store them: callee-saved RBX and R12 (restored with
+/// pop), R8 (clobbered) and the running R9.
+pub fn unwind_dirty(n: u64) -> Result<Case> {
+    let mut a = CodeAssembler::new(64)?;
+    let mut r = a.create_label();
+    let mut base = a.create_label();
+    a.set_label(&mut r)?;
+    a.test(rcx, rcx)?;
+    a.jz(base)?;
+    a.push(rbx)?;
+    a.push(r12)?;
+    a.mov(rbx, rcx)?;
+    a.lea(r12, ptr(rcx + rcx * 2))?;
+    a.mov(r8, rcx)?;
+    a.add(r9, rcx)?;
+    a.dec(rcx)?;
+    a.call(r)?;
+    a.add(rax, rbx)?;
+    a.add(rax, r12)?;
+    a.xor(r9, rbx)?;
+    a.pop(r12)?;
+    a.pop(rbx)?;
+    a.ret()?;
+    a.set_label(&mut base)?;
+    a.xor(eax, eax)?;
+    a.ret()?;
+    // Reference: r9 adds n..1 on the way down, then rax and r9 change on
+    // the way back up, innermost level first.
+    let mut acc9 = (1..=n).fold(0u64, |acc, k| acc.wrapping_add(k));
+    let mut acc = 0u64;
+    for k in 1..=n {
+        acc = acc.wrapping_add(4 * k);
+        acc9 ^= k;
+    }
+    Ok(low_case(
+        "unwind_dirty",
+        asm(&mut a, LOW_CODE)?,
+        &[("rcx", n), ("rbx", MARKER), ("r12", !MARKER)],
+        &[
+            ("rax", acc),
+            ("rcx", 0),
+            ("rbx", MARKER),
+            ("r12", !MARKER),
+            ("r8", n.min(1)),
+            ("r9", acc9),
+        ],
+    ))
+}
+
 /// The cases written by `testkit spike`.
 pub fn cases() -> Result<Vec<Case>> {
     Ok(vec![
@@ -1082,6 +1328,11 @@ pub fn cases() -> Result<Vec<Case>> {
         longjmp_like()?,
         big_function(100)?,
         loop_branch(100)?,
+        merge_call(3)?,
+        loop_calls(10)?,
+        clobber_calls()?,
+        flags_across_call(3, 9)?,
+        unwind_dirty(2000)?,
     ])
 }
 
