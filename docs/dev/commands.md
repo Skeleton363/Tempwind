@@ -35,3 +35,11 @@ Moved verbatim from `CLAUDE.md`, "Network and builds".
 - Node: 24, pinned in `.nvmrc` for CI and sessions.
 - Chrome for headless tests: Playwright's Chromium, preinstalled in the image. Tests find it through Playwright; never hard-code a browser path. Set `CHROME_PATH` to test with another Chrome or Chromium binary (in CI, the `CHROME_PATH` repository variable).
 - Microsoft's documentation: `learn.microsoft.com` is reachable (allowed 2026-11-05). Its source also works as single files through raw.githubusercontent.com: `MicrosoftDocs/win32` (for example `https://raw.githubusercontent.com/MicrosoftDocs/win32/docs/desktop-src/Debug/system-error-codes--0-499-.md`) and `MicrosoftDocs/sdk-api` (for example `https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/docs/sdk-api-src/content/fileapi/nf-fileapi-getfileattributesw.md`).
+
+## Profiling and counters (M6)
+- **Profile:** `node tests/bench/profile.mjs --target coremark|7z [--top 20]` runs the target translated under `node --cpu-prof`. It prints self time per function (chunk names carry COFF symbols) and the split between wasm, JS and other.
+- **Counters:**
+  - Translate with `x64wasm-cli translate-pe --counters ...`.
+  - Run with `TEMPWIND_TRACE=counts`. At exit, the run prints the counter block (`abi.md`, "Counter block") and the host calls per import.
+  - Never time a run that has counters on.
+- **Agent usage:** `node scripts/agent-stats.mjs [--milestone M6]` summarizes `docs/dev/agent-runs.jsonl` (`docs/dev/agent-runs.md`).
