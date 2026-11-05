@@ -36,7 +36,7 @@ Core verification; the full reference is `docs/dev/commands.md` (add each comman
 
 ## Network and builds (cloud sessions)
 - GitHub works only for this repo; other GitHub repos return 403. Never clone or download from them in a session.
-- Available: crates.io, npm, PyPI, Ubuntu apt, Docker Hub, raw.githubusercontent.com (single files), dl.winehq.org, gitlab.winehq.org.
+- Available: crates.io, npm, PyPI, Ubuntu apt, Docker Hub, raw.githubusercontent.com (single files), dl.winehq.org, gitlab.winehq.org, learn.microsoft.com, Reddit, Hacker News (news.ycombinator.com, hn.algolia.com).
 - Wine: the wine-11.0 source tarball from dl.winehq.org.
 - Setup, Docker, Emscripten, Node and Chrome details: `docs/dev/commands.md`, "Environment and builds". Never use `service docker start`; never hard-code a browser path.
 - Heavy builds (Wine, Emscripten builds of Wine), long jobs, and anything needing other GitHub repos run in GitHub Actions. Publish results as artifacts or releases in this repo; sessions download them instead of rebuilding.
@@ -50,6 +50,7 @@ Core verification; the full reference is `docs/dev/commands.md` (add each comman
 - Routine work (docs, CI, test plumbing, shell UI, small fixes): builder (Sonnet, medium).
 - Translator core, Wine system-call layer, memory model and threads, graphics backend, hard bugs: deep-worker (Opus, high).
 - If an attempt fails the same tests twice, retry one tier up. Never use max effort unless asked.
+- Log every finished agent run in `docs/dev/agent-runs.jsonl` (method and current trials: `docs/dev/agent-runs.md`). Subagents run at most 3 at once and never spawn their own (`.claude/settings.json`).
 
 ## Working efficiently
 Quality first: rework is the most expensive waste. Cut the rest:

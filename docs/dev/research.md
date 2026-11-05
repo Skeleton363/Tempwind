@@ -67,6 +67,16 @@ Proposals only. Items 1-2 rest on undated Claude 5 guides: new to this log (its 
 
 **Checked, nothing new:** engineering blog (newest post 2026-10-13, unrelated); awesome-claude-code mirrors; Reddit (blocked). Keep `/milestone-close`: a fresh-agent diff review is the writer-verifier pattern the Opus 5 guide calls effective.
 
+### Decisions (2026-11-05; the owner asked the coordinator to decide, with a cheap way to measure)
+- **Item 1:**
+  - Adopted: at most 3 subagents at once, and no nested spawning.
+  - Adopted, at `high` rather than the proposed `medium`: the default effort for subagents that name none (Plan, general-purpose reviewers). They do judgment work, and `high` is still well below the session's `max`.
+  - Not adopted: `maxEffortLevel`, since it would also cap the main session.
+  - The docs confirmed the semantics: the SDK page "Cap subagent depth, concurrency, and spend"; the changelog for 2.1.316 and 2.1.317.
+- **Item 2:** a pilot in M6. deep-worker runs at `medium` for WP3a and WP4, and at `high` for WP2 and WP3b. Decided at the close-out.
+- **Item 3:** adopted in the builder and deep-worker fixed rules (changelog 2.1.317 and 2.1.318).
+- **Measurement:** `docs/dev/agent-runs.md` and `docs/dev/agent-runs.jsonl`, a ledger of the token figures the harness already reports, plus rework and review findings as the quality signals.
+
 ## 2026-11-04: M6, translator speed
 
 The M6 planning pass, with 4 searches. Several hosts are blocked here (github.com pages of other repos, spidermonkey.dev), so some items rest on search summaries.
