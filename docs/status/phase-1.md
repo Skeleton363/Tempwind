@@ -251,6 +251,14 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
   - **After a call:** reload live-after ∩ MOD(callee). MOD is a fixpoint over the module's direct calls and tail transfers; indirect, probed and host targets count as "all".
   - **Optional:** no depth guard for leaf callees.
   - `sync_all` keeps today's behaviour as the reference.
+- **WP2 as built** (`crates/x64wasm/src/sync.rs`, `emit.rs`):
+  - one transfer function, `sync::op_effect` (uses, kills, may-writes, may-leave), drives the analyses and the emitter, which replays it op by op. So every store the emitter makes is a use the liveness counted;
+  - `pop` and the `rep` string registers (RAX/RCX/RSI/RDI per op, read and written in place) are writes and never kills;
+  - dead flag records have no effect. Partial and conditional records don't kill the flag record. `FaultIf`, the SSE floating-point ops and x87 ops may leave with the dirty set from before the op;
+  - leaves pass their dirty set in an i32 local `mask` (none under `sync_all`). The epilogue stores the values every leave stores unconditionally, and one `if (mask & group)` per group of values that the same leaves store;
+  - the fast entry loads live-in of the function's entry block. Any other entry also loads the rest of the chunk's union inside `if entry != own`;
+  - `sync_all` produces byte-identical output to `a745ad6` (checked on 7zz.exe and coremark.exe with counters on and off and three depth limits, and on every spike case);
+  - `values_*` count locals (the flag record is four), so they compare with WP1's 20 per sync.
 - **Loop structuring (WP3, deep-worker):**
   - loop forests by recursive SCC decomposition (Tarjan, `func.rs`), ordered as LLVM's CFGSort does and emitted as CFGStackify does, with one wasm `loop` per loop;
   - a selector local for entries into a loop's interior;
@@ -566,9 +574,45 @@ Reading:
 - **7z calls through the lookup table two times in three** (function pointers in the match finder and range coder): that is the `lookup` and `call_indirect` path.
 - Counters are not in the timed builds.
 
+### WP2 (M6, register and flag sync)
+
+The same commands as the WP1 baseline: counters from `translate-pe --counters --entries all` with `TEMPWIND_TRACE=counts`; timings from `tests/bench/coremark.mjs` and `tests/bench/sevenzip.mjs` (medians of 3, `wine64` for native). "Before" is `a745ad6` (WP1, translated by its own CLI), run on the same machine in the same session (Xeon @ 2.10 GHz, Node 24.22.0). `values_*` count locals moved: one per GPR and four for the flag record, so a full sync is 20, as in the baseline.
+
+**Counters, after** (CoreMark calibrates its own length: the counted run made 1.70× the baseline's calls; 7z b is deterministic and made exactly the same calls):
+
+| Slot | CoreMark | 7z b |
+|---|---|---|
+| `entries_fast` | 220,691,490 | 143,191,756 |
+| `entries_generic` | 45 | 700 |
+| `calls_direct` | 181,559,477 | 47,654,308 |
+| `calls_probed` | 38,647,531 | 95,340,265 |
+| `values_stored` | 5,581,591,533 | 3,220,705,502 |
+| `values_loaded` | 2,060,568,641 | 1,904,564,323 |
+
+| Per call | CoreMark before | CoreMark after | 7z before | 7z after |
+|---|---|---|---|---|
+| values stored | 40.0 | 25.3 | 40.0 | 22.5 |
+| values loaded | 40.0 | 9.4 | 40.0 | 13.3 |
+| values moved | 80.1 | 34.7 | 80.1 | 35.8 |
+
+Entries stay fast: generic entries are 45 (CoreMark) and 700 (7z), as before.
+
+**Timings** (medians of 3):
+
+| | before | after | native (`wine64`) | ratio before | ratio after |
+|---|---|---|---|---|---|
+| CoreMark (iterations/s) | 7,374 | 8,020 | 24,682 | 0.299 | 0.325 |
+| `7z b 2 -mmt1 -md18` (MIPS, "Tot:") | 1,657; 1,677; 1,665 | 1,638; 1,697; 1,689 | 5,025 | 0.33 | 0.33-0.34 |
+
+Reading:
+- **Values moved per call drop from 80 to about 35.** Loads fall more than stores. Most of what is still stored is the flag record (four locals, dirty after almost every instruction) and callee-saved registers restored with `pop`, which the analysis counts as writes.
+- **CoreMark gains 8.8 %; 7z b stays within noise** (three runs of three on each side, alternating; +1 % at most). 7z spends its time in loops (1.8 G dispatches against 143 M calls), and two calls in three are probed, so MOD there is "all". That points at WP3 (loop structuring) for 7z.
+- Neither timing was repeated at other guest base addresses.
+
 ## Known issues and risks
 
-- **Calls are expensive** (10-20× native) until M6 syncs only live registers at boundaries.
+- **Calls are still expensive:** since WP2, a call moves about 35 values instead of 80 ("WP2" under "Measurements"). The flag record and registers restored with `pop` make up most of the rest.
+- **`tests/node/pe.test.mjs` (the `--counters` test) still asserts `values_stored % 20 == 0` and `values_loaded % 20 == 0`.** That holds only for the full sync, so `npm run test:node` fails 1 test until the assertion follows the WP2 contract (for example: both counters > 0, and fewer than 20 per entry). The file was outside WP2's brief.
 - **Guest threads take turns; they don't run in parallel** (Phase 4). A thread switches only at a blocking call, so a thread that spins on memory without one never lets the others run. 7-Zip doesn't do that.
 - **The research digest has not reached the repository yet.** Its routine session starts without a checkout, and both runs so far (2026-11-01 and a test on 2026-11-04) stopped there. The owner selects Skeleton363/Tempwind for the "Workflow research digest" routine on claude.ai; until then, research happens at each milestone's start.
 - **Floating point is slow:** about 7× native in a dot product (XMM in the state block, an MXCSR load and operand tests per operation). x87 code is large (400-600 wasm bytes per instruction). Both are M6's.
