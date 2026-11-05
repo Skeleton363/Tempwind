@@ -258,7 +258,11 @@ fn chunks_of(
 
 /// Strongly connected components of the subgraph induced by `blocks`
 /// (iterative Tarjan), each a list of program block indices.
-fn sccs(prog: &Program, index: &HashMap<u64, usize>, blocks: &[usize]) -> Vec<Vec<usize>> {
+pub(crate) fn sccs(
+    prog: &Program,
+    index: &HashMap<u64, usize>,
+    blocks: &[usize],
+) -> Vec<Vec<usize>> {
     let local: HashMap<usize, usize> = blocks.iter().enumerate().map(|(i, &b)| (b, i)).collect();
     let succ: Vec<Vec<usize>> = blocks
         .iter()

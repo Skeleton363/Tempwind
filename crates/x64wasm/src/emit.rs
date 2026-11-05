@@ -75,6 +75,7 @@ mod flags;
 mod fp;
 mod helpers;
 mod simd;
+mod structure;
 mod string;
 mod x87;
 
