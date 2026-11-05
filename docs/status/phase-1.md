@@ -514,6 +514,58 @@ Machine: the session's 4-core Xeon @ 2.8 GHz VM. Release builds, each 3 runs. Ra
 - In scope: 491 forms over 383 `Code`s for the targets; 509 with the M3 L2 programs. After M3, L1 fixtures cover 484 of the 509.
 - Imports: 189 distinct functions in 5 DLLs (kernel32 113, msvcrt 54, advapi32 14, oleaut32 6, user32 2).
 
+### WP1 baseline (M6, measurement before changes)
+
+Commands: `node tests/bench/profile.mjs --target coremark|7z` (default options, `node --cpu-prof`, 1 ms samples, self time per function); counters runs are `translate-pe --counters` plus `TEMPWIND_TRACE=counts` (not timed). Profile runs took about 17.0 s (CoreMark) and 39.3 s (`7z b 2 -mmt1 -md18`) of samples. CoreMark calibrates its own length, so its counts vary a little between runs. Function names carry the COFF symbol when the image has one (7zz.exe's hottest functions have none).
+
+**Where the time goes** (self time, % of samples):
+
+| | wasm | JS (shim, runtime) | other (GC, program, idle) |
+|---|---|---|---|
+| CoreMark | 99.2 % | 0.4 % | 0.4 % |
+| 7z b | 98.0 % | 0.5 % | 1.5 % |
+
+JS is not the problem: the host calls are rare (CoreMark 852 in all, 7z 151,286 over about 39 s), so the time is in the translated code itself.
+
+**CoreMark, top 20:** `core_bench_list` 25.5 %; `core_state_transition` 16.3 %; `core_bench_state` 10.6 %; `matrix_mul_matrix_bitextract` 8.5 %; `matrix_test` 7.1 %; `core_list_mergesort` 6.9 %; `matrix_mul_matrix` 6.3 %; `crc16` 3.9 %; `crcu32` 3.5 %; `calc_func` 2.7 %; `cmp_complex` 2.5 %; `flags` (the lazy-flag helper) 2.0 %; `cmp_idx` 1.5 %; `crcu16` 0.9 %; `matrix_mul_vect` 0.7 %; `(program)` 0.2 %; `iterate` 0.1 %; `core_bench_matrix` 0.1 %; `(garbage collector)` 0.1 %; `compileForInternalLoader` 0.1 %.
+
+**7z b, top 20:** `fn_0x140010490` (no symbol) 49.8 %; `fn_0x140013cf0_c1` 18.5 %; `Bt4_MatchFinder_GetMatches` 13.2 %; `CountCpuFreq` 7.2 % (a timing loop that runs for as long as the benchmark asks); `ReadMatchDistances` 3.5 %; `(program)` 1.0 %; `MatchFinder_GetNumAvailableBytes` 0.9 %; `MatchFinder_GetPointerToCurrentPos` 0.8 %; `CrcUpdateT12` 0.7 %; `fn_0x140012980` 0.7 %; `RangeEnc_ShiftLow` 0.7 %; `fn_0x140012a90` 0.5 %; `lookup` 0.5 %; `FillDistancesPrices` 0.3 %; `fn_0x140012a30` 0.3 %; `(garbage collector)` 0.2 %; `(idle)` 0.1 %; `fn_0x140016a90` 0.1 %; `hostcall.mjs` host-call function 0.1 %; `fn_0x140013230` 0.1 %.
+
+**Counters** (whole run):
+
+| Slot | CoreMark | 7z b |
+|---|---|---|
+| `entries_fast` | 129,580,162 | 143,191,756 |
+| `entries_generic` | 45 | 700 |
+| `dispatches` | 1,508,290,963 | 1,795,449,283 |
+| `local_indirect` | 5 | 0 |
+| `calls_direct` | 106,603,578 | 47,654,308 |
+| `calls_probed` | 22,692,102 | 95,340,265 |
+| `tail_transfers` | 285,328 | 349,152 |
+| `unwinds` | 28 | 16 |
+| `values_stored` | 5,177,517,380 | 5,723,740,540 |
+| `values_loaded` | 5,177,517,380 | 5,723,740,540 |
+| `mem_loads` | 4,055,450,111 | 10,154,002,794 |
+| `mem_stores` | 1,187,470,980 | 4,330,202,167 |
+
+Derived (calls = direct + probed; rates use the profile run's time as the run time, so they are indicative):
+
+| | CoreMark | 7z b |
+|---|---|---|
+| `dispatches` per call | 11.7 | 12.6 |
+| values moved (stored + loaded) per call | 80.1 | 80.1 |
+| values stored per chunk entry | 40.0 | 40.0 |
+| probed share of calls | 17.5 % | 66.7 % |
+| `dispatches` per second | 89 M | 46 M |
+| values moved per second | 609 M | 291 M |
+| guest memory loads + stores per second | 308 M | 368 M |
+
+Reading:
+- **Every call syncs the whole state:** about 80 values move per call (40 stored, 40 loaded: the caller's store and reload, the callee's load and leave store), whether or not the code touches them.
+- **Dispatch is the common branch:** a dispatch every 12 calls or so, that is, loops and branches leave the chunk's fast path often; this is WP3's target (`structured`).
+- **7z calls through the lookup table two times in three** (function pointers in the match finder and range coder): that is the `lookup` and `call_indirect` path.
+- Counters are not in the timed builds.
+
 ## Known issues and risks
 
 - **Calls are expensive** (10-20× native) until M6 syncs only live registers at boundaries.
