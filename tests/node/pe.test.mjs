@@ -78,8 +78,13 @@ test('basic.exe built with --counters: TEMPWIND_TRACE=counts reports the block a
   assert.equal(lines['count calls_direct'], 22927);
   assert.ok(lines['count entries_fast'] > 0 && lines['count entries_generic'] > 0);
   assert.ok(lines['count dispatches'] > 0 && lines['count unwinds'] > 0);
-  assert.equal(lines['count values_stored'] % 20, 0);
-  assert.equal(lines['count values_loaded'] % 20, 0);
+  // Since M6 (translator.md, "Registers and flags") a boundary moves only what it must: fewer values than a
+  // full sync of all 20 at every entry, store and reload, but never none.
+  const calls = lines['count calls_direct'] + lines['count calls_probed'];
+  const entries = lines['count entries_fast'] + lines['count entries_generic'];
+  const leaves = calls + entries + lines['count tail_transfers'] + lines['count unwinds'];
+  assert.ok(lines['count values_loaded'] > 0 && lines['count values_loaded'] < 20 * (entries + calls), 'loads: live values only');
+  assert.ok(lines['count values_stored'] > 0 && lines['count values_stored'] < 20 * leaves, 'stores: dirty values only');
   assert.ok(lines['count mem_loads'] > 0 && lines['count mem_stores'] > 0);
   assert.deepEqual(
     [lines['hostcalls kernel32.dll!ExitProcess'], lines['hostcalls kernel32.dll!GetStdHandle'], lines['hostcalls kernel32.dll!WriteFile']],
