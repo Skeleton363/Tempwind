@@ -53,6 +53,9 @@ pub struct Options {
     /// Test the page-state table before each store; the module then imports
     /// `env.page_flags` (`translator.md`, "Memory checks").
     pub store_check: bool,
+    /// Guest function entries with a name (the PE's COFF symbols). Chunk
+    /// names in the name section gain it (`fn_0x140001000_main`).
+    pub symbols: Vec<(u64, String)>,
 }
 
 impl Options {
@@ -78,6 +81,7 @@ impl Default for Options {
             counters: false,
             null_check: false,
             store_check: false,
+            symbols: Vec::new(),
         }
     }
 }

@@ -20,7 +20,10 @@ const PAGE: u64 = 64 * 1024;
 /// Slots of a fresh lookup table (a power of two).
 const INITIAL_SLOTS: u64 = 256;
 /// Offset of the first slot array from the lookup header.
-const SLOTS_OFFSET: u64 = 64;
+/// The counter block (`abi.md`, "Counter block") sits after the header.
+const COUNTERS_OFFSET: u64 = 64;
+const COUNTERS_SLOTS: usize = 12;
+const SLOTS_OFFSET: u64 = COUNTERS_OFFSET + 8 * COUNTERS_SLOTS as u64;
 
 /// A wasmtime engine configured for translated modules. Compile once, run many.
 pub struct Host {
@@ -261,6 +264,11 @@ impl Host {
             GlobalType::new(ValType::I32, Mutability::Var),
             Val::I32(0),
         )?;
+        let counters_global = Global::new(
+            &mut store,
+            GlobalType::new(ValType::I64, Mutability::Const),
+            Val::I64((lookup + COUNTERS_OFFSET) as i64),
+        )?;
         let mut machine = Machine {
             engine: self.engine.clone(),
             store,
@@ -268,6 +276,7 @@ impl Host {
             table,
             lookup_global,
             depth,
+            counters_global,
             lookup,
             fp,
             next_alloc: lookup + SLOTS_OFFSET,
@@ -294,6 +303,7 @@ pub struct Machine {
     table: Table,
     lookup_global: Global,
     depth: Global,
+    counters_global: Global,
     /// Guest address of the lookup header.
     lookup: u64,
     /// The `fp` namespace (v4).
@@ -346,6 +356,15 @@ impl Machine {
     }
 
     /// Number of slots of the lookup table.
+    /// The counter block of a module built with `Options::counters`.
+    pub fn counters(&self) -> Result<[u64; COUNTERS_SLOTS]> {
+        let mut out = [0; COUNTERS_SLOTS];
+        for (i, c) in out.iter_mut().enumerate() {
+            *c = self.read_u64(self.lookup + COUNTERS_OFFSET + 8 * i as u64)?;
+        }
+        Ok(out)
+    }
+
     pub fn lookup_slots(&self) -> usize {
         self.read_u64(self.lookup + abi::LOOKUP_MASK)
             .map_or(0, |m| m as usize + 1)
@@ -461,6 +480,7 @@ impl Machine {
         linker.define(&self.store, env, abi::TABLE_BASE_NAME, base_global)?;
         linker.define(&self.store, env, abi::LOOKUP_NAME, self.lookup_global)?;
         linker.define(&self.store, env, abi::DEPTH_NAME, self.depth)?;
+        linker.define(&self.store, env, abi::COUNTERS_NAME, self.counters_global)?;
         for &(name, func) in &self.fp {
             linker.define(&self.store, abi::FP_MODULE, name, func)?;
         }

@@ -114,6 +114,27 @@ const TABLE: u32 = 0;
 const G_TABLE_BASE: u32 = 0;
 const G_LOOKUP: u32 = 1;
 const G_DEPTH: u32 = 2;
+/// Present with `Options::counters`, after `depth`.
+const G_COUNTERS: u32 = 3;
+
+/// Slots of the counter block (`abi.md`, "Counter block").
+mod slot {
+    pub const ENTRIES_FAST: u64 = 0;
+    pub const ENTRIES_GENERIC: u64 = 1;
+    pub const DISPATCHES: u64 = 2;
+    pub const LOCAL_INDIRECT: u64 = 3;
+    pub const CALLS_DIRECT: u64 = 4;
+    pub const CALLS_PROBED: u64 = 5;
+    pub const TAIL_TRANSFERS: u64 = 6;
+    pub const UNWINDS: u64 = 7;
+    pub const VALUES_STORED: u64 = 8;
+    pub const VALUES_LOADED: u64 = 9;
+    pub const MEM_LOADS: u64 = 10;
+    pub const MEM_STORES: u64 = 11;
+}
+
+/// GPRs plus the four lazy-flag fields that a state sync moves.
+const STATE_VALUES: i64 = 20;
 
 fn mem(offset: u64) -> MemArg {
     MemArg {
@@ -173,6 +194,8 @@ struct ChunkEmitter<'p> {
     cur_addr: u64,
     /// Something branches to `$leave`.
     leave_used: bool,
+    /// Count events in the counter block.
+    counters: bool,
 }
 
 impl ChunkEmitter<'_> {
@@ -193,6 +216,21 @@ impl ChunkEmitter<'_> {
         };
         debug_assert_eq!(self.labels.get(pos), Some(&label), "label in scope");
         (self.labels.len() - 1 - pos) as u32
+    }
+
+    /// Adds `n` to a slot of the counter block (stack-neutral); nothing
+    /// without `Options::counters`.
+    fn count(&self, f: &mut InstructionSink<'_>, slot: u64, n: i64) {
+        if !self.counters {
+            return;
+        }
+        let m = mem(slot * 8);
+        f.global_get(G_COUNTERS);
+        f.global_get(G_COUNTERS);
+        f.i64_load(m);
+        f.i64_const(n);
+        f.i64_add();
+        f.i64_store(m);
     }
 
     fn temp(&self, t: Temp) -> u32 {
@@ -330,11 +368,13 @@ impl ChunkEmitter<'_> {
                 self.set_temp(f, dst);
             }
             Op::Load { dst, width, addr } => {
+                self.count(f, slot::MEM_LOADS, 1);
                 self.value(f, addr);
                 load(f, width, mem(0));
                 self.set_temp(f, dst);
             }
             Op::Store { width, addr, value } => {
+                self.count(f, slot::MEM_STORES, 1);
                 self.value(f, addr);
                 self.value(f, value);
                 store(f, width, mem(0));
@@ -515,6 +555,7 @@ impl ChunkEmitter<'_> {
 
     /// Loads the registers and the lazy flag record from the state block.
     fn load_state(&self, f: &mut InstructionSink<'_>) {
+        self.count(f, slot::VALUES_LOADED, STATE_VALUES);
         for i in 0..16u32 {
             f.local_get(P_STATE);
             f.i64_load(mem(abi::gpr_offset(i)));
@@ -536,6 +577,7 @@ impl ChunkEmitter<'_> {
 
     /// Stores the registers and the lazy flag record to the state block.
     fn store_state(&self, f: &mut InstructionSink<'_>) {
+        self.count(f, slot::VALUES_STORED, STATE_VALUES);
         for i in 0..16u32 {
             f.local_get(P_STATE);
             f.local_get(L_GPR0 + i);
@@ -608,12 +650,14 @@ impl ChunkEmitter<'_> {
                 } else if j > k {
                     f.br(self.depth(Label::Block(j)));
                 } else {
+                    self.count(f, slot::DISPATCHES, 1);
                     f.i32_const(j as i32);
                     f.local_set(P_ENTRY);
                     f.br(self.depth(Label::Dispatch));
                 }
             }
             Some((c, j)) => {
+                self.count(f, slot::TAIL_TRANSFERS, 1);
                 self.store_state(f);
                 f.local_get(P_STATE);
                 f.i32_const(j as i32);
@@ -644,6 +688,7 @@ impl ChunkEmitter<'_> {
 
     /// Stores the state and tail-calls the probed `(func, entry)`.
     fn tail_call_indirect(&mut self, f: &mut InstructionSink<'_>) {
+        self.count(f, slot::TAIL_TRANSFERS, 1);
         self.store_state(f);
         f.local_get(P_STATE);
         f.local_get(P_ENTRY);
@@ -656,6 +701,7 @@ impl ChunkEmitter<'_> {
     /// `ret` back.
     fn call_probed(&mut self, f: &mut InstructionSink<'_>, ret: u64) {
         self.depth_guard(f);
+        self.count(f, slot::CALLS_PROBED, 1);
         self.store_state(f);
         Self::add_depth(f, 1);
         f.local_get(P_STATE);
@@ -680,6 +726,7 @@ impl ChunkEmitter<'_> {
     fn unwind_if(&mut self, f: &mut InstructionSink<'_>) {
         f.if_(BlockType::Empty);
         self.labels.push(Label::If);
+        self.count(f, slot::UNWINDS, 1);
         self.leave(f, abi::STATUS_UNWIND);
         f.end();
         self.labels.pop();
@@ -721,6 +768,7 @@ impl ChunkEmitter<'_> {
                     f.local_set(L_RIP);
                 }
                 self.depth_guard(f);
+                self.count(f, slot::CALLS_DIRECT, 1);
                 self.store_state(f);
                 Self::add_depth(f, 1);
                 f.local_get(P_STATE);
@@ -818,6 +866,12 @@ impl ChunkEmitter<'_> {
                 f.local_get(P_RET);
                 f.i64_ne();
                 f.local_set(self.l_status);
+                if self.counters {
+                    f.local_get(self.l_status);
+                    f.if_(BlockType::Empty);
+                    self.count(f, slot::UNWINDS, 1);
+                    f.end();
+                }
                 self.br_leave(f);
             }
             Term::Indirect(v) => {
@@ -831,7 +885,16 @@ impl ChunkEmitter<'_> {
                 f.i32_const(self.chunk as i32);
                 f.i32_add();
                 f.i32_eq();
-                f.br_if(self.depth(Label::Dispatch));
+                if self.counters {
+                    f.if_(BlockType::Empty);
+                    self.labels.push(Label::If);
+                    self.count(f, slot::LOCAL_INDIRECT, 1);
+                    f.br(self.depth(Label::Dispatch));
+                    f.end();
+                    self.labels.pop();
+                } else {
+                    f.br_if(self.depth(Label::Dispatch));
+                }
                 f.local_get(self.l_func);
                 f.i32_const(0);
                 f.i32_lt_s();
@@ -849,6 +912,26 @@ impl ChunkEmitter<'_> {
 
     fn body(&mut self, f: &mut InstructionSink<'_>) {
         let n = self.blocks.len();
+        if self.counters {
+            let func = &self.part.functions[self.part.chunks[self.chunk as usize].function];
+            let own = self
+                .blocks
+                .iter()
+                .position(|&b| self.prog.blocks[b].addr == func.entry);
+            match own {
+                Some(k) => {
+                    f.local_get(P_ENTRY);
+                    f.i32_const(k as i32);
+                    f.i32_eq();
+                    f.if_(BlockType::Empty);
+                    self.count(f, slot::ENTRIES_FAST, 1);
+                    f.else_();
+                    self.count(f, slot::ENTRIES_GENERIC, 1);
+                    f.end();
+                }
+                None => self.count(f, slot::ENTRIES_GENERIC, 1),
+            }
+        }
         self.load_state(f);
 
         f.block(BlockType::Empty);
@@ -1363,6 +1446,17 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             }),
         );
     }
+    if opts.counters {
+        imports.import(
+            abi::MEMORY_MODULE,
+            abi::COUNTERS_NAME,
+            EntityType::Global(GlobalType {
+                val_type: ValType::I64,
+                mutable: false,
+                shared: false,
+            }),
+        );
+    }
     for (&func, &ty) in fp.funcs.iter().zip(&fp_types) {
         imports.import(abi::FP_MODULE, func.name(), EntityType::Function(ty));
     }
@@ -1451,6 +1545,7 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             l_x87: x87_base.map(X87Locals::at),
             cur_addr: 0,
             leave_used: false,
+            counters: opts.counters,
         };
         emitter.body(&mut func.instructions());
         code.function(&func);
@@ -1476,7 +1571,7 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
         data: Cow::Owned(encode_blocks(n_chunks, &blocks)),
     });
 
-    module.section(&names(prog, part, &temps, &fp, f_div128));
+    module.section(&names(prog, part, &temps, &fp, f_div128, opts));
     module.finish()
 }
 
@@ -1486,7 +1581,14 @@ fn names(
     temps: &[(u32, u32, bool, Option<u32>)],
     fp: &FpImports,
     f_div128: Option<u32>,
+    opts: &Options,
 ) -> NameSection {
+    let symbols: HashMap<u64, &str> = opts
+        .symbols
+        .iter()
+        .rev()
+        .map(|(a, n)| (*a, n.as_str()))
+        .collect();
     let fbase = fp.len();
     let mut names = NameSection::new();
     let mut funcs = NameMap::new();
@@ -1497,7 +1599,12 @@ fn names(
     funcs.append(fbase + F_LOOKUP, "lookup");
     funcs.append(fbase + F_FLAGS, "flags");
     for c in 0..part.chunks.len() {
-        funcs.append(fbase + F_CHUNK0 + c as u32, &part.chunk_name(prog, c));
+        let mut name = part.chunk_name(prog, c);
+        if let Some(sym) = symbols.get(&part.functions[part.chunks[c].function].entry) {
+            name.push('_');
+            name.push_str(sym);
+        }
+        funcs.append(fbase + F_CHUNK0 + c as u32, &name);
     }
     if let Some(i) = f_div128 {
         funcs.append(i, "div128");
@@ -1572,6 +1679,9 @@ fn names(
     globals.append(G_TABLE_BASE, "table_base");
     globals.append(G_LOOKUP, "lookup");
     globals.append(G_DEPTH, "depth");
+    if opts.counters {
+        globals.append(G_COUNTERS, "counters");
+    }
     names.globals(&globals);
     names
 }

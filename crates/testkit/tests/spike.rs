@@ -126,6 +126,78 @@ fn longjmp_like() {
 }
 
 #[test]
+fn loop_branch() {
+    run_case(&spike::loop_branch(100).unwrap());
+}
+
+/// Runs a case built with counters; returns the counter block.
+fn counted(case: &Case, opts: &Options) -> [u64; 12] {
+    let t = case.translate(opts).unwrap();
+    let host = Host::new().unwrap();
+    let (out, machine) = case.run(&host, &t.wasm).unwrap();
+    case.check(&out, &machine).unwrap();
+    machine.counters().unwrap()
+}
+
+#[test]
+fn counters_are_deterministic_and_validate() {
+    let opts = Options {
+        counters: true,
+        ..Options::default()
+    };
+    let case = spike::loop_branch(100).unwrap();
+    // Compiling in wasmtime validates the module.
+    let c = counted(&case, &opts);
+    assert_eq!(c, counted(&case, &opts), "deterministic");
+    // One entry at the function's own entry block; the back edge of the
+    // 100 iterations goes through `$dispatch` 99 times.
+    assert_eq!((c[0], c[1]), (1, 0), "entries");
+    assert_eq!(c[2], 99, "dispatches");
+    assert_eq!((c[4], c[5], c[6]), (0, 0, 0), "no calls");
+    assert_eq!(c[7], 1, "the final ret unwinds to the sentinel");
+    assert_eq!(
+        (c[8], c[9]),
+        (20, 20),
+        "one load and one store of the state"
+    );
+    assert_eq!((c[10], c[11]), (1, 0), "only the ret loads from memory");
+}
+
+#[test]
+fn counters_count_calls() {
+    let opts = Options {
+        counters: true,
+        ..Options::default()
+    };
+    let c = counted(&spike::fib_rec(10).unwrap(), &opts);
+    assert!(c[4] > 0, "direct calls {c:?}");
+    assert_eq!(c[8] % 20, 0);
+    assert_eq!(c[9] % 20, 0);
+}
+
+#[test]
+fn counters_off_leaves_the_bytes_alone() {
+    let case = spike::loop_branch(100).unwrap();
+    let off = case.translate(&Options::default()).unwrap().wasm;
+    let explicit = case
+        .translate(&Options {
+            counters: false,
+            ..Options::default()
+        })
+        .unwrap()
+        .wasm;
+    assert_eq!(off, explicit);
+    let on = case
+        .translate(&Options {
+            counters: true,
+            ..Options::default()
+        })
+        .unwrap()
+        .wasm;
+    assert_ne!(off, on);
+}
+
+#[test]
 fn big_function() {
     let case = spike::big_function(100).unwrap();
     let t = case.translate(&Options::default()).unwrap();
@@ -217,6 +289,7 @@ fn manifest_follows_the_abi_doc() {
             "shared_tail",
             "longjmp_like",
             "big_function",
+            "loop_branch",
         ]
     );
     let is_hex = |v: &serde_json::Value| {

@@ -344,5 +344,13 @@ pub fn translate(
         data: &data,
         known: &[],
     };
-    Ok(crate::translate_source(&src, &entries, opts)?)
+    let mut opts = opts.clone();
+    if let Ok(symbols) = pe.symbols() {
+        for s in symbols.iter().filter(|s| s.is_function() && s.section > 0) {
+            if let Some(rva) = pe.symbol_rva(s) {
+                opts.symbols.push((pe.rva_to_va(rva), s.name.clone()));
+            }
+        }
+    }
+    Ok(crate::translate_source(&src, &entries, &opts)?)
 }

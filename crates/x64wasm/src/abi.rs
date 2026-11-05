@@ -29,6 +29,8 @@ pub const LOOKUP_NAME: &str = "lookup";
 /// Field name of the imported mutable `i32` global: nested guest calls on the
 /// wasm stack, shared by all modules.
 pub const DEPTH_NAME: &str = "depth";
+/// Optional (`Options::counters`): address of the counter block, immutable i64.
+pub const COUNTERS_NAME: &str = "counters";
 
 /// Maximum memory64 size browsers allow, in 64 KiB pages (16 GiB).
 pub const MAX_MEMORY_PAGES: u64 = 262_144;

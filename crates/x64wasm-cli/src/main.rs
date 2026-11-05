@@ -60,6 +60,9 @@ enum Command {
         /// entry point.
         #[arg(long, value_enum, default_value_t = Entries::All)]
         entries: Entries,
+        /// Count events in the counter block (imports `env.counters`).
+        #[arg(long)]
+        counters: bool,
     },
 }
 
@@ -100,6 +103,9 @@ struct Input {
     /// overflows the wasm stack).
     #[arg(long, conflicts_with = "call_depth_limit")]
     no_depth_guard: bool,
+    /// Count events in the counter block (imports `env.counters`).
+    #[arg(long)]
+    counters: bool,
 }
 
 fn parse_u64(s: &str) -> Result<u64, String> {
@@ -141,6 +147,7 @@ impl Input {
             max_function_insns: self.max_function_insns,
             max_chunk_insns: self.max_chunk_insns,
             call_depth_limit: (!self.no_depth_guard).then_some(self.call_depth_limit),
+            counters: self.counters,
             ..Options::default()
         };
         let region = CodeRegion {
@@ -160,7 +167,7 @@ fn validate(wasm: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn translate_pe(file: &Path, out_dir: &Path, entries: Entries) -> Result<()> {
+fn translate_pe(file: &Path, out_dir: &Path, entries: Entries, counters: bool) -> Result<()> {
     let data = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
     let pe = Pe::parse(&data).with_context(|| format!("parsing {}", file.display()))?;
     let name = file
@@ -177,7 +184,15 @@ fn translate_pe(file: &Path, out_dir: &Path, entries: Entries) -> Result<()> {
         Entries::All => EntrySet::All,
         Entries::Entry => EntrySet::EntryPoint,
     };
-    let t = image::translate(&pe, set, &Options::default()).context("translating")?;
+    let t = image::translate(
+        &pe,
+        set,
+        &Options {
+            counters,
+            ..Options::default()
+        },
+    )
+    .context("translating")?;
     let ms = start.elapsed().as_secs_f64() * 1e3;
     validate(&t.wasm)?;
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
@@ -229,7 +244,8 @@ fn main() -> Result<()> {
             file,
             out_dir,
             entries,
-        } => translate_pe(&file, &out_dir, entries)?,
+            counters,
+        } => translate_pe(&file, &out_dir, entries, counters)?,
     }
     Ok(())
 }

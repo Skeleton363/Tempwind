@@ -286,6 +286,58 @@ pub fn sum_loop(n: u64) -> Result<Case> {
     })
 }
 
+/// `loop_branch`: a loop whose body has an if/else, so the back edge is
+/// not a self-loop and goes through `$dispatch`. `rax` = the sum of 1..=rcx
+/// with the odd terms added and the even ones subtracted.
+pub fn loop_branch(n: u64) -> Result<Case> {
+    let mut a = CodeAssembler::new(64)?;
+    let mut top = a.create_label();
+    let mut even = a.create_label();
+    let mut next = a.create_label();
+    a.mov(eax, 0)?;
+    a.set_label(&mut top)?;
+    a.test(cl, 1)?;
+    a.je(even)?;
+    a.add(rax, rcx)?;
+    a.jmp(next)?;
+    a.set_label(&mut even)?;
+    a.sub(rax, rcx)?;
+    a.set_label(&mut next)?;
+    a.sub(rcx, 1)?;
+    a.jne(top)?;
+    a.ret()?;
+    let sum = (1..=n).fold(0u64, |acc, i| {
+        if i % 2 == 1 {
+            acc.wrapping_add(i)
+        } else {
+            acc.wrapping_sub(i)
+        }
+    });
+    // The last flag writer is `sub rcx, 1` reaching 0.
+    let flags = INIT_RFLAGS | abi::flags::ZF | abi::flags::PF;
+    Ok(Case {
+        name: "loop_branch",
+        code_base: LOW_CODE,
+        code: asm(&mut a, LOW_CODE)?,
+        entry: LOW_CODE,
+        extra_entries: vec![],
+        memory_bytes: LOW_MEMORY,
+        state_addr: LOW_STATE,
+        init_regs: vec![(reg("rcx"), n), (reg("rsp"), LOW_STACK)],
+        init_rflags: INIT_RFLAGS,
+        init_mem: vec![sentinel_at(LOW_STACK)],
+        expect_exit: abi::EXIT_LEFT_CODE,
+        expect_rip: abi::SENTINEL_RET,
+        expect_regs: vec![
+            (reg("rax"), sum),
+            (reg("rcx"), 0),
+            (reg("rsp"), LOW_STACK + 8),
+        ],
+        expect_mem: vec![],
+        expect_rflags: Some((flags, u64::MAX)),
+    })
+}
+
 /// Reference fib.
 pub fn fib(n: u64) -> u64 {
     let (mut a, mut b) = (0u64, 1u64);
@@ -1029,6 +1081,7 @@ pub fn cases() -> Result<Vec<Case>> {
         shared_tail()?,
         longjmp_like()?,
         big_function(100)?,
+        loop_branch(100)?,
     ])
 }
 
