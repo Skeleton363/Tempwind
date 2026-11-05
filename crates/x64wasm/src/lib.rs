@@ -12,6 +12,7 @@ pub mod lift;
 pub mod link;
 pub mod pe;
 mod switch;
+pub mod sync;
 
 use std::fmt;
 

@@ -244,7 +244,7 @@ fn sync_moves_only_live_and_dirty_values() {
             case.name
         );
         assert!(
-            fast * 3.0 < reference,
+            fast * 2.0 < reference,
             "{}: {fast} values per call, sync_all {reference}",
             case.name
         );

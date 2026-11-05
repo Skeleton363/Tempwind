@@ -234,6 +234,15 @@ impl Gen<'_> {
                 let count = 1 + self.rng.below(4);
                 self.stmts(depth + 1, count)?;
                 self.a.pop(r)?;
+            } else if depth < 2 && k < 28 {
+                self.local_indirect(depth)?;
+            } else if k == 28 && self.rng.chance(15) {
+                // A fault (division by zero) after writes in the same block:
+                // the run ends here, and the leave stores the dirty set.
+                let (x, z) = (self.rng.reg(), self.rng.reg());
+                self.a.mov(R64[x], self.rng.next())?;
+                self.a.mov(R64[z].into_r32(), 0u32)?;
+                self.a.div(R64[z])?;
             } else if k < 40 {
                 self.call()?;
             } else {
@@ -241,6 +250,22 @@ impl Gen<'_> {
             }
         }
         Ok(())
+    }
+
+    /// A jump through a register to a block of the same function (which a
+    /// direct branch also targets, so it is a block): a local dispatch.
+    fn local_indirect(&mut self, depth: u32) -> R {
+        let mut target = self.a.create_label();
+        let (x, y) = (self.rng.reg(), self.rng.reg());
+        self.a.cmp(R64[x], R64[y])?;
+        self.jcc(target)?;
+        let count = 1 + self.rng.below(3);
+        self.stmts(depth + 1, count)?;
+        let r = R64[self.rng.reg()];
+        self.a.lea(r, ptr(target))?;
+        self.a.jmp(r)?;
+        self.a.set_label(&mut target)?;
+        self.a.nop()
     }
 
     fn function(&mut self, i: usize) -> R {
@@ -354,14 +379,17 @@ fn random_programs_match_sync_all() {
         sync_all: true,
         ..Options::default()
     };
+    // Runs that end at the sentinel and at a fault.
+    let mut ends = [0; 2];
     for seed in 0..150u64 {
         let case = program(seed);
         let want = run(&host, &case, &reference);
-        assert_eq!(
-            want.0.exit,
-            abi::EXIT_LEFT_CODE,
-            "seed {seed}: the reference run ends at the sentinel"
+        assert!(
+            [abi::EXIT_LEFT_CODE, abi::EXIT_FAULT].contains(&want.0.exit),
+            "seed {seed}: the reference run ends at the sentinel or a fault, not {}",
+            want.0.exit
         );
+        ends[(want.0.exit == abi::EXIT_FAULT) as usize] += 1;
         for opts in &variants {
             let got = run(&host, &case, opts);
             assert_eq!(got.0, want.0, "seed {seed}: state with {opts:?}");
@@ -369,4 +397,8 @@ fn random_programs_match_sync_all() {
             assert!(got.2 == want.2, "seed {seed}: stack with {opts:?}");
         }
     }
+    assert!(
+        ends[0] >= 50 && ends[1] >= 5,
+        "sentinel and fault ends: {ends:?}"
+    );
 }
