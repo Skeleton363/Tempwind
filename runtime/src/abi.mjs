@@ -66,6 +66,11 @@ export const TABLE_NAME = 'table';
 export const TABLE_BASE_NAME = 'table_base';
 export const LOOKUP_NAME = 'lookup';
 export const DEPTH_NAME = 'depth';
+// Optional (Options::counters): address of the counter block, an immutable i64.
+export const COUNTERS_NAME = 'counters';
+export const COUNTER_SLOTS = ['entries_fast', 'entries_generic', 'dispatches', 'local_indirect', 'calls_direct', 'calls_probed',
+  'tail_transfers', 'unwinds', 'values_stored', 'values_loaded', 'mem_loads', 'mem_stores'];
+export const COUNTERS_SIZE = 8 * COUNTER_SLOTS.length;
 
 // Lookup table: header at `env.lookup`, 16-byte slots (key u64, func u32, entry u32).
 export const LOOKUP_SLOTS = 0;

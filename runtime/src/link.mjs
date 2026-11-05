@@ -4,7 +4,7 @@
 // APIs only (Node, page, Worker).
 
 import {
-  MEMORY_MODULE, MEMORY_NAME, TABLE_NAME, TABLE_BASE_NAME, LOOKUP_NAME, DEPTH_NAME,
+  MEMORY_MODULE, MEMORY_NAME, TABLE_NAME, TABLE_BASE_NAME, LOOKUP_NAME, DEPTH_NAME, COUNTERS_NAME, COUNTERS_SIZE,
   LOOKUP_SLOTS, LOOKUP_MASK, LOOKUP_USED, LOOKUP_SLOT_SIZE,
   BLOCKS_SECTION, BLOCKS_VERSION, BLOCKS_HEADER_SIZE, BLOCKS_ENTRY_SIZE,
   HOST_FUNC_INDEX, LOOKUP_HASH_MUL,
@@ -152,6 +152,9 @@ export class Linker {
     this.table = new WebAssembly.Table({ element: 'anyfunc', initial: HOST_FUNC_INDEX + 1 });
     this.lookupGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, header);
     this.depth = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
+    /** The counter block, allocated when a module imports `env.counters`. */
+    this.countersAddr = null;
+    this.countersGlobal = null;
     this.used = 0;
     // Mirror of the keys as a BigUint64Array's buffer, written through u32 words.
     this.mirror = new Uint32Array(128);
@@ -304,13 +307,13 @@ export class Linker {
    */
   async link(module) {
     const tableBase = this.reserve(module);
-    return this.insertBlocks(module, tableBase, await WebAssembly.instantiate(module, this.imports(tableBase)));
+    return this.insertBlocks(module, tableBase, await WebAssembly.instantiate(module, this.imports(tableBase, module)));
   }
 
   /** link() for callers that cannot wait (a guest call from a host function). */
   linkSync(module) {
     const tableBase = this.reserve(module);
-    return this.insertBlocks(module, tableBase, new WebAssembly.Instance(module, this.imports(tableBase)));
+    return this.insertBlocks(module, tableBase, new WebAssembly.Instance(module, this.imports(tableBase, module)));
   }
 
   /** A module that imports `fp` needs the helper module (v4). */
@@ -348,8 +351,21 @@ export class Linker {
     return linked;
   }
 
+  /** True if the module imports `env.counters` (built with `Options::counters`). */
+  static wantsCounters(module) {
+    return WebAssembly.Module.imports(module).some((i) => i.module === MEMORY_MODULE && i.name === COUNTERS_NAME);
+  }
+
+  /** The counter block (abi.md, "Counter block") as BigInts, or null if no module asked for one. */
+  readCounters() {
+    if (this.countersAddr === null) return null;
+    const dv = this.view();
+    const at = Number(this.countersAddr);
+    return Array.from({ length: COUNTERS_SIZE / 8 }, (_, i) => dv.getBigUint64(at + 8 * i, true));
+  }
+
   /** The import object for a module whose chunk 0 sits at `tableBase`. */
-  imports(tableBase) {
+  imports(tableBase, module = null) {
     const imports = {
       [MEMORY_MODULE]: {
         [MEMORY_NAME]: this.memory,
@@ -360,6 +376,15 @@ export class Linker {
       },
     };
     if (this.fp) imports[FP_NAMESPACE] = this.fp;
+    if (module && Linker.wantsCounters(module)) {
+      if (!this.alloc) throw new Error('the module imports env.counters but the linker has no allocator for the 96-byte counter block');
+      if (this.countersGlobal === null) {
+        this.countersAddr = this.alloc(BigInt(COUNTERS_SIZE), 8n);
+        this.mem.fill(this.countersAddr, COUNTERS_SIZE);
+        this.countersGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, this.countersAddr);
+      }
+      imports[MEMORY_MODULE][COUNTERS_NAME] = this.countersGlobal;
+    }
     return imports;
   }
 }

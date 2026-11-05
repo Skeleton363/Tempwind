@@ -60,3 +60,39 @@ for (const variant of ['all', 'entry']) {
     console.log(`basic.exe (${variant}): ${p.translations} run-time translations, ${p.translateMs.toFixed(1)} ms`);
   });
 }
+
+test('basic.exe built with --counters: TEMPWIND_TRACE=counts reports the block and host calls', () => {
+  const { aot, plan } = inputs('counters');
+  const r = spawnSync(process.execPath, [CLI, '--exe', EXE, '--aot', aot, '--plan', plan, '--rt', RT], {
+    env: { ...process.env, TEMPWIND_TRACE: 'counts' },
+  });
+  assert.equal(r.status, EXIT_CODE);
+  assert.ok(r.stdout.equals(expected), 'counters do not change the output');
+  const lines = Object.fromEntries(
+    r.stderr.toString().split('\n').filter((l) => l.startsWith('[tempwind] ')).map((l) => {
+      const [, kind, name, value] = l.split(' ');
+      return [`${kind} ${name}`, Number(value)];
+    }),
+  );
+  // rec(1000) and fib(20) (21,891 calls) are direct calls inside the module.
+  assert.equal(lines['count calls_direct'], 22927);
+  assert.ok(lines['count entries_fast'] > 0 && lines['count entries_generic'] > 0);
+  assert.ok(lines['count dispatches'] > 0 && lines['count unwinds'] > 0);
+  assert.equal(lines['count values_stored'] % 20, 0);
+  assert.equal(lines['count values_loaded'] % 20, 0);
+  assert.ok(lines['count mem_loads'] > 0 && lines['count mem_stores'] > 0);
+  assert.deepEqual(
+    [lines['hostcalls kernel32.dll!ExitProcess'], lines['hostcalls kernel32.dll!GetStdHandle'], lines['hostcalls kernel32.dll!WriteFile']],
+    [1, 22, 22],
+  );
+});
+
+test('TEMPWIND_TRACE=counts without --counters says so and still counts host calls', () => {
+  const { aot, plan } = inputs('all');
+  const r = spawnSync(process.execPath, [CLI, '--exe', EXE, '--aot', aot, '--plan', plan, '--rt', RT], {
+    env: { ...process.env, TEMPWIND_TRACE: 'counts' },
+  });
+  const err = r.stderr.toString();
+  assert.match(err, /count \(no module was built with --counters\)/);
+  assert.match(err, /hostcalls kernel32\.dll!WriteFile 22/);
+});
