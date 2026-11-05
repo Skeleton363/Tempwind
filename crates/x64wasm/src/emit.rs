@@ -75,8 +75,8 @@ mod flags;
 mod fp;
 mod helpers;
 mod simd;
-mod structure;
 mod string;
+mod structure;
 mod x87;
 
 use flags::{Known, emit_flags};

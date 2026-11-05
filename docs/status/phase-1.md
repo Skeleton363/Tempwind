@@ -284,19 +284,25 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
 - **Estimates, to be measured:** calls drop from 10-20× to about 4-7× native; CoreMark and `7z b` rise from 0.30 and 0.35 to perhaps 0.45-0.6.
 - **The research digest routine** now runs on Sonnet 5.5 (your choice). Its effort is set on its page on claude.ai.
 
-## M6 progress (paused 2026-11-04)
+## M6 progress (paused 2026-11-05)
 
-**Done:**
-- the routine's model;
-- the branch restarted from `main` after PR #7;
-- the research log: the M6 entry, and the digest entry of PR #8 restored. The merge of `main` into the M5 branch (`99d24a3`) had dropped it.
+**Done** (on the PR branch, PR #9; measurements in "Measurements", WP1 and WP2):
+- **Workflow:** subagent caps and default effort, two agent rules, and the agent-run ledger (`docs/dev/agent-runs.md`).
+- **Contracts and stub:** the contracts (`0d97a4d`) and the `Options` stub (`d50d984`).
+- **WP1, measurement:** profiling and counters (`31cec95`..`590388f`). Every call moved 80 values, loops took about 12 dispatches per call, and JS was under 1 % of the time.
+- **WP2, liveness** (`a745ad6`..`eed81c1`): values moved per call fell from 80 to about 35. CoreMark rose from 0.299 to 0.325 of native; `7z b` is unchanged within noise. `sync_all` output is byte-identical to before.
+- **WP3a, the loop layout module** `emit/structure.rs`, merged in `4c02685` and not used yet.
+- **CI on `4c02685`:** everything green except `cargo fmt` (module order in `emit.rs`). The pause commit fixes that.
 
-**On resume:**
-1. **Your decisions:**
-   - the digest's three proposals (`docs/dev/research.md`, "2026-11-04: Claude Code workflow digest"): hard caps on subagents, a `medium` effort pilot for deep-worker, two rules for builder and deep-worker;
-   - whether Reddit, Hacker News and `learn.microsoft.com` were added to the environment's allowed domains (then update `CLAUDE.md` and `docs/dev/commands.md`).
-2. **The contracts commit**, then the `Options` stub (`crates/x64wasm/src/lib.rs`: `sync_all`, `structured`, `counters`, `null_check`, `store_check`).
-3. **WP1 with the builder**, then the rest in the order above.
+**In progress (both agents stopped; each resumes with a message):**
+- **WP3b**, integrating `structure.rs` into `emit.rs` (deep-worker, `high`). Its WIP is on the side branch `m6-wip`, one commit past the PR head. It **does not build yet** (4 errors, mid-edit in `emit.rs`). It touches the spike tests and `sync_diff.rs`.
+- **WP4**, the memory checks (deep-worker, `medium`), in a worktree. Its WIP is on the side branch `m6-wp4` and **builds**. It touches the lifter, the IR, `sync.rs`, `emit.rs`'s import and global sections, and `lowering.rs`. The runtime, CLI and measurements are still missing.
+
+**How to resume:**
+1. `git fetch origin m6-wip m6-wp4`, then `git merge --ff-only origin/m6-wip` on the PR branch to get WP3b's WIP.
+2. Message the WP3b agent to continue. If its transcript is gone, start a deep-worker (`high`) on "WP3b" in the decisions above, from `m6-wip`.
+3. Message WP4 to continue in its worktree (or start a deep-worker, `medium`, from `m6-wp4`). Merge it after WP3b lands.
+4. Then WP5 (benchmarks, the memory-check matrix), the effort-pilot verdict (`node scripts/agent-stats.mjs --milestone M6`), and `milestone-close`.
 
 ## What works
 
