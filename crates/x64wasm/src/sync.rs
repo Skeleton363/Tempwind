@@ -118,6 +118,12 @@ pub fn op_effect(op: &Op) -> Effect {
             may_leave: true,
             ..Effect::default()
         },
+        // Reads its address registers and may leave the function cold.
+        Op::MemCheck { addr, when, .. } => Effect {
+            uses: value(addr) | opt(when),
+            may_leave: true,
+            ..Effect::default()
+        },
         Op::DivWide { hi, lo, d, .. } => reads(value(hi) | value(lo) | value(d)),
         Op::RepString { op, rep, delta, .. } => {
             // `emit/string.rs`: the implicit registers. They are read and

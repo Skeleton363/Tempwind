@@ -118,6 +118,10 @@ const G_LOOKUP: u32 = 1;
 const G_DEPTH: u32 = 2;
 /// Present with `Options::counters`, after `depth`.
 const G_COUNTERS: u32 = 3;
+/// Present with `Options::store_check`, after `counters` if present.
+const fn g_page_flags(counters: bool) -> u32 {
+    G_COUNTERS + counters as u32
+}
 
 /// Slots of the counter block (`abi.md`, "Counter block").
 mod slot {
@@ -493,6 +497,14 @@ impl ChunkEmitter<'_> {
                 f.end();
                 self.labels.pop();
             }
+            Op::MemCheck {
+                addr,
+                len,
+                write,
+                null,
+                code,
+                when,
+            } => self.mem_check(f, addr, len, write, null, code, when),
             Op::DivWide {
                 q,
                 r,
@@ -654,13 +666,88 @@ impl ChunkEmitter<'_> {
 
     /// Leaves with `EXIT_FAULT` at the instruction at `rip` (fault address 0).
     fn fault(&mut self, f: &mut InstructionSink<'_>, kind: u32, rip: u64) {
+        self.fault_at(f, kind, rip, Value::Imm(0));
+    }
+
+    /// Leaves with `EXIT_FAULT` at the instruction at `rip`, with the fault
+    /// address `addr`.
+    fn fault_at(&mut self, f: &mut InstructionSink<'_>, kind: u32, rip: u64, addr: Value) {
         f.local_get(P_STATE);
         f.i32_const(kind as i32);
         f.i32_store(mem(abi::STATE_FAULT_KIND));
         f.local_get(P_STATE);
-        f.i64_const(0);
+        self.value(f, addr);
         f.i64_store(mem(abi::STATE_FAULT_ADDR));
         self.exit(f, abi::EXIT_FAULT, rip);
+    }
+
+    /// Pushes the page-state byte (i32) of the page holding `addr + off`.
+    fn page_flags(&mut self, f: &mut InstructionSink<'_>, addr: Value, off: u64) {
+        f.global_get(g_page_flags(self.counters));
+        self.value(f, addr);
+        if off != 0 {
+            f.i64_const(off as i64);
+            f.i64_add();
+        }
+        f.i64_const(abi::PAGE_FLAGS_SHIFT as i64);
+        f.i64_shr_u();
+        f.i64_add();
+        f.i32_load8_u(mem(0));
+    }
+
+    /// `Op::MemCheck` (`translator.md`, "Memory checks"): cold exits before
+    /// the access, with the state from before the instruction.
+    #[allow(clippy::too_many_arguments)]
+    fn mem_check(
+        &mut self,
+        f: &mut InstructionSink<'_>,
+        addr: Value,
+        len: u32,
+        write: bool,
+        null: bool,
+        code: bool,
+        when: Option<Value>,
+    ) {
+        if let Some(w) = when {
+            self.value(f, w);
+            f.i64_const(0);
+            f.i64_ne();
+            f.if_(BlockType::Empty);
+            self.labels.push(Label::If);
+        }
+        if null {
+            self.value(f, addr);
+            f.i64_const(abi::NULL_LIMIT as i64);
+            f.i64_lt_u();
+            f.if_(BlockType::Empty);
+            self.labels.push(Label::If);
+            let kind = if write {
+                abi::FAULT_WRITE
+            } else {
+                abi::FAULT_READ
+            };
+            self.fault_at(f, kind, self.cur_addr, addr);
+            f.end();
+            self.labels.pop();
+        }
+        if code {
+            self.page_flags(f, addr, 0);
+            if len > 1 {
+                self.page_flags(f, addr, u64::from(len) - 1);
+                f.i32_or();
+            }
+            f.i32_const(i32::from(abi::PAGE_CODE | abi::PAGE_WATCH));
+            f.i32_and();
+            f.if_(BlockType::Empty);
+            self.labels.push(Label::If);
+            self.exit(f, abi::EXIT_UNSUPPORTED, self.cur_addr);
+            f.end();
+            self.labels.pop();
+        }
+        if when.is_some() {
+            f.end();
+            self.labels.pop();
+        }
     }
 
     /// Transfers control to the block at `target`: inside the chunk, as a
@@ -1129,6 +1216,7 @@ fn operands(op: &Op) -> [Option<Value>; 4] {
         } => [Some(set), when, None, None],
         Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. } => [None; 4],
         Op::FaultIf { cond, .. } => [Some(cond), None, None, None],
+        Op::MemCheck { addr, when, .. } => [Some(addr), when, None, None],
         Op::DivWide { hi, lo, d, .. } => [Some(hi), Some(lo), Some(d), None],
         Op::RepString { delta, .. } => [Some(delta), None, None, None],
         Op::VLoad {
@@ -1522,16 +1610,21 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             }),
         );
     }
-    if opts.counters {
-        imports.import(
-            abi::MEMORY_MODULE,
-            abi::COUNTERS_NAME,
-            EntityType::Global(GlobalType {
-                val_type: ValType::I64,
-                mutable: false,
-                shared: false,
-            }),
-        );
+    for (name, on) in [
+        (abi::COUNTERS_NAME, opts.counters),
+        (abi::PAGE_FLAGS_NAME, opts.store_check),
+    ] {
+        if on {
+            imports.import(
+                abi::MEMORY_MODULE,
+                name,
+                EntityType::Global(GlobalType {
+                    val_type: ValType::I64,
+                    mutable: false,
+                    shared: false,
+                }),
+            );
+        }
     }
     for (&func, &ty) in fp.funcs.iter().zip(&fp_types) {
         imports.import(abi::FP_MODULE, func.name(), EntityType::Function(ty));
@@ -1797,6 +1890,9 @@ fn names(
     globals.append(G_DEPTH, "depth");
     if opts.counters {
         globals.append(G_COUNTERS, "counters");
+    }
+    if opts.store_check {
+        globals.append(g_page_flags(opts.counters), "page_flags");
     }
     names.globals(&globals);
     names

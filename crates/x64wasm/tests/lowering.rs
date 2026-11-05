@@ -18,15 +18,43 @@ fn hex(s: &str) -> Vec<u8> {
 }
 
 fn lift(code: &str) -> Program {
+    lift_with(code, &Options::default())
+}
+
+fn lift_with(code: &str, opts: &Options) -> Program {
     let bytes = hex(code);
-    x64wasm::lift(
+    x64wasm::lift_checked(
         CodeRegion {
             base: BASE,
             bytes: &bytes,
         },
         &[BASE],
+        opts,
     )
     .unwrap()
+}
+
+/// Both memory checks on (`translator.md`, "Memory checks").
+fn checks() -> Options {
+    Options {
+        null_check: true,
+        store_check: true,
+        ..Options::default()
+    }
+}
+
+/// Every check (`FaultIf`, `MemCheck`) of `insn` comes before its first
+/// side effect.
+fn assert_checks_first(code: &str, prog: &Program, insn: &x64wasm::ir::Insn) {
+    let first_effect = insn
+        .ops
+        .iter()
+        .position(Op::has_side_effect)
+        .unwrap_or(insn.ops.len());
+    let late = insn.ops[first_effect..]
+        .iter()
+        .any(|op| matches!(op, Op::FaultIf { .. } | Op::MemCheck { .. }));
+    assert!(!late, "{code}: a check after a side effect\n{}", prog.dump());
 }
 
 /// `live` of every flag record, in order.
@@ -126,9 +154,13 @@ fn faults_come_before_side_effects() {
         "48f7f2", // div rdx
         "48f7f8", // idiv rax
     ];
-    for code in forms {
-        let prog = lift(code);
+    for (code, opts) in forms
+        .iter()
+        .flat_map(|&c| [(c, Options::default()), (c, checks())])
+    {
+        let prog = lift_with(code, &opts);
         let insn = &prog.blocks[0].insns[0];
+        assert_checks_first(code, &prog, insn);
         let faults: Vec<usize> = (0..insn.ops.len())
             .filter(|&i| matches!(insn.ops[i], Op::FaultIf { .. }))
             .collect();
@@ -214,9 +246,13 @@ fn floating_point_ops_come_before_side_effects() {
         ("f30f2a03", false),   // cvtsi2ss xmm0, [rbx]
         ("f20fc2c107", false), // cmpordsd xmm0, xmm1
     ];
-    for (code, aligned) in forms {
-        let prog = lift(code);
+    for (code, aligned, opts) in forms
+        .iter()
+        .flat_map(|&(c, a)| [(c, a, Options::default()), (c, a, checks())])
+    {
+        let prog = lift_with(code, &opts);
         let insn = &prog.blocks[0].insns[0];
+        assert_checks_first(code, &prog, insn);
         let fp: Vec<usize> = (0..insn.ops.len())
             .filter(|&i| insn.ops[i].is_fp())
             .collect();

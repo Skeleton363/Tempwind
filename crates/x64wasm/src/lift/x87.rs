@@ -106,6 +106,10 @@ pub(super) fn is_x87(m: Mnemonic) -> bool {
 
 impl Lower<'_> {
     fn x87_op(&mut self, op: X87, addr: Option<Value>) {
+        if let Some(a) = addr {
+            let len = self.insn.memory_size().size() as u32;
+            self.mem_check(a, len, matches!(op, X87::Store { .. }));
+        }
         self.push_op(Op::X87 { op, addr });
     }
 
@@ -156,11 +160,13 @@ impl Lower<'_> {
             }
             M::Fnstcw | M::Fstcw => {
                 let a = self.x87_mem()?;
+                // The checks go before the wait, the first side effect.
+                self.mem_check(a, 2, true);
                 if m == M::Fstcw {
                     self.x87_op(X87::Wait, None);
                 }
                 let v = self.load_state(Width::W16, abi::STATE_FCW);
-                self.store(Width::W16, a, v);
+                self.store_unchecked(Width::W16, a, v);
             }
             M::Fnstsw | M::Fstsw => {
                 let dst = match self.insn.op_kind(0) {
@@ -168,12 +174,15 @@ impl Lower<'_> {
                     OpKind::Memory => Some(self.ea()?),
                     _ => return Err(Unsupported),
                 };
+                if let Some(a) = dst {
+                    self.mem_check(a, 2, true);
+                }
                 if m == M::Fstsw {
                     self.x87_op(X87::Wait, None);
                 }
                 let v = self.load_state(Width::W16, abi::STATE_FSW);
                 match dst {
-                    Some(a) => self.store(Width::W16, a, v),
+                    Some(a) => self.store_unchecked(Width::W16, a, v),
                     None => self.write_reg(RAX, Width::W16, v),
                 }
             }
@@ -302,8 +311,9 @@ impl Lower<'_> {
     /// waiting instruction).
     fn fldcw(&mut self) -> Lowered<()> {
         let a = self.x87_mem()?;
+        self.mem_check(a, 2, false);
         self.x87_op(X87::Wait, None);
-        let cw = self.load(Width::W16, a);
+        let cw = self.load_unchecked(Width::W16, a);
         let fsw = self.load_state(Width::W16, abi::STATE_FSW);
         let masks = self.bin(BinOp::Xor, cw, Value::Imm(0x3f));
         let pending = self.bin(BinOp::And, fsw, masks);
@@ -323,6 +333,8 @@ impl Lower<'_> {
     /// and B.
     fn fnstenv(&mut self, wait: bool) -> Lowered<()> {
         let a = self.x87_mem()?;
+        // One check of the whole m28, before the wait and the stores.
+        self.mem_check(a, 28, true);
         if wait {
             self.x87_op(X87::Wait, None);
         }
@@ -331,13 +343,13 @@ impl Lower<'_> {
         let ftw = self.load_state(Width::W16, abi::STATE_FTW);
         let hi = self.bin(BinOp::Shl, fsw, Value::Imm(32));
         let w0 = self.bin(BinOp::Or, fcw, hi);
-        self.store(Width::W64, a, w0);
+        self.store_unchecked(Width::W64, a, w0);
         let a8 = self.bin(BinOp::Add, a, Value::Imm(8));
-        self.store(Width::W64, a8, ftw);
+        self.store_unchecked(Width::W64, a8, ftw);
         let a16 = self.bin(BinOp::Add, a, Value::Imm(16));
-        self.store(Width::W64, a16, Value::Imm(0));
+        self.store_unchecked(Width::W64, a16, Value::Imm(0));
         let a24 = self.bin(BinOp::Add, a, Value::Imm(24));
-        self.store(Width::W32, a24, Value::Imm(0));
+        self.store_unchecked(Width::W32, a24, Value::Imm(0));
         let fcw = self.bin(BinOp::Or, fcw, Value::Imm(0x3f));
         self.store_state(Width::W16, abi::STATE_FCW, fcw);
         let fsw = self.bin(BinOp::And, fsw, Value::Imm(!FSW_ES_B));

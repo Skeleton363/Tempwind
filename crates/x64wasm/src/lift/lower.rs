@@ -3,7 +3,7 @@
 
 use iced_x86::{Instruction, Mnemonic, OpKind};
 
-use super::{Flow, Lowered, Unsupported};
+use super::{Checks, Flow, Lowered, Unsupported};
 use crate::ir::{BinOp, Cond, FlagOp, Gpr, Op, RSP, Temp, UnOp, VTemp, Value, Width};
 
 /// Lowering state for one instruction.
@@ -17,6 +17,8 @@ pub(super) struct Lower<'i> {
     pub(super) ea: Option<Value>,
     /// The memory operand's guest address (with the FS/GS base), once computed.
     pub(super) seg_ea: Option<Value>,
+    /// The memory checks to insert (`translator.md`, "Memory checks").
+    pub(super) checks: Checks,
 }
 
 impl Lower<'_> {
@@ -155,13 +157,59 @@ impl Lower<'_> {
         }
     }
 
+    /// The memory checks of an access of `len` bytes at `addr` (only if
+    /// `when != 0`, with `when`). Must come before the instruction's first
+    /// side effect; an instruction with several accesses after one checks
+    /// them first ([`Lower::mem_check`]) and uses the unchecked builders.
+    pub(super) fn mem_check_when(
+        &mut self,
+        addr: Value,
+        len: u32,
+        write: bool,
+        when: Option<Value>,
+    ) {
+        let null = self.checks.null;
+        let code = write && self.checks.store;
+        if !null && !code {
+            return;
+        }
+        debug_assert!(
+            !self.ops.iter().any(Op::has_side_effect),
+            "memory check after a side effect"
+        );
+        self.push_op(Op::MemCheck {
+            addr,
+            len,
+            write,
+            null,
+            code,
+            when,
+        });
+    }
+
+    pub(super) fn mem_check(&mut self, addr: Value, len: u32, write: bool) {
+        self.mem_check_when(addr, len, write, None);
+    }
+
     pub(super) fn load(&mut self, width: Width, addr: Value) -> Value {
+        self.mem_check(addr, width.bits() / 8, false);
+        self.load_unchecked(width, addr)
+    }
+
+    /// A load whose memory checks are already in place.
+    pub(super) fn load_unchecked(&mut self, width: Width, addr: Value) -> Value {
         let dst = self.temp();
         self.push_op(Op::Load { dst, width, addr });
         Value::Temp(dst)
     }
 
     pub(super) fn store(&mut self, width: Width, addr: Value, value: Value) {
+        self.mem_check(addr, width.bits() / 8, true);
+        self.store_unchecked(width, addr, value);
+    }
+
+    /// A store whose memory checks are already in place.
+    pub(super) fn store_unchecked(&mut self, width: Width, addr: Value, value: Value) {
         self.push_op(Op::Store { width, addr, value });
     }
 
