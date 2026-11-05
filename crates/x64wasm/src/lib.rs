@@ -37,6 +37,22 @@ pub struct Options {
     /// trampoline instead. `None` disables the guard (for measurements only:
     /// deep guest recursion then overflows the wasm stack).
     pub call_depth_limit: Option<u32>,
+    /// Reference mode for M6's liveness-based sync: load, store and reload all
+    /// 20 values at every boundary, as in M1-M5 (`translator.md`, "Registers
+    /// and flags"). For differential tests. No effect until WP2 lands.
+    pub sync_all: bool,
+    /// Lay blocks out by loop nesting (`translator.md`, "Jumps and branches").
+    /// `false` keeps the Phase 0 dispatch layout, as a reference mode. No
+    /// effect until WP3 lands.
+    pub structured: bool,
+    /// Count events in the counter block (`abi.md`, "Counter block"); the
+    /// module then imports `env.counters`. For measurement only.
+    pub counters: bool,
+    /// Fault on guest accesses below 0x10000 (`translator.md`, "Memory checks").
+    pub null_check: bool,
+    /// Test the page-state table before each store; the module then imports
+    /// `env.page_flags` (`translator.md`, "Memory checks").
+    pub store_check: bool,
 }
 
 impl Options {
@@ -57,6 +73,11 @@ impl Default for Options {
             max_function_insns: Self::DEFAULT_MAX_FUNCTION_INSNS,
             max_chunk_insns: Self::DEFAULT_MAX_CHUNK_INSNS,
             call_depth_limit: Some(Self::DEFAULT_CALL_DEPTH_LIMIT),
+            sync_all: false,
+            structured: true,
+            counters: false,
+            null_check: false,
+            store_check: false,
         }
     }
 }

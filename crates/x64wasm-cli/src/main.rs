@@ -141,6 +141,7 @@ impl Input {
             max_function_insns: self.max_function_insns,
             max_chunk_insns: self.max_chunk_insns,
             call_depth_limit: (!self.no_depth_guard).then_some(self.call_depth_limit),
+            ..Options::default()
         };
         let region = CodeRegion {
             base: self.base,
