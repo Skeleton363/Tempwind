@@ -286,6 +286,85 @@ pub fn sum_loop(n: u64) -> Result<Case> {
     })
 }
 
+/// `irreducible_loop`: a loop with two entries (the first test jumps into
+/// its middle when `rcx` is odd), with a nested loop inside, so the
+/// structured layout enters a loop's interior through the selector.
+/// `rcx` >= 1 counts down to 0 across both halves.
+pub fn irreducible_loop(n: u64) -> Result<Case> {
+    assert!(n >= 1, "rcx must start above 0");
+    let mut a = CodeAssembler::new(64)?;
+    let mut first = a.create_label();
+    let mut second = a.create_label();
+    let mut inner = a.create_label();
+    let mut skip = a.create_label();
+    let mut done = a.create_label();
+    a.xor(eax, eax)?;
+    a.test(cl, 1)?;
+    a.jne(second)?;
+    a.set_label(&mut first)?;
+    a.add(rax, rcx)?;
+    a.sub(rcx, 1)?;
+    a.je(done)?;
+    a.set_label(&mut second)?;
+    a.mov(edx, ecx)?;
+    a.and(edx, 3)?;
+    a.je(skip)?;
+    a.set_label(&mut inner)?;
+    a.add(rax, rdx)?;
+    a.sub(edx, 1)?;
+    a.jne(inner)?;
+    a.set_label(&mut skip)?;
+    a.sub(rcx, 1)?;
+    a.jne(first)?;
+    a.set_label(&mut done)?;
+    a.ret()?;
+    let (mut sum, mut count, mut low) = (0u64, n, 0u64);
+    let mut in_second = n % 2 == 1;
+    loop {
+        if !in_second {
+            sum = sum.wrapping_add(count);
+            count -= 1;
+            if count == 0 {
+                break;
+            }
+        }
+        in_second = false;
+        low = count & 3;
+        while low != 0 {
+            sum = sum.wrapping_add(low);
+            low -= 1;
+        }
+        count -= 1;
+        if count == 0 {
+            break;
+        }
+    }
+    // The last flag writer is `sub rcx, 1` reaching 0.
+    let flags = INIT_RFLAGS | abi::flags::ZF | abi::flags::PF;
+    Ok(Case {
+        name: "irreducible_loop",
+        code_base: LOW_CODE,
+        code: asm(&mut a, LOW_CODE)?,
+        entry: LOW_CODE,
+        extra_entries: vec![],
+        memory_bytes: LOW_MEMORY,
+        state_addr: LOW_STATE,
+        init_regs: vec![(reg("rcx"), n), (reg("rsp"), LOW_STACK)],
+        init_rflags: INIT_RFLAGS,
+        init_mem: vec![sentinel_at(LOW_STACK)],
+        expect_exit: abi::EXIT_LEFT_CODE,
+        expect_rip: abi::SENTINEL_RET,
+        expect_regs: vec![
+            (reg("rax"), sum),
+            (reg("rcx"), 0),
+            (reg("rdx"), low),
+            (reg("rsp"), LOW_STACK + 8),
+        ],
+        expect_mem: vec![],
+        expect_rflags: Some((flags, u64::MAX)),
+    })
+}
+
 /// `loop_branch`: a loop whose body has an if/else, so the back edge is
 /// not a self-loop and goes through `$dispatch`. `rax` = the sum of 1..=rcx
 /// with the odd terms added and the even ones subtracted.
@@ -1328,6 +1407,7 @@ pub fn cases() -> Result<Vec<Case>> {
         longjmp_like()?,
         big_function(100)?,
         loop_branch(100)?,
+        irreducible_loop(101)?,
         merge_call(3)?,
         loop_calls(10)?,
         clobber_calls()?,

@@ -1,8 +1,9 @@
 //! Differential test of the register and flag sync (`translator.md`,
 //! "Registers and flags"): seeded random programs of calls, loops, branches
-//! and register and flag use, translated with `Options::sync_all` (the
-//! reference) and with the analysis under several option sets, run in
-//! wasmtime. The final state blocks and memory must match.
+//! and register and flag use, translated with `Options::sync_all` and
+//! `structured: false` (the reference) and with every other combination of
+//! the two under several chunkings, run in wasmtime. The final state blocks
+//! and memory must match.
 
 use iced_x86::code_asm::*;
 use testkit::host::Host;
@@ -361,7 +362,7 @@ fn run(host: &Host, case: &Case, opts: &Options) -> (CpuState, Vec<u8>, Vec<u8>)
 }
 
 #[test]
-fn random_programs_match_sync_all() {
+fn random_programs_match_the_reference() {
     let host = Host::fast_compile().unwrap();
     let o = |max_function_insns, max_chunk_insns, call_depth_limit| Options {
         max_function_insns,
@@ -369,16 +370,37 @@ fn random_programs_match_sync_all() {
         call_depth_limit,
         ..Options::default()
     };
-    let variants = [
+    // Every combination of the sync and the layout with each chunking,
+    // except the reference itself.
+    let reference = Options {
+        sync_all: true,
+        structured: false,
+        ..Options::default()
+    };
+    let variants: Vec<Options> = [
         Options::default(),
         o(1, 1, Some(0)),
         o(8, 1000, Some(2)),
         o(20, 40, None),
-    ];
-    let reference = Options {
-        sync_all: true,
-        ..Options::default()
-    };
+    ]
+    .into_iter()
+    .flat_map(|base| {
+        [(false, true), (true, true), (false, false), (true, false)].map(
+            |(sync_all, structured)| Options {
+                sync_all,
+                structured,
+                ..base.clone()
+            },
+        )
+    })
+    .filter(|v| {
+        !(v.sync_all
+            && !v.structured
+            && v.max_function_insns == reference.max_function_insns
+            && v.max_chunk_insns == reference.max_chunk_insns
+            && v.call_depth_limit == reference.call_depth_limit)
+    })
+    .collect();
     // Runs that end at the sentinel and at a fault.
     let mut ends = [0; 2];
     for seed in 0..150u64 {

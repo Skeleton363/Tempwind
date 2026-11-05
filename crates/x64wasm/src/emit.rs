@@ -80,6 +80,7 @@ mod structure;
 mod x87;
 
 use flags::{Known, emit_flags};
+use structure::{Item, Jump, Plan, Sel, Transfer};
 use x87::X87Locals;
 
 // Parameters and locals of a chunk function.
@@ -150,6 +151,12 @@ enum Label {
     Block(usize),
     Miss,
     SelfLoop,
+    /// A `block` of the structured layout ([`Plan::items`]).
+    PlanBlock,
+    /// A `loop` of the structured layout (`$dispatch` is [`Label::Dispatch`]).
+    PlanLoop,
+    /// The blocks of a dispatch on a selector or on `entry`.
+    Route,
     If,
     /// Labels of a string instruction's loop.
     StrDone,
@@ -206,6 +213,15 @@ struct ChunkEmitter<'p> {
     l_mask: Option<u32>,
     /// The dirty set of every branch to `$leave` so far.
     leave_masks: Vec<Set>,
+    /// The structured layout (`Options::structured`); `None` keeps the
+    /// Phase 0 dispatch layout.
+    plan: Option<&'p Plan>,
+    /// Positions in `labels` of the layout's open labels, outermost first
+    /// (the label depths of a [`Transfer`] count only these).
+    plan_labels: Vec<usize>,
+    /// The selector local (layout position + 1; 0 is `structure::NONE`),
+    /// present when some loop has an interior.
+    l_sel: Option<u32>,
 }
 
 impl ChunkEmitter<'_> {
@@ -671,7 +687,9 @@ impl ChunkEmitter<'_> {
         match self.locate(target) {
             Some((c, j)) if c == self.chunk => {
                 let j = j as usize;
-                if Some(j) == fall {
+                if let Some(plan) = self.plan {
+                    self.goto_planned(f, plan, k, j, fall);
+                } else if Some(j) == fall {
                 } else if j == k
                     && self
                         .labels
@@ -705,6 +723,119 @@ impl ChunkEmitter<'_> {
                 self.probe(f);
                 self.tail_call_indirect(f);
             }
+        }
+    }
+
+    /// The structured layout's edge from block `k` to block `j` of this
+    /// chunk. `fall` is the block control falls through to from here, if
+    /// it can (`None` inside an `if`).
+    fn goto_planned(
+        &mut self,
+        f: &mut InstructionSink<'_>,
+        plan: &Plan,
+        k: usize,
+        j: usize,
+        fall: Option<usize>,
+    ) {
+        let t = plan.edges[k]
+            .iter()
+            .find(|e| e.0 == j)
+            .expect("an edge of the layout")
+            .1;
+        if matches!(t.sel, Sel::Set(_)) {
+            // An entry into a loop's interior through its selector.
+            self.count(f, slot::DISPATCHES, 1);
+        }
+        self.set_sel(f, t.sel);
+        match t.jump {
+            Jump::Fall if fall == Some(j) => {}
+            // Falling through to the next node is leaving the innermost
+            // `block` of the layout (only loops close before it).
+            Jump::Fall => {
+                let pos = *self
+                    .plan_labels
+                    .iter()
+                    .rev()
+                    .find(|&&p| self.labels[p] == Label::PlanBlock)
+                    .expect("a block to fall out of");
+                f.br((self.labels.len() - 1 - pos) as u32);
+            }
+            Jump::Br(d) => f.br(self.plan_depth(d)),
+        }
+    }
+
+    /// The wasm depth of the layout's label at layout depth `d`.
+    fn plan_depth(&self, d: u32) -> u32 {
+        let pos = self.plan_labels[self.plan_labels.len() - 1 - d as usize];
+        (self.labels.len() - 1 - pos) as u32
+    }
+
+    fn set_sel(&self, f: &mut InstructionSink<'_>, sel: Sel) {
+        let v = match sel {
+            Sel::Keep => return,
+            Sel::Set(q) => q + 1,
+            Sel::Clear => 0,
+        };
+        f.i32_const(v as i32);
+        f.local_set(self.l_sel.expect("a selector local"));
+    }
+
+    /// A dispatch: `index` pushes an i32, and index `i` takes `ts[i]`; any
+    /// other index is unreachable. Transfers that change the selector go
+    /// through one small stub each (shared by equal transfers); a `Fall`
+    /// continues after the dispatch.
+    fn route(
+        &mut self,
+        f: &mut InstructionSink<'_>,
+        ts: &[Transfer],
+        index: impl FnOnce(&Self, &mut InstructionSink<'_>),
+    ) {
+        let mut stubs: Vec<Transfer> = Vec::new();
+        for t in ts {
+            if t.sel != Sel::Keep && !stubs.contains(t) {
+                stubs.push(*t);
+            }
+        }
+        let fall = ts.iter().any(|t| t.jump == Jump::Fall).then(|| {
+            f.block(BlockType::Empty);
+            self.labels.push(Label::Route);
+            self.labels.len() - 1
+        });
+        // Stub 0 is the innermost, so its code comes first.
+        let base = self.labels.len();
+        for _ in &stubs {
+            f.block(BlockType::Empty);
+            self.labels.push(Label::Route);
+        }
+        let stub_pos = |i: usize| base + stubs.len() - 1 - i;
+        f.block(BlockType::Empty);
+        self.labels.push(Label::Route);
+        let jump = |e: &Self, j: Jump| match j {
+            Jump::Fall => (e.labels.len() - 1 - fall.expect("a fall label")) as u32,
+            Jump::Br(d) => e.plan_depth(d),
+        };
+        let targets: Vec<u32> = ts
+            .iter()
+            .map(|t| match stubs.iter().position(|s| s == t) {
+                Some(i) => (self.labels.len() - 1 - stub_pos(i)) as u32,
+                None => jump(self, t.jump),
+            })
+            .collect();
+        index(self, f);
+        f.br_table(targets, 0);
+        f.end();
+        self.labels.pop();
+        f.unreachable();
+        for (i, t) in stubs.iter().enumerate() {
+            f.end();
+            debug_assert_eq!(self.labels.len() - 1, stub_pos(i));
+            self.labels.pop();
+            self.set_sel(f, t.sel);
+            f.br(jump(self, t.jump));
+        }
+        if fall.is_some() {
+            f.end();
+            self.labels.pop();
         }
     }
 
@@ -826,7 +957,9 @@ impl ChunkEmitter<'_> {
         self.known_cc = None;
         self.dirty = self.sync.dirty_in[k];
         let addr = block.addr;
-        let self_loop = match block.term {
+        // The structured layout makes a self-loop a loop of its own.
+        let self_loop = self.plan.is_none()
+            && match block.term {
             Term::Jump(t) => t == addr,
             Term::Branch {
                 taken, fallthrough, ..
@@ -834,8 +967,8 @@ impl ChunkEmitter<'_> {
             | Term::BranchIf {
                 taken, fallthrough, ..
             } => taken == addr || fallthrough == addr,
-            _ => false,
-        };
+                _ => false,
+            };
         if self_loop {
             f.loop_(BlockType::Empty);
             self.labels.push(Label::SelfLoop);
@@ -845,7 +978,14 @@ impl ChunkEmitter<'_> {
             self.cur_addr = insn.addr;
             self.insn(f, &insn.ops, last.then_some(&block.term));
         }
-        let next = (k + 1 < self.blocks.len()).then_some(k + 1);
+        // The block control can fall through to from the end of this one.
+        let next = match self.plan {
+            Some(plan) => plan.edges[k]
+                .iter()
+                .find(|e| e.1.jump == Jump::Fall)
+                .map(|e| e.0),
+            None => (k + 1 < self.blocks.len()).then_some(k + 1),
+        };
         match block.term {
             Term::Jump(t) => self.goto(f, t, k, next),
             Term::Branch {
