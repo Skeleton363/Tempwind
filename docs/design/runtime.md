@@ -37,6 +37,7 @@ This follows `guest-memory.md` (option A, identity mapping). The constants live 
 | `0x8010_0000` and up | as needed | Runtime heap: lookup slots and other runtime data |
 | `imageBase` | `sizeOfImage` | The image, at its preferred base (MinGW: `0x1_4000_0000`). |
 
+- **Optional blocks (M6):** the counter block (96 bytes) and the page-state table (1 byte per 4 KiB page of guest memory; 4 MiB for 16 GiB) come from the runtime heap, and only when a module imports `env.counters` or `env.page_flags` (`abi.md`).
 - **Memory:** one memory64, non-shared in Phase 1. Its initial size is the larger of the image end (rounded up to 64 KiB) and 4 GiB, the end of the host region; for a MinGW image that is a little over 5 GiB. Pages are committed lazily on Linux.
 - **Bad image bases:** a load fails with a clear error when the image would overlap the NULL region, the guest heap's start, the stack, PEB/TEB, KUSER or the host region, or end above 16 GiB.
 - **No relocation:** images always load at their preferred base. Relocation comes with DLLs (Phase 2).
@@ -199,7 +200,7 @@ If the run-time translator isn't loaded, or reports an error, the process stops 
 
 ## Tracing
 
-`TEMPWIND_TRACE` takes a comma-separated list. Traces go to the Node process's stderr, never into the guest's captured output, and each line starts with `[tempwind] `.
+`TEMPWIND_TRACE` takes a comma-separated list. `counts` (M6) prints at exit the counter block, when a module was built with `Options::counters`, and the number of calls to each import. Traces go to the Node process's stderr, never into the guest's captured output, and each line starts with `[tempwind] `.
 
 | Value | Traces |
 |---|---|

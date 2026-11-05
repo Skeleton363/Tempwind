@@ -18,6 +18,8 @@ A translated module imports, in this order:
 | `env.table_base` | global `i32`, immutable | Table index of this module's chunk 0. |
 | `env.lookup` | global `i64`, immutable | Guest address of the lookup header (below). |
 | `env.depth` | global `i32`, mutable | Nested guest calls on the wasm stack (call-depth guard), shared by all modules. |
+| `env.counters` (M6, optional) | global `i64`, immutable | Only with `Options::counters`: guest address of the counter block (below). |
+| `env.page_flags` (M6, optional) | global `i64`, immutable | Only with `Options::store_check`: guest address of the page-state table (below). |
 | `fp.<name>` (v4) | functions | Only the soft-float helpers the module calls, in the order of the table in "Floating-point helper module". A module without SSE floating point or x87 code imports none. |
 
 - **Exports:** `run: (state: i64) -> i32`, unchanged since v1. `state` is the guest address of a CPU state block. `run` executes translated code from `state.rip` until an exit, stores the registers back and returns the exit reason.
@@ -31,7 +33,7 @@ A translated module imports, in this order:
   - k + 3 + i is chunk i, at table index `table_base + i`, which an active element segment with offset `global.get $table_base` writes;
   - helper functions such as `div128` (128-by-64-bit division) follow the chunks; they are emitted only when used and are not in the table;
   - guest functions (chunks) have the type `(state: i64, entry: i32, ret: i64) -> i32`. `entry` is the index of the block to start at, and every block is a valid entry. `ret` is the return address the caller expects: a `ret` that pops exactly this value returns to the wasm caller.
-- Globals 0-2 are the imported `table_base`, `lookup` and `depth`. Only `run` is exported.
+- Globals 0-2 are the imported `table_base`, `lookup` and `depth`, followed by the optional `counters` and `page_flags` when present. Only `run` is exported. The optional imports leave the ABI version unchanged, since a module built with default options has the v4 shape. A host supplies an optional import only when the module lists it (`WebAssembly.Module.imports`).
 - The name section names every function (the `fp` imports as `fp.<name>`), local, the table and the globals. A chunk is named after its guest function's entry: `fn_0x140001000`, or `fn_0x140001000_c1` and so on for the chunks of a large function that don't hold the entry.
 
 ## Linking a module (host steps)
@@ -108,7 +110,7 @@ Every guest function returns one of:
 | 1 | `STATUS_UNWIND` | Control continues at `state.rip`, which the trampoline looks up. Used for returns to an unexpected address, lookup misses and calls past the depth limit. | Full state, RIP included. |
 | 2 | `STATUS_EXIT` | Stop and return to the host with the reason in `state.exit`. | Full state, RIP and exit reason included. |
 
-A caller that gets a status other than 0 from a call stores nothing further and passes the status up unchanged. After `STATUS_RETURNED` it reloads the registers and the lazy flag record from the state block, since the callee may have changed any of them. The trampoline is the only consumer of 1 and 2.
+A caller that gets a status other than 0 from a call stores nothing further and passes the status up unchanged. After `STATUS_RETURNED` it reloads from the state block what it needs. Since M6 that is the values live after the call that the callee may change (`translator.md`, "Registers and flags"); under `Options::sync_all` it is all of them. The trampoline is the only consumer of 1 and 2.
 
 ## Trampoline (`run`)
 
@@ -122,6 +124,29 @@ A caller that gets a status other than 0 from a call stores nothing further and 
 3. Materialize RFLAGS: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a, cc_b, cc_r)`. Store the exit reason in `state.exit` and return it.
 
 `NO_RET = 0xFFFF_FFFF_FFFF_FFFF`, a non-canonical address that no `call` can push. Every module's `run` behaves the same, so a host may use any of them.
+
+## Counter block (`Options::counters`, M6)
+The counter block is `u64` slots at `env.counters`. Each counted event adds 1; `values_*` add the number of values moved.
+
+| Slot | Name | Event |
+|---|---|---|
+| 0 | `entries_fast` | entry at a function's own entry block |
+| 1 | `entries_generic` | any other entry |
+| 2 | `dispatches` | a branch through `$dispatch` |
+| 3 | `local_indirect` | an indirect jump that hits the current chunk |
+| 4 | `calls_direct` | a direct call into the module |
+| 5 | `calls_probed` | a call through the lookup table (indirect, or outside the module) |
+| 6 | `tail_transfers` | a `return_call` or `return_call_indirect` |
+| 7 | `unwinds` | an `UNWIND` leaving a function |
+| 8 | `values_stored` | GPRs and flag records stored to the state block |
+| 9 | `values_loaded` | GPRs and flag records loaded from it |
+| 10 | `mem_loads` | guest memory loads |
+| 11 | `mem_stores` | guest memory stores |
+
+## Page-state table (`Options::store_check`, M6)
+One byte per 4 KiB guest page, at `env.page_flags + (addr >> 12)`.
+- **Bits:** `PAGE_CODE = 1` marks a page holding translated code; `PAGE_WATCH = 2` marks a write-watched page.
+- **Who sets them:** the runtime sets `PAGE_CODE` on the pages of the image's executable sections. Translated code only reads the table.
 
 ## CPU state block
 
