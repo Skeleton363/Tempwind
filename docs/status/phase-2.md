@@ -1,6 +1,6 @@
 # Phase 2 status: Wine underneath
 
-**Phase 2 is planned (2026-11-06), and M1 is in progress.** The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pass is in `docs/dev/research.md`, "2026-11-06: Phase 2, Wine underneath". From Phase 2 on, a session covers one milestone.
+**Phase 2 is planned (2026-11-06). M1 is in progress and paused; the resume path is under "M1 progress (paused 2026-11-06)".** The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pass is in `docs/dev/research.md`, "2026-11-06: Phase 2, Wine underneath". From Phase 2 on, a session covers one milestone.
 
 - **Session 1 (2026-11-06):**
   - planned Phase 2: three Explore runs, then a Plan-agent review of the draft, whose six blockers are folded in below;
@@ -144,6 +144,57 @@
   - WP3 (deep-worker): the boundary spike, in parallel with WP1;
   - WP2 (deep-worker), after WP1's first release: census, fixtures, lowering, translation of the closure and the base table.
 
+## M1 progress (paused 2026-11-06)
+
+The owner paused the session at 23:00 UTC. Everything is committed on the PR branch `claude/gifted-bardeen-a0hot6` (head `a91444e`, plus this note's commit). No pull request is open yet, and the working tree is clean.
+
+### Committed
+- **Planning and contracts:**
+  - `4eb7d6f`: the plan, this note, research, workflow;
+  - `53e166c`: `wine-build.md`, the closure in `instruction-scope.md`, the draft "Wine boundary" in `abi.md`.
+- **WP3, the boundary spike: done.**
+  - `0182d2f`: CI run 42306776103 passed all three jobs;
+  - its results are under "What works" below.
+- **WP1, the Wine CI build: committed, but its first run is not finished.**
+  - `7cd714a` contains:
+    - `.github/workflows/wine.yml`, with the jobs source, build, baseline-windows, baseline-wine, closure and publish;
+    - `tests/targets/sources.json`'s `"wine"` pin (sha256 `c07a6857…0701`; sha512 checked against `sha512sums.asc`);
+    - `tests/targets/wine-build-info.sh`;
+    - `testkit closure` (`crates/testkit/src/closure.rs`);
+    - delay-load imports in `x64wasm::pe`, with tests;
+    - `tests/conformance/{parse,run-baseline}.mjs` and `tests/node/conformance-parse.test.mjs`.
+  - Its first `wine` run, **42306869519** at `7cd714a`:
+    - `source` passed;
+    - `build` was in its Build step at the pause, and CI keeps running without the session.
+  - `targets` run 42306869181 passed.
+- **Also committed:** `18b58c6`, the command reference; `a91444e`, the spike's results.
+
+### In progress, and how to resume (for a fresh session)
+1. **Read** `docs/plan.md` ("Phase 2 milestones"), then this note's "Decisions" and this section.
+2. **WP1, finish it** (builder; the contract is `docs/design/wine-build.md`, its deliverables are below).
+   1. Look up run 42306869519 (`mcp__github__actions_list` / `actions_get`, or `gh run view 42306869519`).
+   2. If a job failed, read that job's log tail (save it to a file and grep it), fix the cause in `wine.yml` or the scripts, and push. Each Wine build takes about an hour; ccache shortens later ones.
+   3. When `wine-<sha7>` is published with every asset in `wine-build.md`'s table, write `tests/targets/wine.lock` with that tag and check that `scripts/fetch-artifact.sh "$(cat tests/targets/wine.lock)" closure.json` works.
+   4. Verify locally: `cargo test -p testkit`, `cargo test -p x64wasm`, `npm run test:node` and `cargo clippy --workspace --all-targets -- -D warnings`. They were not confirmed before the pause.
+   5. Add to `docs/dev/commands.md`: the fetch command, running the native Wine 11 from `wine-native.tar.zst` in a session, and `testkit closure`.
+   6. Record here the build minutes, the closure's module count, its overlaps, `highest_end` and `memory_bytes`, and the baseline units per platform and exe (ok, failed, crashed, timeout).
+   - **WP1's deliverables:**
+     - `wine.yml` per `wine-build.md`: the source mirror `src-wine-11.0`; the build with the exact configure flags and `--strip-debug` PE packing; the prefix; `build-info.json`; the two baseline jobs (`--list`, one unit per process, `WINETEST_DEBUG=1`, `WINETEST_PLATFORM=wine` under Wine, 120 s limit); `+loaddll` traces of the program roots and every unit; `closure.json`; the publish job;
+     - `tests/targets/wine.lock`;
+     - the conformance parser and runner.
+   - **It is done when** the run is green, the release exists, the lock names it, and the local checks pass.
+3. **WP2, after WP1's release** (deep-worker):
+   - run `testkit census` over the closure's modules (listed in `closure.json`) with the profile;
+   - write fixture generators for the new forms (expected: `fxsave` and `pushfq` from `RtlCaptureContext`), record them with `testkit record` on this x86-64 machine, and lower them in the translator;
+   - add the closure to CI's `census --check` (ci.yml, with the closure fetched through `wine.lock`);
+   - `translate-pe` every closure DLL and measure V8 compile sizes and times (`tests/bench/translator/images.mjs` is the pattern);
+   - write the base and overlap table here.
+   - Exclusions follow `instruction-scope.md`'s Phase 2 section.
+   - It is done when `census --check` passes on the closure (replay 100 %) and every closure DLL translates and compiles in V8.
+4. **Then close M1:** `/milestone-close`, the draft PR "[Phase 2] Wine in CI, and the boundary spike", the retro and the hand-off to M2.
+
+Ledger: WP1's and the main session's lines at the pause are in `docs/dev/agent-runs.jsonl` (milestone `P2-M1`).
+
 ## What works
 
 | Item | Evidence |
@@ -175,7 +226,7 @@
 
 ## Next step
 
-M1:
-- the contracts;
-- then WP1 (builder) and WP3 (deep-worker) in parallel;
-- WP2 (deep-worker) after WP1's first `wine-<sha7>` release.
+Resume M1 from "M1 progress (paused 2026-11-06)":
+1. finish WP1, whose first `wine` run is 42306869519;
+2. then WP2;
+3. then close M1.
