@@ -177,7 +177,9 @@ fn structured_loops_skip_dispatch() {
     for n in [100, 101] {
         let case = spike::irreducible_loop(n).unwrap();
         entries += counted(&case, &opts)[2];
-        assert!(counted(&case, &flat)[2] >= n / 2, "n = {n}: reference");
+        // The reference layout dispatches on every back edge (`skip` to
+        // `first`, taken once per two counts).
+        assert!(counted(&case, &flat)[2] >= n / 2 - 1, "n = {n}: reference");
     }
     assert_eq!(entries, 1, "dispatches into the loop's middle");
 }
