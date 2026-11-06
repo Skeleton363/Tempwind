@@ -3,6 +3,7 @@
 //! instruction census of PE files.
 
 pub mod census;
+pub mod closure;
 pub mod host;
 pub mod oracle;
 pub mod spike;
