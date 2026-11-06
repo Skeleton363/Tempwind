@@ -479,79 +479,77 @@
     i64.load offset=32 align=1
     local.set $rsp
     block ;; label = @1
-      loop ;; label = @2
+      block ;; label = @2
         block ;; label = @3
           block ;; label = @4
             block ;; label = @5
-              block ;; label = @6
-                local.get $entry
-                br_table 1 (;@5;) 2 (;@4;) 3 (;@3;) 0 (;@6;)
-              end
-              unreachable
+              local.get $entry
+              br_table 1 (;@4;) 2 (;@3;) 3 (;@2;) 0 (;@5;)
             end
-            i64.const 0
-            local.set $rax
-            local.get $rcx
-            i64.const 0
-            i64.sub
-            local.set $t0
-            i32.const 8
-            local.set $cc_op
-            local.get $rcx
-            local.set $cc_a
-            i64.const 0
-            local.set $cc_b
-            local.get $t0
-            local.set $cc_r
-            local.get $cc_r
-            i64.eqz
-            if ;; label = @5
-              br 2 (;@3;)
-            end
+            unreachable
           end
-          loop ;; label = @4
-            local.get $rax
-            local.get $rcx
-            i64.add
-            local.set $rax
-            local.get $rcx
-            i64.const 1
-            i64.sub
-            local.set $t0
-            i32.const 8
-            local.set $cc_op
-            local.get $rcx
-            local.set $cc_a
-            i64.const 1
-            local.set $cc_b
-            local.get $t0
-            local.set $cc_r
-            local.get $t0
-            local.set $rcx
-            local.get $cc_r
-            i64.eqz
-            i32.eqz
-            if ;; label = @5
-              br 1 (;@4;)
-            end
+          i64.const 0
+          local.set $rax
+          local.get $rcx
+          i64.const 0
+          i64.sub
+          local.set $t0
+          i32.const 8
+          local.set $cc_op
+          local.get $rcx
+          local.set $cc_a
+          i64.const 0
+          local.set $cc_b
+          local.get $t0
+          local.set $cc_r
+          local.get $cc_r
+          i64.eqz
+          if ;; label = @4
+            br 2 (;@2;)
           end
         end
-        local.get $rsp
-        i64.load align=1
-        local.set $t0
-        local.get $rsp
-        i64.const 8
-        i64.add
-        local.set $rsp
-        local.get $t0
-        local.tee $rip
-        local.get $ret
-        i64.ne
-        local.set $status
-        i32.const 65555
-        local.set $mask
-        br 1 (;@1;)
+        loop ;; label = @3
+          local.get $rax
+          local.get $rcx
+          i64.add
+          local.set $rax
+          local.get $rcx
+          i64.const 1
+          i64.sub
+          local.set $t0
+          i32.const 8
+          local.set $cc_op
+          local.get $rcx
+          local.set $cc_a
+          i64.const 1
+          local.set $cc_b
+          local.get $t0
+          local.set $cc_r
+          local.get $t0
+          local.set $rcx
+          local.get $cc_r
+          i64.eqz
+          i32.eqz
+          if ;; label = @4
+            br 1 (;@3;)
+          end
+        end
       end
+      local.get $rsp
+      i64.load align=1
+      local.set $t0
+      local.get $rsp
+      i64.const 8
+      i64.add
+      local.set $rsp
+      local.get $t0
+      local.tee $rip
+      local.get $ret
+      i64.ne
+      local.set $status
+      i32.const 65555
+      local.set $mask
+      br 0 (;@1;)
       unreachable
     end
     local.get $state
