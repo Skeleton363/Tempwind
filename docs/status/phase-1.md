@@ -301,26 +301,38 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
 - **Estimates, to be measured:** calls drop from 10-20× to about 4-7× native; CoreMark and `7z b` rise from 0.30 and 0.35 to perhaps 0.45-0.6.
 - **The research digest routine** now runs on Sonnet 5.5 (your choice). Its effort is set on its page on claude.ai.
 
-## M6 progress (paused 2026-11-05)
+## M6 progress (paused 2026-11-06)
 
-**Done** (on the PR branch, PR #9; measurements in "Measurements", WP1 and WP2):
-- **Workflow:** subagent caps and default effort, two agent rules, and the agent-run ledger (`docs/dev/agent-runs.md`).
-- **Contracts and stub:** the contracts (`0d97a4d`) and the `Options` stub (`d50d984`).
-- **WP1, measurement:** profiling and counters (`31cec95`..`590388f`). Every call moved 80 values, loops took about 12 dispatches per call, and JS was under 1 % of the time.
-- **WP2, liveness** (`a745ad6`..`eed81c1`): values moved per call fell from 80 to about 35. CoreMark rose from 0.299 to 0.325 of native; `7z b` is unchanged within noise. `sync_all` output is byte-identical to before.
-- **WP3a, the loop layout module** `emit/structure.rs`, merged in `4c02685` and not used yet.
-- **CI on `4c02685`:** everything green except `cargo fmt` (module order in `emit.rs`). The pause commit fixes that.
+**Done** (on the PR branch, PR #9, head after this note; CI green through `230d78a`, later commits are docs and scripts):
+- **Workflow trials** (`785d5f9`, `docs/dev/agent-runs.md`). One of them is a pre-push hook that refuses a WIP head or unformatted Rust on `main` and `claude/*`. The SessionStart hook installs it.
+- **Ledger measured right** (`93287f3`): real usage per run from the transcripts (`scripts/agent-usage.mjs`). A notice's token count is only the last request's context.
+- **WP3b, structured loops** (`1c4454d`): dispatches fall 50× (CoreMark) and 400× (`7z b`). CoreMark went from 0.354 to 0.465 of native, `7z b` from 0.379 to 0.436 (WP3 under "Measurements").
+- **WP4 and WP4b, memory checks** (merged in `2d268f0`, then `230d78a`). Check sites share one cold exit per chunk. Code translated at run time gets the image's options (contract `a7080b6`). With both checks, modules grow 44 % (coremark) and 54 % (7zz). Timings come in WP5.
+- Merge verification (`3a3b01d`): 218 Rust tests, Node 241/241, the 7-Zip matrix 138/138. WP4b then reported 220 Rust tests and Node 244/244.
 
-**In progress (both agents stopped; each resumes with a message):**
-- **WP3b**, integrating `structure.rs` into `emit.rs` (deep-worker, `high`). Its WIP is on the side branch `m6-wip`, one commit past the PR head. It **does not build yet** (4 errors, mid-edit in `emit.rs`). It touches the spike tests and `sync_diff.rs`.
-- **WP4**, the memory checks (deep-worker, `medium`), in a worktree. Its WIP is on the side branch `m6-wp4` and **builds**. It touches the lifter, the IR, `sync.rs`, `emit.rs`'s import and global sections, and `lowering.rs`. The runtime, CLI and measurements are still missing.
+**In progress: WP5** (builder, Sonnet, medium). It was stopped by the pause before any timing. Its WIP is on the side branch `m6-wp5-wip` (`316dc19`), **not verified**. It has the `translate-pe` flags `--sync-all` and `--no-structured` with a CLI test, the floating-point module in `images.mjs`, `tests/bench/memchecks.mjs`, and an L2 test in the reference mode.
+
+WP5's brief:
+1. The two reference-mode flags, with a test that each gives the same module as translating with the option.
+2. The L2 programs in the reference mode (a Node test, like WP4's variant with both checks), and the translated 7-Zip matrix twice: with `--sync-all --no-structured`, and with `--null-check --store-check`. Both must give 138/138.
+3. `images.mjs` with the floating-point module. V8 compile times (lazy, and eager TurboFan) for 7zz.exe and coremark.exe: reference, default, and default with both checks, medians of 3.
+4. `tests/bench/memchecks.mjs`: four variants (none, null, store, both) of both targets, runs interleaved with the order rotated, 5 rounds, medians and sizes as one JSON line.
+5. The final benchmarks against wine64: CoreMark, `7z b`, the spike microbenchmarks, and `profile.mjs`'s top 10 for both targets.
+6. Results in "Measurements" as "M6 final (WP5)", numbers only.
+
+Nothing else may run while it times.
 
 **How to resume:**
-0. Done 2026-11-06: the five workflow trials (`docs/dev/agent-runs.md`, "Trials (started 2026-11-06)").
-1. `git fetch origin m6-wip m6-wp4`, then `git merge origin/m6-wip` on the PR branch to get WP3b's WIP (not `--ff-only`: the PR branch moved past `m6-wip`'s base).
-2. Message the WP3b agent to continue. If its transcript is gone, start a deep-worker (`high`) on "WP3b" in the decisions above, from `m6-wip`.
-3. Message WP4 to continue in its worktree (or start a deep-worker, `medium`, from `m6-wp4`). Merge it after WP3b lands.
-4. Then WP5 (benchmarks, the memory-check matrix), the effort-pilot verdict (`node scripts/agent-stats.mjs --milestone M6`), and `milestone-close`.
+1. `git fetch origin m6-wp5-wip`, then `git merge origin/m6-wp5-wip` on the PR branch. That is local only: push nothing until it is green.
+2. Continue WP5. The same session messages its agent. A fresh session starts a builder with the brief above from that state; the brief allows pushing green work to the PR branch.
+3. Then `/milestone-close`:
+   - verification, the two-stage review, and the status note (M6 and the Phase 1 summary);
+   - the PR description with its merge-danger line (trial 4);
+   - the effort-trial verdict, from `node scripts/agent-stats.mjs --milestone M6`;
+   - the retro.
+4. The decisions still open are judgements for the close-out:
+   - the memory-check defaults for Phase 2 (`guest-memory.md`, "Decision"), from WP5's matrix;
+   - the effort trial. So far deep-worker `medium` costs no less than `high`: median index 3.29M against 3.53M.
 
 ## What works
 
