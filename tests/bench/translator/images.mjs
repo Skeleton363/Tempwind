@@ -17,7 +17,6 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { cpus, loadavg } from 'node:os';
 import { freshBytes } from './core.mjs';
 import { Process } from '../../../runtime/src/process.mjs';
-import { loadFp } from '../../../runtime/src/fp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../../..');
@@ -42,7 +41,7 @@ const now = () => performance.now();
 
 if (args.includes('--child')) {
   const res = [];
-  const fp = await loadFp(new Uint8Array(readFileSync(FP))); // images with `fp` imports need the helper module
+  const fp = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(FP)), {}).exports; // (loadFp's async compile never settles under --no-wasm-lazy-compilation) // images with `fp` imports need the helper module
   for (const exe of exes) {
     const wasm = new Uint8Array(readFileSync(join(out, `${stem(exe)}.wasm`)));
     const plan = JSON.parse(readFileSync(join(out, `${stem(exe)}.plan.json`), 'utf8'));

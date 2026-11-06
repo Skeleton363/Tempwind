@@ -719,6 +719,74 @@ Each check site used to inline its own cold exit. Now it passes `offset << 2 | k
 
 Reading: with both checks, the growth over unchecked code falls by about 40 %. Nearly all of that comes from the shared exit: deciding constant addresses at translation time saves only another ~0.5 % (`null_check` without it: 485,854 and 28,816,622 bytes). Speed is unchanged within the noise of single runs: the unchanged "none" module itself moves 7 % between runs. What is left per site is the test, the address `local.set`, two `i32.const`/`local.set` pairs and the `br`; the store check's two page-byte loads stay as they were. WP5 makes the final measurement.
 
+### M6 final (WP5)
+
+Machine: Intel Xeon @ 2.10 GHz, 4 vCPUs (cloud VM), Node 24.22.0 (V8 13.6.233.17-node.57). Code: the default build of `ff37120` (WP1-WP4b plus the WP5 tooling). Native = the same `.exe` under wine64 on the same machine. Every benchmark run validated. The machine ran nothing else while timing (the load average sat at 1.0-1.8: one busy core of ours, plus the compile threads in the spike runs).
+
+**Against wine64** (`tests/bench/coremark.mjs`, `tests/bench/sevenzip.mjs`, medians of 3):
+
+| | translated | wine64 | ratio | M5 ratio |
+|---|---|---|---|---|
+| CoreMark (iterations/s) | 10,268 | 24,652 | 0.417 | 0.354 |
+| `7z b 2 -mmt1 -md18` (MIPS, "Tot:") | 2,017 | 5,019 | 0.402 | 0.379 |
+
+Spread: the CoreMark runs inside the memory-check matrix (variant "none", 5 runs) span 10,355-10,655 it/s (2.9 %); the 7z b runs span 2,014-2,077 MIPS (3.1 %). The WP2-WP4b sections show up to 7 % between sessions on the same build.
+
+**Memory-check matrix** (`node tests/bench/memchecks.mjs --rounds 5`: four variants interleaved, order rotated per round, `--skip-native`, one run per round; median, min-max in brackets):
+
+| Variant | CoreMark (it/s) | vs none | 7z b (MIPS) | vs none | coremark.wasm (bytes) | 7zz.wasm (bytes) |
+|---|---|---|---|---|---|---|
+| none | 10,448 (10,355-10,655) | 1.00 | 2,028 (2,014-2,077) | 1.00 | 376,369 | 21,467,033 |
+| `--null-check` | 8,692 (8,592-8,976) | 0.83 | 1,654 (1,606-1,665) | 0.82 | 478,285 (+27 %) | 28,660,274 (+34 %) |
+| `--store-check` | 8,484 (8,405-8,547) | 0.81 | 1,565 (1,556-1,576) | 0.77 | 452,039 (+20 %) | 26,581,515 (+24 %) |
+| both | 7,736 (7,673-7,853) | 0.74 | 1,363 (1,345-1,373) | 0.67 | 541,952 (+44 %) | 32,992,804 (+54 %) |
+
+The module sizes equal WP4b's.
+
+**V8 compile time** (`tests/bench/translator/images.mjs --runs 3`, synchronous `new WebAssembly.Module`, medians of 3; "eager TurboFan" = `--no-liftoff --no-wasm-lazy-compilation`; the link phase of `Process.load` stays at 20-30 ms for 7zz.exe and 1-4 ms for coremark.exe in every build):
+
+| Build | Image | wasm bytes | default (lazy) ms | eager TurboFan ms |
+|---|---|---|---|---|
+| reference (`--sync-all --no-structured`) | 7zz.exe | 27,942,383 | 34.9 | 10,620 |
+| | coremark.exe | 464,236 | 0.9 | 144 |
+| default | 7zz.exe | 21,467,033 | 37.2 | 7,053 |
+| | coremark.exe | 376,369 | 0.8 | 115 |
+| default + both checks | 7zz.exe | 32,992,804 | 68.5 | 13,993 |
+| | coremark.exe | 541,952 | 1.0 | 201 |
+
+`images.mjs` now supplies `x64wasm_fp.wasm` to the child and takes `--translate-flags` and `--out` for the builds above. The fp module is built with a synchronous `new WebAssembly.Instance`: `loadFp`'s async compile never settled in a child run with `--no-wasm-lazy-compilation`.
+
+**Correctness**: the four L2 programs with `--sync-all --no-structured` (`target/native/<name>-reference/`) give the native output and exit codes. The translated 7-Zip matrix gives 138/138 identical steps with `--sync-all --no-structured` and with `--null-check --store-check`.
+
+**Spike microbenchmarks** (`spike --bench`, then `tests/bench/translator/bench.mjs`; ratio to native, best run; native `sum_loop` 32.6 ms, `fib_rec` 5.6 ms, `byte_calls` 7.6 ms, `dot_product` 14.4 ms):
+
+| Case | V8 default (M5 -> now) | V8 TurboFan (M5 -> now) | V8 Liftoff only (M5 -> now) |
+|---|---|---|---|
+| `sum_loop`, n = 10^8 | 1.23-1.28x -> 0.95x | 1.23-1.24x -> 1.02x | 7.9x -> 4.06x |
+| `fib_rec(30)` | 12.4-12.6x -> 4.37x | 10.3-10.7x -> 4.25x | 31x -> 15.5x |
+| `byte_calls`, 1 MiB | 3.3-3.7x -> 1.48x | 2.5-2.6x -> 1.56x | 9.3-9.8x -> 6.56x |
+| `dot_product` | (7x in Known issues) -> 6.35x | 6.23x | 8.46x |
+
+The M5 wasmtime column was not re-measured. `bench.mjs` also has an eager configuration, not tabulated here.
+
+**Profile** (`node tests/bench/profile.mjs --target coremark|7z`, top 10 by self time):
+
+| CoreMark (11,307 samples) | % | 7z b (29,632 samples) | % |
+|---|---|---|---|
+| `core_bench_list` | 18.6 | `fn_0x140010490` (no symbol) | 53.7 |
+| `core_state_transition` | 17.3 | `fn_0x140013cf0_c1` | 16.3 |
+| `matrix_mul_matrix_bitextract` | 11.5 | `Bt4_MatchFinder_GetMatches` | 11.4 |
+| `core_bench_state` | 9.6 | `CountCpuFreq` | 8.7 |
+| `core_list_mergesort` | 7.6 | `ReadMatchDistances` | 2.7 |
+| `matrix_mul_matrix` | 7.3 | `(program)` | 0.9 |
+| `matrix_test` | 5.6 | `MatchFinder_GetNumAvailableBytes` | 0.9 |
+| `crc16` | 5.0 | `CrcUpdateT12` | 0.9 |
+| `crcu32` | 4.9 | `fn_0x140012980` | 0.7 |
+| `flags` (lazy-flag helper) | 2.7 | `fn_0x140012a90` | 0.6 |
+| wasm / JS / other | 99.0 / 0.5 / 0.5 | wasm / JS / other | 98.1 / 0.6 / 1.3 |
+
+Caveats: single sessions; the reference-mode and check builds were timed once per variant (compile) or five interleaved times (matrix); nothing was repeated at other guest base addresses. The plan's `options` does not record `sync_all` or `structured`, so code translated at run time from a reference-mode image uses the defaults.
+
 ## Known issues and risks
 
 - **Calls are still expensive:** since WP2, a call moves about 35 values instead of 80 ("WP2" under "Measurements"). The flag record and registers restored with `pop` make up most of the rest.
