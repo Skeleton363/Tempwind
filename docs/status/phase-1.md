@@ -333,6 +333,10 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
 - **The counters are defined as built** (`abi.md`, "Counter block"): `mem_loads` and `mem_stores` count integer accesses only, and the flag record counts as 4 values.
 - **The effort trial** (`docs/dev/agent-runs.md`): deep-worker stays at `high`. `medium` cost 7 % less by median (3.29M against 3.53M) and needed one rework (WP4b) where `high` needed none. The rule asks for 25 % less with no more rework.
 - **Subagents without a set effort run at `high`:** kept. The M6 spec review cost 1.06M, against M5's 2.57M at `max`, and found two real blockers.
+- **Review outcomes.**
+  - **The spec review:** 11 items; the 2 blockers and the should-fix items are fixed or recorded.
+  - **The code review:** 8 candidates; 4 fixed, 2 recorded for Phase 2, 2 not acted on.
+  - **Changed semantics:** a read-modify-write that faults on the NULL page now reports FAULT_WRITE, as this machine's CPU reports it (`translator.md`, "Memory checks").
 - **The retro** is in `docs/dev/agent-runs.md`, "Retro: M6".
 
 ## What works
@@ -837,6 +841,9 @@ Caveats: single sessions; the reference-mode and check builds were timed once pe
   Each of these stops loudly.
 - **7zz.exe's module:** 21.5 MB since M6. The reference build is 27.9 MB, and the build with both checks 33.0 MB. Eager TurboFan compiles the default build in 7.1 s.
 - **The memory checks cost 26-33 % with both on,** and they are on by default in Phase 2. The cut for accesses based on RSP is the next measurement (`guest-memory.md`).
+- **Two gaps in the store check,** found by the M6 code review. Both are harmless in Phase 1, where the checks are off by default and only the main image holds code, and both must close before Phase 2 turns the checks on:
+  - a `rep movs` or `rep stos` range is tested at its first and last byte only, so a range over three or more pages writes the pages between unchecked;
+  - the runtime marks PAGE_CODE only on the main image's executable sections, once, so code translated from anywhere else (a second image, code written at run time) gets no mark.
 - **Firefox is untested.** SpiderMonkey pays a bounds check on every memory64 access, which V8 doesn't. Phase 3's browser targets need a measurement there.
 - **5 of 138 jump tables in 7zz.exe aren't recovered:** 4 load the table base earlier in the function, and 1 sits in a handler nothing reaches. Run-time translation covers them.
 - **The run-time translator compiles on first use** (about 24 ms). Compiling it while the image loads would hide that.
@@ -857,3 +864,4 @@ Caveats: single sessions; the reference-mode and check builds were timed once pe
 2. **A research pass** (`docs/dev/research.md`): Wine 11's PE/Unix split and syscall dispatch, and Emscripten for the Unix side (threads, signals, mmap).
 3. **Phase 2's milestones, contracts first.** The M5 shim is scaffolding that Wine replaces; the loader, host calls, threads, translator and tests carry over.
 4. **Settled already:** the memory checks are on by default (`guest-memory.md`), and dependencies stay permissive or LGPL (`LICENSE`, `CLAUDE.md`).
+5. **Before the checks go on:** close the two store-check gaps under "Known issues". Every page of a `rep` range must be checked, and every page the runtime translates code from must be marked.

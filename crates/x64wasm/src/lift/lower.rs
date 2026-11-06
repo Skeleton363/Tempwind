@@ -194,12 +194,17 @@ impl Lower<'_> {
                 addr: a,
                 len: l,
                 when: w,
-                code,
-                ..
-            } if (*a, *l, *w) == (addr, len, when) => Some(code),
+                write: wr,
+                null: n,
+                code: c,
+            } if (*a, *l, *w) == (addr, len, when) => Some((wr, n, c)),
             _ => None,
         });
-        if let Some(c) = same {
+        if let Some((wr, n, c)) = same {
+            // One check per access: a read-modify-write faults as a write,
+            // as x86 reports it (translator.md, "Memory checks").
+            *wr |= write;
+            *n |= null;
             *c |= code;
             return;
         }

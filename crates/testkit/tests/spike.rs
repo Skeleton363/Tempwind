@@ -150,10 +150,11 @@ fn memory_checks_fault() {
     assert_eq!((kind, addr), (abi::FAULT_READ, 0x108));
     assert_eq!(out.rip, 0x1_0007, "at the load");
     assert_eq!(out.gpr[0], 7, "the instructions before it ran");
-    // add [rbx], rcx (a read-modify-write: reported as the read) and
-    // mov [rbx], rcx
+    // add [rbx], rcx and mov [rbx], rcx: both fault as writes. x86 reports
+    // a read-modify-write as a write (page-fault error code bit 1, measured
+    // for add and lock add on the Intel CPU of 2026-11-06).
     for (code, want) in [
-        ("48010b c3", abi::FAULT_READ),
+        ("48010b c3", abi::FAULT_WRITE),
         ("48890b c3", abi::FAULT_WRITE),
     ] {
         let (out, kind, addr) = run_checked(&hex(code), &[("rbx", 0xfff8)], &both_checks());

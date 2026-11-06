@@ -72,6 +72,11 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
   - WP5's mislabelled "M5 ratio" column.
 - **One push against the brief:** WP4b pushed to the PR branch. It was green, but agents' fixed rules now allow a PR-branch push only when the brief says so.
 - **The spec review's 11 items** included a regression of the coordinator's own: a test that still rejected a request-flag bit that had become valid. `cargo test` caught it before any push, so the existing checks did their job and no new one is needed.
+- **The code review's 8 candidates** (`/code-review medium`, 0.81M), each checked before acting:
+  - 4 real, now fixed. One is a semantic error WP4's test had pinned: a read-modify-write that faults on the NULL page reported a read. This machine's CPU settled it in one run, through the page-fault error code: x86 reports such a fault as a write.
+  - 2 real gaps that Phase 1 can't reach, recorded as Phase 2 prerequisites.
+  - 2 not acted on, with their reasons in the ledger.
+- **A lead, not a rule yet:** fault semantics come from the CPU, just as instruction results do. L1 records results but not fault kinds. Windows exceptions (Phase 4) are the point to record them natively.
 
 **Changes from this retro:**
 - **Mechanical, now automated:** the pre-push hook (refuses a WIP head and unformatted Rust), and the ledger script.

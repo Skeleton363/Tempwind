@@ -372,7 +372,6 @@ impl Machine {
         ))
     }
 
-    /// Number of slots of the lookup table.
     /// The counter block of a module built with `Options::counters`.
     pub fn counters(&self) -> Result<[u64; COUNTERS_SLOTS]> {
         let mut out = [0; COUNTERS_SLOTS];
@@ -385,7 +384,11 @@ impl Machine {
     /// Sets the page-state byte (`abi::PAGE_CODE`, `abi::PAGE_WATCH`) of
     /// every 4 KiB page that `[addr, addr + len)` touches.
     pub fn set_page_flags(&mut self, addr: u64, len: u64, flags: u8) -> Result<()> {
-        let (first, end) = (addr, addr + len.max(1));
+        if len == 0 {
+            return Ok(());
+        }
+        let first = addr;
+        let end = addr.saturating_add(len);
         if end > self.guest_bytes {
             bail!("page flags for {first:#x}..{end:#x}: outside guest memory");
         }
@@ -394,6 +397,7 @@ impl Machine {
         self.write(self.page_flags + (first >> shift), &vec![flags; n as usize])
     }
 
+    /// Number of slots of the lookup table.
     pub fn lookup_slots(&self) -> usize {
         self.read_u64(self.lookup + abi::LOOKUP_MASK)
             .map_or(0, |m| m as usize + 1)

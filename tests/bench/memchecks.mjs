@@ -42,7 +42,10 @@ const TARGETS = {
 };
 const stem = { coremark: 'coremark', '7z': '7zz' };
 const dir = (v) => `${root}target/bench/memchecks/${v}`;
-const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+const median = (xs) => {
+  const s = [...xs].sort((a, b) => a - b), h = s.length >> 1;
+  return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2;
+};
 
 const sizes = {};
 for (const v of names) {
