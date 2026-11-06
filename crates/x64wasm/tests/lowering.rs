@@ -18,15 +18,47 @@ fn hex(s: &str) -> Vec<u8> {
 }
 
 fn lift(code: &str) -> Program {
+    lift_with(code, &Options::default())
+}
+
+fn lift_with(code: &str, opts: &Options) -> Program {
     let bytes = hex(code);
-    x64wasm::lift(
+    x64wasm::lift_checked(
         CodeRegion {
             base: BASE,
             bytes: &bytes,
         },
         &[BASE],
+        opts,
     )
     .unwrap()
+}
+
+/// Both memory checks on (`translator.md`, "Memory checks").
+fn checks() -> Options {
+    Options {
+        null_check: true,
+        store_check: true,
+        ..Options::default()
+    }
+}
+
+/// Every check (`FaultIf`, `MemCheck`) of `insn` comes before its first
+/// side effect.
+fn assert_checks_first(code: &str, prog: &Program, insn: &x64wasm::ir::Insn) {
+    let first_effect = insn
+        .ops
+        .iter()
+        .position(Op::has_side_effect)
+        .unwrap_or(insn.ops.len());
+    let late = insn.ops[first_effect..]
+        .iter()
+        .any(|op| matches!(op, Op::FaultIf { .. } | Op::MemCheck { .. }));
+    assert!(
+        !late,
+        "{code}: a check after a side effect\n{}",
+        prog.dump()
+    );
 }
 
 /// `live` of every flag record, in order.
@@ -126,9 +158,13 @@ fn faults_come_before_side_effects() {
         "48f7f2", // div rdx
         "48f7f8", // idiv rax
     ];
-    for code in forms {
-        let prog = lift(code);
+    for (code, opts) in forms
+        .iter()
+        .flat_map(|&c| [(c, Options::default()), (c, checks())])
+    {
+        let prog = lift_with(code, &opts);
         let insn = &prog.blocks[0].insns[0];
+        assert_checks_first(code, &prog, insn);
         let faults: Vec<usize> = (0..insn.ops.len())
             .filter(|&i| matches!(insn.ops[i], Op::FaultIf { .. }))
             .collect();
@@ -214,9 +250,13 @@ fn floating_point_ops_come_before_side_effects() {
         ("f30f2a03", false),   // cvtsi2ss xmm0, [rbx]
         ("f20fc2c107", false), // cmpordsd xmm0, xmm1
     ];
-    for (code, aligned) in forms {
-        let prog = lift(code);
+    for (code, aligned, opts) in forms
+        .iter()
+        .flat_map(|&(c, a)| [(c, a, Options::default()), (c, a, checks())])
+    {
+        let prog = lift_with(code, &opts);
         let insn = &prog.blocks[0].insns[0];
+        assert_checks_first(code, &prog, insn);
         let fp: Vec<usize> = (0..insn.ops.len())
             .filter(|&i| insn.ops[i].is_fp())
             .collect();
@@ -247,4 +287,118 @@ fn floating_point_ops_come_before_side_effects() {
             assert!(f < fp[0], "{code}: alignment check after the op");
         }
     }
+}
+
+/// With `null_check` and `store_check`, every access form gets its memory
+/// checks, reads and writes as the instruction does them, all before the
+/// instruction's first side effect (`translator.md`, "Memory checks").
+#[test]
+fn memory_checks_come_before_side_effects() {
+    // (code, reads memory, writes memory)
+    let forms = [
+        ("488b03", true, false),     // mov rax, [rbx]
+        ("488903", false, true),     // mov [rbx], rax
+        ("48ff03", true, true),      // inc qword [rbx]
+        ("f0480fc103", true, true),  // lock xadd [rbx], rax
+        ("488703", true, true),      // xchg [rbx], rax
+        ("480fb10b", true, true),    // cmpxchg [rbx], rcx
+        ("0fab03", true, true),      // bts [rbx], eax
+        ("640fb603", true, false),   // movzx eax, byte fs:[rbx]
+        ("f733", true, false),       // div dword [rbx]
+        ("50", false, true),         // push rax
+        ("58", true, false),         // pop rax
+        ("ff33", true, true),        // push qword [rbx]
+        ("8f03", true, true),        // pop qword [rbx]
+        ("e800000000", false, true), // call rel32
+        ("ff13", true, true),        // call [rbx]
+        ("c3", true, false),         // ret
+        ("a4", true, true),          // movsb
+        ("f3a4", true, true),        // rep movsb
+        ("f348ab", false, true),     // rep stosq
+        ("ac", true, false),         // lodsb
+        ("f3a6", true, false),       // repe cmpsb
+        ("f2ae", true, false),       // repne scasb
+        ("0f1003", true, false),     // movups xmm0, [rbx]
+        ("0f1103", false, true),     // movups [rbx], xmm0
+        ("0f2803", true, false),     // movaps xmm0, [rbx]
+        ("0f1703", false, true),     // movhps [rbx], xmm0
+        ("0f1603", true, false),     // movhps xmm0, [rbx]
+        ("660fd603", false, true),   // movq [rbx], xmm0
+        ("0fae1b", false, true),     // stmxcsr [rbx]
+        ("0fae13", true, false),     // ldmxcsr [rbx]
+        ("0f5803", true, false),     // addps xmm0, [rbx]
+        ("dd03", true, false),       // fld qword [rbx]
+        ("db2b", true, false),       // fld tbyte [rbx]
+        ("dd1b", false, true),       // fstp qword [rbx]
+        ("de03", true, false),       // fiadd word [rbx]
+        ("d813", true, false),       // fcom dword [rbx]
+        ("d93b", false, true),       // fnstcw [rbx]
+        ("dd3b", false, true),       // fnstsw [rbx]
+        ("d92b", true, false),       // fldcw [rbx]
+        ("d933", false, true),       // fnstenv [rbx]
+        ("d923", true, false),       // fldenv [rbx]
+    ];
+    for (code, reads, writes) in forms {
+        let prog = lift_with(code, &checks());
+        let insn = &prog.blocks[0].insns[0];
+        assert_eq!(insn.len as usize, code.len() / 2, "{code}: one instruction");
+        assert_checks_first(code, &prog, insn);
+        let kinds: Vec<(bool, bool, bool)> = insn
+            .ops
+            .iter()
+            .filter_map(|op| match *op {
+                Op::MemCheck {
+                    write, null, code, ..
+                } => Some((write, null, code)),
+                _ => None,
+            })
+            .collect();
+        // A check reported as a read exists exactly when the instruction
+        // reads bytes it doesn't also write. A read-modify-write of the same
+        // bytes keeps one check, reported as a write as x86 reports the fault
+        // (translator.md, "Memory checks"), which also tests the page byte.
+        // push, pop, call [m] and movs read one place and write another, so
+        // they keep both kinds.
+        const SAME_BYTES: [&str; 5] = ["48ff03", "f0480fc103", "488703", "480fb10b", "0fab03"];
+        assert_eq!(
+            kinds.iter().any(|k| !k.0),
+            reads && !SAME_BYTES.contains(&code),
+            "{code}: read checks\n{}",
+            prog.dump()
+        );
+        assert_eq!(
+            kinds.iter().any(|k| k.2),
+            writes,
+            "{code}: store checks\n{}",
+            prog.dump()
+        );
+        // Every access checks NULL; a check reported as a write tests the
+        // page byte.
+        assert!(
+            kinds.iter().all(|&(w, null, c)| null && (!w || c)),
+            "{code}: check kinds\n{}",
+            prog.dump()
+        );
+        // Off by default.
+        let plain = lift(code);
+        assert!(
+            !plain.blocks[0].insns[0]
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::MemCheck { .. })),
+            "{code}: a check with the options off"
+        );
+    }
+    // Only the store check: reads get none.
+    let store_only = Options {
+        store_check: true,
+        ..Options::default()
+    };
+    let prog = lift_with("488b03", &store_only);
+    assert!(
+        !prog.blocks[0].insns[0]
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::MemCheck { .. }))
+    );
 }

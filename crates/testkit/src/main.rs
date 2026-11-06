@@ -22,7 +22,14 @@ enum Command {
         check: bool,
     },
     /// Replay L1 fixtures through the translator.
-    Replay,
+    Replay {
+        /// Translate in the reference sync (`Options::sync_all`).
+        #[arg(long)]
+        sync_all: bool,
+        /// Translate in the reference layout (`Options::structured` false).
+        #[arg(long)]
+        no_structured: bool,
+    },
     /// Write spike programs (wasm + manifest.json) for the JS hosts.
     Spike {
         #[arg(long, default_value = "target/spike")]
@@ -39,7 +46,14 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Record { check } => testkit::oracle::record(check),
-        Command::Replay => testkit::oracle::replay(),
+        Command::Replay {
+            sync_all,
+            no_structured,
+        } => testkit::oracle::replay(&x64wasm::Options {
+            sync_all,
+            structured: !no_structured,
+            ..x64wasm::Options::default()
+        }),
         Command::Spike { out, bench: false } => testkit::spike::write(&out),
         Command::Spike { out, bench: true } => testkit::spike::bench::write(&out),
         Command::Census(args) => testkit::census::run(&args),

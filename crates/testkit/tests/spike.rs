@@ -39,7 +39,174 @@ fn option_sweep() -> Vec<Options> {
         o(Options::DEFAULT_MAX_FUNCTION_INSNS, 20_000, Some(0)),
         o(1, 1, Some(0)),
         o(30, 60, Some(3)),
+        // The reference sync: every value at every boundary.
+        Options {
+            sync_all: true,
+            ..Options::default()
+        },
+        Options {
+            sync_all: true,
+            ..o(1, 1, Some(0))
+        },
+        // The reference layout: Phase 0's dispatch loop.
+        Options {
+            structured: false,
+            ..Options::default()
+        },
+        Options {
+            structured: false,
+            ..o(1, 1, Some(0))
+        },
+        Options {
+            structured: false,
+            sync_all: true,
+            ..o(30, 60, Some(3))
+        },
+        // The memory checks raise nothing in a correct program, in either layout.
+        Options {
+            null_check: true,
+            store_check: true,
+            ..Options::default()
+        },
+        Options {
+            null_check: true,
+            store_check: true,
+            ..o(1, 1, Some(0))
+        },
+        Options {
+            null_check: true,
+            store_check: true,
+            structured: false,
+            sync_all: true,
+            ..o(30, 60, Some(3))
+        },
     ]
+}
+
+/// Translates `code` at 0x10000 (one function, `ret` to the sentinel) with
+/// `opts` and runs it with `regs` in a 1 MiB machine whose code page is
+/// PAGE_CODE. Returns the final state and the fault kind and address.
+fn run_checked(code: &[u8], regs: &[(&str, u64)], opts: &Options) -> (abi::CpuState, u32, u64) {
+    const BASE: u64 = 0x1_0000;
+    const STATE: u64 = 0x8_0000;
+    const STACK: u64 = 0xf_0000;
+    let t = x64wasm::translate(
+        x64wasm::CodeRegion {
+            base: BASE,
+            bytes: code,
+        },
+        &[BASE],
+        opts,
+    )
+    .unwrap();
+    let host = Host::new().unwrap();
+    let module = host.compile(&t.wasm).unwrap();
+    let mut m = host.machine(0x10_0000).unwrap();
+    m.write(BASE, code).unwrap();
+    m.set_page_flags(BASE, code.len() as u64, abi::PAGE_CODE)
+        .unwrap();
+    m.write(STACK, &abi::SENTINEL_RET.to_le_bytes()).unwrap();
+    let mut state = abi::CpuState {
+        rip: BASE,
+        ..abi::CpuState::default()
+    };
+    state.gpr[4] = STACK;
+    for &(r, v) in regs {
+        state.gpr[spike::reg(r)] = v;
+    }
+    let out = m.run_state(&module, STATE, &state).unwrap();
+    let kind = u32::from_le_bytes(
+        m.read(STATE + abi::STATE_FAULT_KIND, 4)
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+    let addr = u64::from_le_bytes(
+        m.read(STATE + abi::STATE_FAULT_ADDR, 8)
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+    (out, kind, addr)
+}
+
+fn both_checks() -> Options {
+    Options {
+        null_check: true,
+        store_check: true,
+        ..Options::default()
+    }
+}
+
+/// `translator.md`, "Memory checks": a NULL read or write faults with its
+/// kind and address, the state from before the instruction; a store into a
+/// code page exits EXIT_UNSUPPORTED at the store.
+#[test]
+fn memory_checks_fault() {
+    // mov rax, 7; mov rcx, [rbx + 8]; ret
+    let read = hex("48c7c007000000 488b4b08 c3");
+    let (out, kind, addr) = run_checked(&read, &[("rbx", 0x100)], &both_checks());
+    assert_eq!(out.exit, abi::EXIT_FAULT);
+    assert_eq!((kind, addr), (abi::FAULT_READ, 0x108));
+    assert_eq!(out.rip, 0x1_0007, "at the load");
+    assert_eq!(out.gpr[0], 7, "the instructions before it ran");
+    // add [rbx], rcx and mov [rbx], rcx: both fault as writes. x86 reports
+    // a read-modify-write as a write (page-fault error code bit 1, measured
+    // for add and lock add on the Intel CPU of 2026-11-06).
+    for (code, want) in [
+        ("48010b c3", abi::FAULT_WRITE),
+        ("48890b c3", abi::FAULT_WRITE),
+    ] {
+        let (out, kind, addr) = run_checked(&hex(code), &[("rbx", 0xfff8)], &both_checks());
+        assert_eq!(
+            (out.exit, kind, addr),
+            (abi::EXIT_FAULT, want, 0xfff8),
+            "{code}"
+        );
+        assert_eq!(out.rip, 0x1_0000);
+    }
+    // rep stosb downwards into the NULL page: its last byte.
+    // std; rep stosb; cld; ret
+    let (out, kind, addr) = run_checked(
+        &hex("fd f3aa fc c3"),
+        &[("rdi", 0x1_1100), ("rcx", 0x1200)],
+        &both_checks(),
+    );
+    assert_eq!(
+        (out.exit, kind, addr),
+        (abi::EXIT_FAULT, abi::FAULT_WRITE, 0xff01)
+    );
+    assert_eq!((out.rip, out.gpr[1]), (0x1_0001, 0x1200), "nothing stored");
+    // rep stosb with RCX = 0 touches nothing.
+    let (out, _, _) = run_checked(&hex("f3aa c3"), &[("rdi", 0)], &both_checks());
+    assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
+    // A store into the code page: mov [rbx], ecx, and one that ends there.
+    for rbx in [0x1_0010, 0xfffe] {
+        let opts = Options {
+            store_check: true,
+            ..Options::default()
+        };
+        let (out, _, _) = run_checked(&hex("890b c3"), &[("rbx", rbx)], &opts);
+        assert_eq!(
+            (out.exit, out.rip),
+            (abi::EXIT_UNSUPPORTED, 0x1_0000),
+            "{rbx:#x}"
+        );
+    }
+    // A load from the code page is fine, and without the checks NULL is
+    // ordinary memory.
+    let (out, _, _) = run_checked(&hex("8b0b c3"), &[("rbx", 0x1_0000)], &both_checks());
+    assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
+    let (out, _, _) = run_checked(&read, &[("rbx", 0x100)], &Options::default());
+    assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
+}
+
+fn hex(s: &str) -> Vec<u8> {
+    let d: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    (0..d.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&d[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 #[test]
@@ -123,6 +290,213 @@ fn shared_tail() {
 #[test]
 fn longjmp_like() {
     run_case(&spike::longjmp_like().unwrap());
+}
+
+#[test]
+fn loop_branch() {
+    run_case(&spike::loop_branch(100).unwrap());
+}
+
+#[test]
+fn irreducible_loop() {
+    for n in [1, 2, 3, 4, 101] {
+        run_case(&spike::irreducible_loop(n).unwrap());
+    }
+}
+
+/// The structured layout enters the irreducible loop's middle through the
+/// selector once, on one of the two entry paths (which one depends on the
+/// header it picks), and takes every back edge with a `br`. The contract
+/// (translator.md, "Jumps and branches"): an entry into a loop's interior
+/// goes through the selector, a back edge never does. Each run enters the
+/// loop once, so the two runs together count 1.
+#[test]
+fn structured_loops_skip_dispatch() {
+    let opts = Options {
+        counters: true,
+        ..Options::default()
+    };
+    let flat = Options {
+        structured: false,
+        ..opts.clone()
+    };
+    let mut entries = 0;
+    for n in [100, 101] {
+        let case = spike::irreducible_loop(n).unwrap();
+        entries += counted(&case, &opts)[2];
+        // The reference layout dispatches on every back edge (`skip` to
+        // `first`, taken once per two counts).
+        assert!(counted(&case, &flat)[2] >= n / 2 - 1, "n = {n}: reference");
+    }
+    assert_eq!(entries, 1, "dispatches into the loop's middle");
+}
+
+#[test]
+fn merge_call() {
+    for n in [0, 4, 5, 9] {
+        run_case(&spike::merge_call(n).unwrap());
+    }
+}
+
+#[test]
+fn loop_calls() {
+    for n in [0, 1, 2, 100] {
+        run_case(&spike::loop_calls(n).unwrap());
+    }
+}
+
+#[test]
+fn clobber_calls() {
+    run_case(&spike::clobber_calls().unwrap());
+}
+
+#[test]
+fn flags_across_call() {
+    for (rcx, rdx) in [(3, 9), (9, 3), (5, 5), (0, u64::MAX)] {
+        run_case(&spike::flags_across_call(rcx, rdx).unwrap());
+    }
+}
+
+#[test]
+fn unwind_dirty() {
+    for n in [0, 1, 10, 2000] {
+        run_case(&spike::unwind_dirty(n).unwrap());
+    }
+}
+
+/// Runs a case built with counters; returns the counter block.
+fn counted(case: &Case, opts: &Options) -> [u64; 12] {
+    let t = case.translate(opts).unwrap();
+    let host = Host::new().unwrap();
+    let (out, machine) = case.run(&host, &t.wasm).unwrap();
+    case.check(&out, &machine).unwrap();
+    machine.counters().unwrap()
+}
+
+#[test]
+fn counters_are_deterministic_and_validate() {
+    let opts = Options {
+        counters: true,
+        ..Options::default()
+    };
+    let case = spike::loop_branch(100).unwrap();
+    // Compiling in wasmtime validates the module.
+    let c = counted(&case, &opts);
+    assert_eq!(c, counted(&case, &opts), "deterministic");
+    // One entry at the function's own entry block; the back edge of the
+    // 100 iterations is a `br` to the loop, never a dispatch.
+    assert_eq!((c[0], c[1]), (1, 0), "entries");
+    assert_eq!(c[2], 0, "dispatches");
+    assert_eq!((c[4], c[5], c[6]), (0, 0, 0), "no calls");
+    assert_eq!(c[7], 1, "the final ret unwinds to the sentinel");
+    // The contract (translator.md, "Registers and flags"): entry loads what
+    // is live into the entry block (RCX, RSP); the ret stores the dirty set,
+    // what the function wrote: RAX, RCX, RSP and the flag record (four
+    // fields, abi.md "Counter block").
+    assert_eq!((c[8], c[9]), (7, 2), "stores and loads of the state");
+    assert_eq!((c[10], c[11]), (1, 0), "only the ret loads from memory");
+    let all = counted(
+        &case,
+        &Options {
+            sync_all: true,
+            ..opts.clone()
+        },
+    );
+    assert_eq!(
+        (all[8], all[9]),
+        (20, 20),
+        "sync_all: one load and one store of the whole state"
+    );
+    let flat = counted(
+        &case,
+        &Options {
+            structured: false,
+            ..opts.clone()
+        },
+    );
+    // The reference layout sends the 99 back edges through `$dispatch`.
+    assert_eq!(flat[2], 99, "structured: false dispatches");
+    assert_eq!(
+        (flat[0], flat[1], flat[7], flat[8], flat[9]),
+        (c[0], c[1], c[7], c[8], c[9]),
+        "the layout changes no other counter"
+    );
+}
+
+/// Values moved per call (stores plus loads, in locals) under `opts`.
+fn moved_per_call(case: &Case, opts: &Options) -> f64 {
+    let c = counted(case, opts);
+    (c[8] + c[9]) as f64 / (c[4] + c[5]) as f64
+}
+
+#[test]
+fn sync_moves_only_live_and_dirty_values() {
+    let opts = Options {
+        counters: true,
+        ..Options::default()
+    };
+    let all = Options {
+        sync_all: true,
+        ..opts.clone()
+    };
+    for case in [
+        spike::fib_rec(15).unwrap(),
+        spike::loop_calls(50).unwrap(),
+        spike::unwind_dirty(50).unwrap(),
+    ] {
+        let (fast, reference) = (moved_per_call(&case, &opts), moved_per_call(&case, &all));
+        assert!(
+            reference >= 80.0,
+            "{}: sync_all moves {reference}",
+            case.name
+        );
+        assert!(
+            fast * 2.0 < reference,
+            "{}: {fast} values per call, sync_all {reference}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn counters_count_calls() {
+    let opts = Options {
+        counters: true,
+        ..Options::default()
+    };
+    let c = counted(&spike::fib_rec(10).unwrap(), &opts);
+    assert!(c[4] > 0, "direct calls {c:?}");
+    let all = counted(
+        &spike::fib_rec(10).unwrap(),
+        &Options {
+            sync_all: true,
+            ..opts
+        },
+    );
+    assert_eq!(all[8] % 20, 0);
+    assert_eq!(all[9] % 20, 0);
+}
+
+#[test]
+fn counters_off_leaves_the_bytes_alone() {
+    let case = spike::loop_branch(100).unwrap();
+    let off = case.translate(&Options::default()).unwrap().wasm;
+    let explicit = case
+        .translate(&Options {
+            counters: false,
+            ..Options::default()
+        })
+        .unwrap()
+        .wasm;
+    assert_eq!(off, explicit);
+    let on = case
+        .translate(&Options {
+            counters: true,
+            ..Options::default()
+        })
+        .unwrap()
+        .wasm;
+    assert_ne!(off, on);
 }
 
 #[test]
@@ -217,6 +591,13 @@ fn manifest_follows_the_abi_doc() {
             "shared_tail",
             "longjmp_like",
             "big_function",
+            "loop_branch",
+            "irreducible_loop",
+            "merge_call",
+            "loop_calls",
+            "clobber_calls",
+            "flags_across_call",
+            "unwind_dirty",
         ]
     );
     let is_hex = |v: &serde_json::Value| {

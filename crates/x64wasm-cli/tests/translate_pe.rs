@@ -8,6 +8,11 @@ fn put(f: &mut [u8], at: usize, b: &[u8]) {
 
 /// One `.text` section holding `mov eax, 42; ret` at the entry point.
 fn minimal_image() -> Vec<u8> {
+    image_with_code(&[0xb8, 42, 0, 0, 0, 0xc3])
+}
+
+/// One `.text` section (at most 16 code bytes) at the entry point.
+fn image_with_code(code: &[u8]) -> Vec<u8> {
     let mut f = vec![0u8; 0x400];
     put(&mut f, 0, b"MZ");
     put(&mut f, 0x3c, &0x40u32.to_le_bytes());
@@ -36,7 +41,7 @@ fn minimal_image() -> Vec<u8> {
     put(&mut f, s + 16, &0x200u32.to_le_bytes());
     put(&mut f, s + 20, &0x200u32.to_le_bytes());
     put(&mut f, s + 36, &0x6000_0020u32.to_le_bytes());
-    put(&mut f, 0x200, &[0xb8, 42, 0, 0, 0, 0xc3]);
+    put(&mut f, 0x200, code);
     f
 }
 
@@ -91,5 +96,112 @@ fn writes_module_and_plan() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("parsing"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The plan's `options` name the options the module was translated with
+/// (`runtime.md`, "Load plan"), which the runtime passes on to the
+/// run-time translator.
+#[test]
+fn plan_records_the_options() {
+    let dir = std::env::temp_dir().join(format!("x64wasm-plan-options-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("tiny.exe");
+    std::fs::write(&exe, minimal_image()).unwrap();
+    let cases: [(&[&str], [bool; 5]); 5] = [
+        (&[], [false, false, false, false, true]),
+        (
+            &["--null-check", "--counters"],
+            [true, false, true, false, true],
+        ),
+        (&["--store-check"], [false, true, false, false, true]),
+        (&["--sync-all"], [false, false, false, true, true]),
+        (&["--no-structured"], [false, false, false, false, false]),
+    ];
+    for (flags, [null_check, store, counters, sync_all, structured]) in cases {
+        let out_dir = dir.join(format!("out{}", flags.join("")));
+        let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
+            .arg("translate-pe")
+            .arg(&exe)
+            .arg("--out-dir")
+            .arg(&out_dir)
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let plan: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out_dir.join("tiny.plan.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            plan["options"],
+            serde_json::json!({
+                "nullCheck": null_check,
+                "storeCheck": store,
+                "counters": counters,
+                "syncAll": sync_all,
+                "structured": structured,
+            }),
+            "{flags:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `--sync-all` and `--no-structured` give the module that translating with
+/// `Options::sync_all` / `structured = false` gives (`translator.md`,
+/// "Registers and flags", "Jumps and branches").
+#[test]
+fn reference_mode_flags_set_the_options() {
+    use x64wasm::image::{EntrySet, translate};
+    use x64wasm::{Options, pe::Pe};
+    // mov eax, 42; cmp eax, 42; jne +2; inc eax; ret
+    let image = image_with_code(&[0xb8, 42, 0, 0, 0, 0x83, 0xf8, 42, 0x75, 2, 0xff, 0xc0, 0xc3]);
+    let dir = std::env::temp_dir().join(format!("x64wasm-reference-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("ref.exe");
+    std::fs::write(&exe, &image).unwrap();
+    let pe = Pe::parse(&image).unwrap();
+    let direct = |opts: Options| translate(&pe, EntrySet::All, &opts).unwrap().wasm;
+    let default = direct(Options::default());
+    let cases: [(&str, Options); 2] = [
+        (
+            "--sync-all",
+            Options {
+                sync_all: true,
+                ..Options::default()
+            },
+        ),
+        (
+            "--no-structured",
+            Options {
+                structured: false,
+                ..Options::default()
+            },
+        ),
+    ];
+    for (flag, opts) in cases {
+        let out_dir = dir.join(format!("out{flag}"));
+        let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
+            .arg("translate-pe")
+            .arg(&exe)
+            .arg("--out-dir")
+            .arg(&out_dir)
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let wasm = std::fs::read(out_dir.join("ref.wasm")).unwrap();
+        let expected = direct(opts);
+        assert_ne!(expected, default, "{flag} must change the module");
+        assert_eq!(wasm, expected, "{flag}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

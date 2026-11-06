@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { Process } from '../../runtime/src/process.mjs';
 import { RuntimeTranslator } from '../../runtime/src/rt.mjs';
+import { RT_FLAG_SYNC_ALL, RT_FLAG_REFERENCE_LAYOUT } from '../../runtime/src/abi.mjs';
 
 const root = new URL('../../', import.meta.url).pathname;
 const CLI = `${root}runtime/src/run-pe.mjs`;
@@ -60,3 +61,90 @@ for (const variant of ['all', 'entry']) {
     console.log(`basic.exe (${variant}): ${p.translations} run-time translations, ${p.translateMs.toFixed(1)} ms`);
   });
 }
+
+test('basic.exe built with --null-check --store-check: the same output (no false positives)', () => {
+  const { aot, plan } = inputs('checks');
+  const r = spawnSync(process.execPath, [CLI, '--exe', EXE, '--aot', aot, '--plan', plan, '--rt', RT], {
+    env: { ...process.env, TEMPWIND_TRACE: '' },
+  });
+  assert.equal(r.stderr.toString(), '');
+  assert.ok(r.stdout.equals(expected), 'stdout matches byte for byte');
+  assert.equal(r.status, EXIT_CODE);
+});
+
+test('basic.exe with --null-check --store-check: `hidden` is translated at run time with the plan\'s checks', async () => {
+  const { aot, plan } = inputs('checks');
+  const json = JSON.parse(readFileSync(plan, 'utf8'));
+  assert.deepEqual(json.options, { nullCheck: true, storeCheck: true, counters: false, syncAll: false, structured: true });
+  const rt = await RuntimeTranslator.load(readFileSync(RT));
+  const modules = [];
+  const translate = rt.translate.bind(rt);
+  rt.translate = (req) => { const wasm = translate(req); modules.push(wasm); return wasm; };
+  const p = await Process.load({ exe: new Uint8Array(readFileSync(EXE)), plan: json, aot: readFileSync(aot), rt });
+  assert.equal(await p.start(), EXIT_CODE);
+  assert.deepEqual(Buffer.from(p.captured('stdout')), expected);
+  assert.ok(modules.length >= 1, 'a run-time translation');
+  for (const wasm of modules) {
+    const imports = WebAssembly.Module.imports(new WebAssembly.Module(wasm)).map((i) => `${i.module}.${i.name}`);
+    assert.ok(imports.includes('env.page_flags'), `the run-time module has the store check: ${imports}`);
+  }
+});
+
+test('basic.exe with --sync-all --no-structured: `hidden` is translated at run time in the reference modes', async () => {
+  const { aot, plan } = inputs('reference');
+  const json = JSON.parse(readFileSync(plan, 'utf8'));
+  assert.deepEqual(json.options, { nullCheck: false, storeCheck: false, counters: false, syncAll: true, structured: false });
+  const rt = await RuntimeTranslator.load(readFileSync(RT));
+  const flags = [];
+  const translate = rt.translate.bind(rt);
+  rt.translate = (req) => { flags.push(req.flags); return translate(req); };
+  const p = await Process.load({ exe: new Uint8Array(readFileSync(EXE)), plan: json, aot: readFileSync(aot), rt });
+  assert.equal(await p.start(), EXIT_CODE);
+  assert.deepEqual(Buffer.from(p.captured('stdout')), expected);
+  assert.ok(flags.length >= 1, 'a run-time translation');
+  for (const f of flags) assert.equal(f, RT_FLAG_SYNC_ALL | RT_FLAG_REFERENCE_LAYOUT, `request flags ${f}`);
+});
+
+test('basic.exe built with --counters: TEMPWIND_TRACE=counts reports the block and host calls', () => {
+  const { aot, plan } = inputs('counters');
+  const r = spawnSync(process.execPath, [CLI, '--exe', EXE, '--aot', aot, '--plan', plan, '--rt', RT], {
+    env: { ...process.env, TEMPWIND_TRACE: 'counts' },
+  });
+  assert.equal(r.status, EXIT_CODE);
+  assert.ok(r.stdout.equals(expected), 'counters do not change the output');
+  const lines = Object.fromEntries(
+    r.stderr.toString().split('\n').filter((l) => l.startsWith('[tempwind] ')).map((l) => {
+      const [, kind, name, value] = l.split(' ');
+      return [`${kind} ${name}`, Number(value)];
+    }),
+  );
+  // The program makes 22,927 calls to targets inside the module (rec(1000), fib(20) and the helpers), so no more
+  // can be direct. fib(20)'s 21,891 calls nest at most 22 deep, below the depth limit, so they are always direct
+  // calls (translator.md, "Call-depth guard"); deeper rec calls may unwind instead.
+  assert.ok(lines['count calls_direct'] >= 21891 && lines['count calls_direct'] <= 22927, `${lines['count calls_direct']} direct calls`);
+  assert.ok(lines['count entries_fast'] > 0 && lines['count entries_generic'] > 0);
+  // Since WP3 the structured layout takes loops without `$dispatch`, so dispatches may be 0; the slot is still reported.
+  assert.ok(Number.isInteger(lines['count dispatches']) && lines['count unwinds'] > 0);
+  // Since M6 (translator.md, "Registers and flags") a boundary moves only what it must: fewer values than a
+  // full sync of all 20 at every entry, store and reload, but never none.
+  const calls = lines['count calls_direct'] + lines['count calls_probed'];
+  const entries = lines['count entries_fast'] + lines['count entries_generic'];
+  const leaves = calls + entries + lines['count tail_transfers'] + lines['count unwinds'];
+  assert.ok(lines['count values_loaded'] > 0 && lines['count values_loaded'] < 20 * (entries + calls), 'loads: live values only');
+  assert.ok(lines['count values_stored'] > 0 && lines['count values_stored'] < 20 * leaves, 'stores: dirty values only');
+  assert.ok(lines['count mem_loads'] > 0 && lines['count mem_stores'] > 0);
+  assert.deepEqual(
+    [lines['hostcalls kernel32.dll!ExitProcess'], lines['hostcalls kernel32.dll!GetStdHandle'], lines['hostcalls kernel32.dll!WriteFile']],
+    [1, 22, 22],
+  );
+});
+
+test('TEMPWIND_TRACE=counts without --counters says so and still counts host calls', () => {
+  const { aot, plan } = inputs('all');
+  const r = spawnSync(process.execPath, [CLI, '--exe', EXE, '--aot', aot, '--plan', plan, '--rt', RT], {
+    env: { ...process.env, TEMPWIND_TRACE: 'counts' },
+  });
+  const err = r.stderr.toString();
+  assert.match(err, /count \(no module was built with --counters\)/);
+  assert.match(err, /hostcalls kernel32\.dll!WriteFile 22/);
+});

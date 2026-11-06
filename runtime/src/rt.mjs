@@ -40,10 +40,11 @@ export class RuntimeTranslator {
 
   /**
    * Translates what is reachable from `entry` in [codeBase, codeBase + code.length).
-   * @param {{codeBase: bigint, code: Uint8Array, entry: bigint, known: BigUint64Array}} req
+   * `flags` are the request flags (RT_FLAG_*), the options to translate with.
+   * @param {{codeBase: bigint, code: Uint8Array, entry: bigint, known: BigUint64Array, flags?: number}} req
    * @returns {Uint8Array} a v3 module (a copy)
    */
-  translate({ codeBase, code, entry, known }) {
+  translate({ codeBase, code, entry, known, flags = 0 }) {
     const bufs = [];
     try {
       const codeBuf = this.alloc(code.length); bufs.push(codeBuf);
@@ -61,7 +62,7 @@ export class RuntimeTranslator {
       dv.setBigUint64(RT_REQ_ENTRY, BigInt(entry), true);
       dv.setUint32(RT_REQ_KNOWN_PTR, knownBuf.ptr, true);
       dv.setUint32(RT_REQ_KNOWN_LEN, known.length, true);
-      dv.setUint32(RT_REQ_FLAGS, 0, true);
+      dv.setUint32(RT_REQ_FLAGS, flags, true);
       dv.setUint32(RT_REQ_FLAGS + 4, 0, true);
 
       const res = this.x.rt_translate(reqBuf.ptr) >>> 0;

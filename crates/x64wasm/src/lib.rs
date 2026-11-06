@@ -12,6 +12,7 @@ pub mod lift;
 pub mod link;
 pub mod pe;
 mod switch;
+pub mod sync;
 
 use std::fmt;
 
@@ -37,6 +38,24 @@ pub struct Options {
     /// trampoline instead. `None` disables the guard (for measurements only:
     /// deep guest recursion then overflows the wasm stack).
     pub call_depth_limit: Option<u32>,
+    /// Reference mode for M6's liveness-based sync: load, store and reload all
+    /// 20 values at every boundary, as in M1-M5 (`translator.md`, "Registers
+    /// and flags"). For differential tests.
+    pub sync_all: bool,
+    /// Lay blocks out by loop nesting (`translator.md`, "Jumps and branches").
+    /// `false` keeps the Phase 0 dispatch layout, as a reference mode.
+    pub structured: bool,
+    /// Count events in the counter block (`abi.md`, "Counter block"); the
+    /// module then imports `env.counters`. For measurement only.
+    pub counters: bool,
+    /// Fault on guest accesses below 0x10000 (`translator.md`, "Memory checks").
+    pub null_check: bool,
+    /// Test the page-state table before each store; the module then imports
+    /// `env.page_flags` (`translator.md`, "Memory checks").
+    pub store_check: bool,
+    /// Guest function entries with a name (the PE's COFF symbols). Chunk
+    /// names in the name section gain it (`fn_0x140001000_main`).
+    pub symbols: Vec<(u64, String)>,
 }
 
 impl Options {
@@ -57,6 +76,12 @@ impl Default for Options {
             max_function_insns: Self::DEFAULT_MAX_FUNCTION_INSNS,
             max_chunk_insns: Self::DEFAULT_MAX_CHUNK_INSNS,
             call_depth_limit: Some(Self::DEFAULT_CALL_DEPTH_LIMIT),
+            sync_all: false,
+            structured: true,
+            counters: false,
+            null_check: false,
+            store_check: false,
+            symbols: Vec::new(),
         }
     }
 }
@@ -172,7 +197,12 @@ pub fn translate_regions(
     if entries.is_empty() {
         return Err(Error::NoEntries);
     }
-    let prog = lift::lift_regions(regions, known, entries, false)?;
+    let src = lift::Source {
+        code: regions,
+        data: regions,
+        known,
+    };
+    let prog = lift::lift_with(&src, entries, false, lift::Checks::of(opts))?;
     Ok(finish(prog, entries, opts, false))
 }
 
@@ -186,15 +216,40 @@ pub fn translate_source(
     if entries.is_empty() {
         return Err(Error::NoEntries);
     }
-    let prog = lift::lift_source(src, entries, false)?;
+    let prog = lift::lift_with(src, entries, false, lift::Checks::of(opts))?;
     Ok(finish(prog, entries, opts, false))
 }
 
 /// Decodes and lowers into the IR, with flag liveness applied.
 pub fn lift(region: CodeRegion<'_>, entries: &[u64]) -> Result<ir::Program, Error> {
-    let mut prog = lift::lift(region, entries, true)?;
+    lift_checked(region, entries, &Options::default())
+}
+
+/// Like [`lift`], with the memory checks of `opts` (`null_check`,
+/// `store_check`).
+pub fn lift_checked(
+    region: CodeRegion<'_>,
+    entries: &[u64],
+    opts: &Options,
+) -> Result<ir::Program, Error> {
+    let mut prog = lift_one(region, entries, true, opts)?;
     prog.analyze_flags();
     Ok(prog)
+}
+
+fn lift_one(
+    region: CodeRegion<'_>,
+    entries: &[u64],
+    want_text: bool,
+    opts: &Options,
+) -> Result<ir::Program, Error> {
+    let code = [region];
+    let src = lift::Source {
+        code: &code,
+        data: &code,
+        known: &[],
+    };
+    lift::lift_with(&src, entries, want_text, lift::Checks::of(opts))
 }
 
 fn translate_impl(
@@ -206,7 +261,7 @@ fn translate_impl(
     if entries.is_empty() {
         return Err(Error::NoEntries);
     }
-    let prog = lift::lift(region, entries, dump)?;
+    let prog = lift_one(region, entries, dump, opts)?;
     Ok(finish(prog, entries, opts, dump))
 }
 

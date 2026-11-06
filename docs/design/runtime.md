@@ -37,6 +37,7 @@ This follows `guest-memory.md` (option A, identity mapping). The constants live 
 | `0x8010_0000` and up | as needed | Runtime heap: lookup slots and other runtime data |
 | `imageBase` | `sizeOfImage` | The image, at its preferred base (MinGW: `0x1_4000_0000`). |
 
+- **Optional blocks (M6):** the counter block (96 bytes) and the page-state table (1 byte per 4 KiB page of guest memory; 4 MiB for 16 GiB) come from the runtime heap, and only when a module imports `env.counters` or `env.page_flags` (`abi.md`).
 - **Memory:** one memory64, non-shared in Phase 1. Its initial size is the larger of the image end (rounded up to 64 KiB) and 4 GiB, the end of the host region; for a MinGW image that is a little over 5 GiB. Pages are committed lazily on Linux.
 - **Bad image bases:** a load fails with a clear error when the image would overlap the NULL region, the guest heap's start, the stack, PEB/TEB, KUSER or the host region, or end above 16 GiB.
 - **No relocation:** images always load at their preferred base. Relocation comes with DLLs (Phase 2).
@@ -67,7 +68,8 @@ u64 values are `"0x…"` hex strings, as in the spike manifest; addresses are vi
       "functions": [ { "name": "ExitProcess", "ordinal": null, "iat": "0x140005070" } ] }
   ],
   "tls": null,
-  "hasRelocations": true
+  "hasRelocations": true,
+  "options": { "nullCheck": false, "storeCheck": false, "counters": false, "syncAll": false, "structured": true }
 }
 ```
 
@@ -76,6 +78,7 @@ u64 values are `"0x…"` hex strings, as in the spike manifest; addresses are vi
 - `hasRelocations` is true when the relocation directory is non-empty and the image isn't marked `IMAGE_FILE_RELOCS_STRIPPED`.
 - An import by ordinal has `"name": null` and the ordinal as a number.
 - `sha256` is the SHA-256 of the PE file. The runtime refuses a plan whose `sha256` doesn't match the file it was given.
+- `options` (M6): the translator options the AOT module was built with that change what the code does at run time, or that a reference run must keep (`syncAll`, `structured`). The runtime passes them as the run-time translator's request flags (`abi.md`), and supplies `env.page_flags` and `env.counters` to every module that imports them. A plan without `options`, or without one of its fields, means the defaults: `structured` true, the others false.
 
 ## Loading
 
@@ -199,7 +202,7 @@ If the run-time translator isn't loaded, or reports an error, the process stops 
 
 ## Tracing
 
-`TEMPWIND_TRACE` takes a comma-separated list. Traces go to the Node process's stderr, never into the guest's captured output, and each line starts with `[tempwind] `.
+`TEMPWIND_TRACE` takes a comma-separated list. `counts` (M6) prints at exit the counter block, when a module was built with `Options::counters`, and the number of calls to each import. Traces go to the Node process's stderr, never into the guest's captured output, and each line starts with `[tempwind] `.
 
 | Value | Traces |
 |---|---|

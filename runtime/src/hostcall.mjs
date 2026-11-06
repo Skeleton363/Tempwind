@@ -197,11 +197,13 @@ export class HostContext {
  *   imports: {dll: string, name: string, thunk: bigint, impl?: {args: number, fn: Function}}[],
  *   output: (stream: string, bytes: Uint8Array) => void,
  *   onStop: (stop: {exitCode: number} | {error: string}) => void,
- *   trace?: (line: string) => void, host?: HostServices}} opts
+ *   trace?: (line: string) => void, host?: HostServices, calls?: number[]}} opts
+ *   `calls`: when given, `calls[id]` counts the host calls of each import (TEMPWIND_TRACE=counts).
  * @returns {(state: bigint, id: number, ret: bigint) => number}
  */
-export function makeHostCall({ mem, imports, output, onStop, trace, host }) {
+export function makeHostCall({ mem, imports, output, onStop, trace, host, calls }) {
   return (stateArg, id, retArg) => {
+    if (calls) calls[id] = (calls[id] ?? 0) + 1;
     // i64 parameters reach JS as signed BigInts.
     const state = BigInt.asUintN(64, stateArg);
     const ret = BigInt.asUintN(64, retArg);

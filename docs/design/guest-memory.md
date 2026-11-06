@@ -191,6 +191,23 @@ Why the host region sits at 2-4 GiB:
 4. **Browsers change.** If the memory64 cap rises above 16 GiB, A simply gets more room. If the memory-control proposal ships (`memory.discard`, mapping or protecting ranges), it may give A real protection, discard or aliasing.
 5. **The Unix side moves into its own memory** (for isolation or instance-per-DLL). Pointers would then need translating anyway.
 
+**Condition 1, measured in M6** (`docs/status/phase-1.md`, "M6 final (WP5)"; CoreMark and `7z b`, 5 interleaved rounds):
+- Both checks keep 0.74 of the unchecked speed on CoreMark and 0.67 on `7z b`.
+- The NULL check alone keeps 0.82-0.83, and the store check alone 0.77-0.81.
+- B with its one-entry cache costs 1.35-2.1× on memory loops before it adds any protection, and it would also have to wrap the raw pointers Wine's Unix side dereferences.
+
+The condition is not met, so A stays.
+
+### Phase 2 defaults (decided at the M6 close, 2026-11-06)
+- **Both checks are on by default.**
+  - A NULL dereference must raise STATUS_ACCESS_VIOLATION. SEH handlers, pointer probes such as `IsBadReadPtr`, and crash reporting rely on it, and silently reading the NULL region corrupts state instead.
+  - A store into translated code must not leave stale code running. JITs (.NET through Wine Mono in Phase 4), packers and self-modifying code write code at run time.
+- **A program known not to need them may turn them off** once there is a per-program setting (the compatibility list, Phase 6).
+- **The next cut, to measure in Phase 2: no checks on accesses based on RSP.**
+  - A running program's RSP never points into the NULL region.
+  - 64-bit Windows applies DEP to every 64-bit process, so the stack holds code only in a program that makes it executable with `VirtualProtect`. That edge case needs a fallback before the cut is sound.
+  - Merging the checks of accesses on the same base register within a block is the second candidate.
+
 ## What Phase 1 must implement (translator)
 
 - Identity-mapped memory64 accesses as in `docs/design/abi.md`. Effective addresses use wrapping i64 arithmetic, and only non-negative displacements are folded into memarg offsets.

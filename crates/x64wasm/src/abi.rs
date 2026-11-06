@@ -29,6 +29,19 @@ pub const LOOKUP_NAME: &str = "lookup";
 /// Field name of the imported mutable `i32` global: nested guest calls on the
 /// wasm stack, shared by all modules.
 pub const DEPTH_NAME: &str = "depth";
+/// Optional (`Options::counters`): address of the counter block, immutable i64.
+pub const COUNTERS_NAME: &str = "counters";
+/// Optional (`Options::store_check`): address of the page-state table,
+/// immutable i64.
+pub const PAGE_FLAGS_NAME: &str = "page_flags";
+/// Page-state table bit: the page holds translated code.
+pub const PAGE_CODE: u8 = 1;
+/// Page-state table bit: the page is write-watched.
+pub const PAGE_WATCH: u8 = 2;
+/// log2 of the page size the page-state table counts in (4 KiB).
+pub const PAGE_FLAGS_SHIFT: u32 = 12;
+/// Guest accesses below this address fault under `Options::null_check`.
+pub const NULL_LIMIT: u64 = 0x1_0000;
 
 /// Maximum memory64 size browsers allow, in 64 KiB pages (16 GiB).
 pub const MAX_MEMORY_PAGES: u64 = 262_144;
@@ -244,8 +257,18 @@ pub const RT_REQ_ENTRY: usize = 16;
 pub const RT_REQ_KNOWN_PTR: usize = 24;
 /// Request field: number of known addresses (u32).
 pub const RT_REQ_KNOWN_LEN: usize = 28;
-/// Request field: flags, 0 (u32).
+/// Request field: flags (u32), the `RT_FLAG_*` bits.
 pub const RT_REQ_FLAGS: usize = 32;
+/// Request flag: translate with `Options::null_check`.
+pub const RT_FLAG_NULL_CHECK: u32 = 1 << 0;
+/// Request flag: translate with `Options::store_check`.
+pub const RT_FLAG_STORE_CHECK: u32 = 1 << 1;
+/// Request flag: translate with `Options::counters`.
+pub const RT_FLAG_COUNTERS: u32 = 1 << 2;
+/// Request flag: translate with `Options::sync_all` (the reference sync).
+pub const RT_FLAG_SYNC_ALL: u32 = 1 << 3;
+/// Request flag: translate with `Options::structured` false (the reference layout).
+pub const RT_FLAG_REFERENCE_LAYOUT: u32 = 1 << 4;
 /// Size of a run-time translator result.
 pub const RT_RESULT_SIZE: usize = 20;
 /// Result field: 0 ok, 1 error (u32).

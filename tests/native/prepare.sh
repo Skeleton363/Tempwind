@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Prepare the inputs of the Node tests for the M3/M4 programs (run build.sh first):
-#  - AOT translation from all entries of hello, l2_int, l2_crt, l2_float into target/native/<name>/;
+#  - AOT translation from all entries of hello, l2_int, l2_crt, l2_float into target/native/<name>/, and with
+#    --null-check --store-check into target/native/<name>-checks/, and with
+#    --sync-all --no-structured (reference mode) into target/native/<name>-reference/;
 #  - coremark.exe in target/targets/ (fetched from the targets release unless already there),
 #    translated into target/targets/coremark/;
 #  - the floating-point helper module x64wasm_fp.wasm and its test vectors (target/fp/vectors.json).
@@ -10,6 +12,8 @@ for name in hello l2_int l2_crt l2_float; do
   exe=target/native/$name.exe
   [ -f "$exe" ] || { echo "missing $exe; run tests/native/build.sh" >&2; exit 1; }
   cargo run -q -p x64wasm-cli --release -- translate-pe "$exe" --out-dir "target/native/$name" --entries all
+  cargo run -q -p x64wasm-cli --release -- translate-pe "$exe" --out-dir "target/native/$name-checks" --entries all --null-check --store-check
+  cargo run -q -p x64wasm-cli --release -- translate-pe "$exe" --out-dir "target/native/$name-reference" --entries all --sync-all --no-structured
 done
 if [ ! -f target/targets/coremark.exe ]; then
   scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets

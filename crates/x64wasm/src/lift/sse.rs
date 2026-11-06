@@ -230,6 +230,15 @@ fn scalar_width(fmt: FpFmt) -> VWidth {
     }
 }
 
+/// Bytes of a vector access.
+fn vbytes(width: VWidth) -> u32 {
+    match width {
+        VWidth::W32 => 4,
+        VWidth::W64 => 8,
+        VWidth::W128 => 16,
+    }
+}
+
 impl Lower<'_> {
     /// The state-block slot of an XMM register operand.
     fn xmm(&self, operand: u32) -> Lowered<u64> {
@@ -260,12 +269,18 @@ impl Lower<'_> {
     }
 
     fn vload(&mut self, width: VWidth, loc: VLoc) -> VTemp {
+        if let VLoc::Mem(addr) = loc {
+            self.mem_check(addr, vbytes(width), false);
+        }
         let dst = self.vtemp();
         self.push_op(Op::VLoad { dst, width, loc });
         dst
     }
 
     fn vstore(&mut self, loc: VLoc, width: VWidth, src: VTemp) {
+        if let VLoc::Mem(addr) = loc {
+            self.mem_check(addr, vbytes(width), true);
+        }
         self.push_op(Op::VStore { loc, width, src });
     }
 

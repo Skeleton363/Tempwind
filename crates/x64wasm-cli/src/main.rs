@@ -60,7 +60,45 @@ enum Command {
         /// entry point.
         #[arg(long, value_enum, default_value_t = Entries::All)]
         entries: Entries,
+        #[command(flatten)]
+        extra: Extra,
     },
+}
+
+/// Measurement counters and the memory checks (`translator.md`, M6).
+#[derive(Args)]
+struct Extra {
+    /// Count events in the counter block (imports `env.counters`).
+    #[arg(long)]
+    counters: bool,
+    /// Fault on guest accesses below 0x10000.
+    #[arg(long)]
+    null_check: bool,
+    /// Test the page-state table before each store (imports
+    /// `env.page_flags`).
+    #[arg(long)]
+    store_check: bool,
+    /// Reference mode: store and load all 20 state values at every
+    /// boundary (`Options::sync_all`) instead of only the dirty and live ones.
+    #[arg(long)]
+    sync_all: bool,
+    /// Reference mode: the dispatch-loop control flow instead of
+    /// structured branches.
+    #[arg(long)]
+    no_structured: bool,
+}
+
+impl Extra {
+    fn apply(&self, opts: Options) -> Options {
+        Options {
+            counters: self.counters,
+            null_check: self.null_check,
+            store_check: self.store_check,
+            sync_all: self.sync_all,
+            structured: !self.no_structured,
+            ..opts
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -100,6 +138,8 @@ struct Input {
     /// overflows the wasm stack).
     #[arg(long, conflicts_with = "call_depth_limit")]
     no_depth_guard: bool,
+    #[command(flatten)]
+    extra: Extra,
 }
 
 fn parse_u64(s: &str) -> Result<u64, String> {
@@ -136,12 +176,13 @@ impl Input {
         } else {
             self.entry.clone()
         };
-        let opts = Options {
+        let opts = self.extra.apply(Options {
             shared_memory: self.shared,
             max_function_insns: self.max_function_insns,
             max_chunk_insns: self.max_chunk_insns,
             call_depth_limit: (!self.no_depth_guard).then_some(self.call_depth_limit),
-        };
+            ..Options::default()
+        });
         let region = CodeRegion {
             base: self.base,
             bytes: &bytes,
@@ -159,7 +200,7 @@ fn validate(wasm: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn translate_pe(file: &Path, out_dir: &Path, entries: Entries) -> Result<()> {
+fn translate_pe(file: &Path, out_dir: &Path, entries: Entries, extra: &Extra) -> Result<()> {
     let data = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
     let pe = Pe::parse(&data).with_context(|| format!("parsing {}", file.display()))?;
     let name = file
@@ -170,13 +211,15 @@ fn translate_pe(file: &Path, out_dir: &Path, entries: Entries) -> Result<()> {
         .file_stem()
         .and_then(|n| n.to_str())
         .context("file name is not UTF-8")?;
-    let plan = LoadPlan::from_pe(&pe, name).context("building the load plan")?;
+    let mut plan = LoadPlan::from_pe(&pe, name).context("building the load plan")?;
+    let opts = extra.apply(Options::default());
+    plan.options = (&opts).into();
     let start = Instant::now();
     let set = match entries {
         Entries::All => EntrySet::All,
         Entries::Entry => EntrySet::EntryPoint,
     };
-    let t = image::translate(&pe, set, &Options::default()).context("translating")?;
+    let t = image::translate(&pe, set, &opts).context("translating")?;
     let ms = start.elapsed().as_secs_f64() * 1e3;
     validate(&t.wasm)?;
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
@@ -228,7 +271,8 @@ fn main() -> Result<()> {
             file,
             out_dir,
             entries,
-        } => translate_pe(&file, &out_dir, entries)?,
+            extra,
+        } => translate_pe(&file, &out_dir, entries, &extra)?,
     }
     Ok(())
 }

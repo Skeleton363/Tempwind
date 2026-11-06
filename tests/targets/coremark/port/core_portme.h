@@ -1,6 +1,6 @@
 /*
  * CoreMark port for 64-bit Windows (MinGW-w64), used by the Tempwind Phase 1
- * targets. MIT license (see /LICENSE). Written from CoreMark's porting
+ * targets. All rights reserved (see /LICENSE). Written from CoreMark's porting
  * documentation (barebones_porting.md) and the interface that coremark.h and
  * core_main.c expect; no code from the upstream ports is used.
  *

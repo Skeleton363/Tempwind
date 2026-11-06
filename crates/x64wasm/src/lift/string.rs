@@ -7,7 +7,7 @@ use iced_x86::{Mnemonic, OpKind, Register};
 use super::lower::Lower;
 use super::{Flow, Lowered, Unsupported};
 use crate::abi;
-use crate::ir::{BinOp, Op, Rep, StrOp, Value, Width};
+use crate::ir::{BinOp, Gpr, Op, RCX, RDI, RSI, Rep, StrOp, Value, Width};
 
 impl Lower<'_> {
     pub(super) fn string(&mut self, m: Mnemonic) -> Lowered<Flow> {
@@ -48,6 +48,7 @@ impl Lower<'_> {
             (true, _, true) => Rep::Repe,
             (false, true, true) => Rep::Repne,
         };
+        self.string_checks(op, size, rep, delta);
         self.push_op(Op::RepString {
             op,
             width,
@@ -55,5 +56,37 @@ impl Lower<'_> {
             delta,
         });
         Ok(Flow::Next)
+    }
+
+    /// The memory checks of a string instruction: the first element at RSI
+    /// and RDI, and for `rep` (when RCX != 0) the last one too, at
+    /// `ptr + (RCX - 1) * delta`. `repe`/`repne` may stop early, so they
+    /// check only the first.
+    fn string_checks(&mut self, op: StrOp, size: u64, rep: Rep, delta: Value) {
+        let ptrs: &[(Gpr, bool)] = match op {
+            StrOp::Movs => &[(RSI, false), (RDI, true)],
+            StrOp::Stos => &[(RDI, true)],
+            StrOp::Lods => &[(RSI, false)],
+            StrOp::Cmps => &[(RSI, false), (RDI, false)],
+            StrOp::Scas => &[(RDI, false)],
+        };
+        let wanted = |w: bool| self.checks.null || (w && self.checks.store);
+        if !ptrs.iter().any(|&(_, w)| wanted(w)) {
+            return;
+        }
+        let size = size as u32;
+        let when = (rep != Rep::Once).then_some(Value::Reg(RCX));
+        let span = (rep == Rep::Rep).then(|| {
+            let n = self.bin(BinOp::Sub, Value::Reg(RCX), Value::Imm(1));
+            self.bin(BinOp::Mul, n, delta)
+        });
+        for &(reg, write) in ptrs {
+            let p = Value::Reg(reg);
+            self.mem_check_when(p, size, write, when);
+            if let Some(span) = span {
+                let last = self.bin(BinOp::Add, p, span);
+                self.mem_check_when(last, size, write, when);
+            }
+        }
     }
 }

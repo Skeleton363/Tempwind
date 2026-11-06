@@ -5,7 +5,7 @@
 
 import {
   PAGE_SIZE, STATE_RIP, STATE_RFLAGS, STATE_EXIT, STATE_SIZE, STATE_GS_BASE, STATE_FS_BASE,
-  STATE_FAULT_ADDR, STATE_FAULT_KIND, EXIT_LEFT_CODE, EXIT_UNSUPPORTED, EXIT_FAULT, EXIT_HOST,
+  STATE_FAULT_ADDR, STATE_FAULT_KIND, EXIT_LEFT_CODE, EXIT_UNSUPPORTED, EXIT_FAULT, EXIT_HOST, PAGE_CODE,
   FAULT_READ, FAULT_WRITE, FAULT_EXECUTE, SENTINEL_RET, LOOKUP_HEADER_ADDR, MAIN_STATE_ADDR,
   THUNK_BASE, THUNK_SIZE, THUNK_BYTES, HOST_FUNC_INDEX, MAX_THUNKS, MIN_LOOKUP_SLOTS, LOOKUP_SLOT_SIZE,
   PEB_ADDR, TEB_ADDR, PROCESS_ID, THREAD_ID, RFLAGS_INIT, GUEST_CALL_FRAME, DLL_PROCESS_ATTACH,
@@ -13,7 +13,8 @@ import {
   TEB_STACK_BASE, TEB_STACK_LIMIT, TEB_SELF, TEB_CLIENT_ID_PROCESS, TEB_CLIENT_ID_THREAD,
   TEB_TLS_POINTER, TEB_PEB, PEB_BEING_DEBUGGED, PEB_IMAGE_BASE, PEB_NUMBER_OF_PROCESSORS,
   PEB_OS_MAJOR, PEB_OS_MINOR, PEB_OS_BUILD, PEB_OS_PLATFORM_ID, OS_VERSION, gprOffset,
-  DLL_THREAD_ATTACH, DLL_THREAD_DETACH, TEB_SIZE, STACK_ALIGN,
+  DLL_THREAD_ATTACH, DLL_THREAD_DETACH, TEB_SIZE, STACK_ALIGN, COUNTER_SLOTS,
+  RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_FLAG_COUNTERS, RT_FLAG_SYNC_ALL, RT_FLAG_REFERENCE_LAYOUT,
 } from './abi.mjs';
 import { createMemory64 } from './memory.mjs';
 import { GuestMemory } from './guest-memory.mjs';
@@ -63,7 +64,7 @@ export class Process {
    * Loads a program (runtime.md, "Loading", steps 1-7). Does not run it.
    * @param {{exe: Uint8Array, plan: object, aot: BufferSource | WebAssembly.Module,
    *   rt?: import('./rt.mjs').RuntimeTranslator | null,
-   *   trace?: {api?: boolean, translate?: boolean, exits?: boolean}, log?: (line: string) => void,
+   *   trace?: {api?: boolean, translate?: boolean, exits?: boolean, counts?: boolean}, log?: (line: string) => void,
    *   onOutput?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void, shim?: object,
    *   argv?: string[], fp?: WebAssembly.Exports | null}} opts
    *   `argv`: the command line (default: the program name, the plan's `file`).
@@ -78,7 +79,9 @@ export class Process {
   constructor({ rt = null, trace = {}, log = () => {}, onOutput = () => {}, shim = SHIM, argv = null, fp = null, vfs = null }) {
     this.rt = rt;
     this.fp = fp;
-    this.trace = { api: false, translate: false, exits: false, ...trace };
+    this.trace = { api: false, translate: false, exits: false, counts: false, ...trace };
+    /** Host calls per import id (TEMPWIND_TRACE=counts). */
+    this.hostCalls = this.trace.counts ? [] : undefined;
     this.log = log;
     this.onOutput = onOutput;
     this.shim = shim;
@@ -144,6 +147,10 @@ export class Process {
       alloc: (size, align) => this.runtimeHeap.alloc(size, align),
       fp: this.fp,
     });
+    // The store check (abi.md, "Page-state table"): the image's code pages.
+    this.linker.onPageFlags = (linker) => {
+      for (const s of this.plan.sections) if (s.executable) linker.setPageFlags(s.va, s.mappedSize, PAGE_CODE);
+    };
     this.imports = imports.map((f, id) => ({ ...f, thunk: THUNK_BASE + THUNK_SIZE * BigInt(id), impl: findShim(f.dll, f.name, this.shim) }));
     const hostCall = makeHostCall({
       mem: this.mem,
@@ -152,6 +159,7 @@ export class Process {
       onStop: (stop) => { this.stop = stop; },
       trace: this.trace.api ? (line) => this.log(line) : undefined,
       host: this.services(),
+      calls: this.hostCalls,
     });
     this.linker.setHostFunction(hostCall);
     // Calls that can block (runtime.md, "Guest threads") go through a second
@@ -431,7 +439,8 @@ export class Process {
         if (executableSection(this.plan, rip)) return { translate: rip };
         throw new ProcessError(`fault: execute at ${hex(rip)}`);
       case EXIT_UNSUPPORTED:
-        throw new ProcessError(`unsupported instruction at ${hex(rip)} (bytes ${this.codeBytes(rip)})`);
+        throw new ProcessError(`unsupported instruction at ${hex(rip)} (bytes ${this.codeBytes(rip)})${
+          this.linker.pageFlagsAddr === null ? '' : ', or a store into a code or write-watched page (store check)'}`);
       case EXIT_HOST: {
         const stop = this.stop;
         this.stop = null;
@@ -532,7 +541,11 @@ export class Process {
     if (!this.rt) throw new ProcessError(`no translated code at ${hex(rip)} and no run-time translator loaded`);
     const s = executableSection(this.plan, rip);
     try {
-      return this.rt.translate({ codeBase: s.va, code: this.mem.read(s.va, Number(s.mappedSize)), entry: rip, known: this.linker.sortedKeys() });
+      // The image's options (the plan's `options`): the same checks, counters and reference modes as the AOT module.
+      const o = this.plan.options;
+      const flags = (o.nullCheck ? RT_FLAG_NULL_CHECK : 0) | (o.storeCheck ? RT_FLAG_STORE_CHECK : 0) | (o.counters ? RT_FLAG_COUNTERS : 0)
+        | (o.syncAll ? RT_FLAG_SYNC_ALL : 0) | (o.structured ? 0 : RT_FLAG_REFERENCE_LAYOUT);
+      return this.rt.translate({ codeBase: s.va, code: this.mem.read(s.va, Number(s.mappedSize)), entry: rip, known: this.linker.sortedKeys(), flags });
     } catch (e) {
       throw new ProcessError(`run-time translation at ${hex(rip)}: ${e.message}`);
     }
@@ -586,8 +599,20 @@ export class Process {
     this.finished = true;
     this.threads.finished = true;
     this.running = false;
+    if (this.trace.counts) this.logCounts();
     if ('exitCode' in outcome) this.settle.resolve(outcome.exitCode);
     else this.settle.reject(outcome.error instanceof ProcessError ? outcome.error : new ProcessError(String(outcome.error?.stack ?? outcome.error)));
+  }
+
+  /** TEMPWIND_TRACE=counts: the counter block and the host calls per import, at exit. */
+  logCounts() {
+    const block = this.linker.readCounters();
+    if (block) COUNTER_SLOTS.forEach((name, i) => this.log(`count ${name} ${block[i]}`));
+    else this.log('count (no module was built with --counters)');
+    this.imports.forEach((imp, id) => {
+      const n = this.hostCalls[id];
+      if (n) this.log(`hostcalls ${imp.dll.toLowerCase()}!${imp.name} ${n}`);
+    });
   }
 
   /** Turns a failure of a thread's loop into the process's error stop. */

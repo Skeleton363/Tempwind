@@ -4,7 +4,7 @@ description = "The x64wasm translator built for wasm32 (x64wasm_rt.wasm): run-ti
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 publish.workspace = true
 

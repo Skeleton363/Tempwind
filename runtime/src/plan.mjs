@@ -14,6 +14,24 @@ const roundUp = (v, a) => (v + a - 1n) / a * a;
 
 export class PlanError extends Error {}
 
+/** The plan's `options` (runtime.md, "Load plan"); absent means all false. */
+function options(json) {
+  const o = json.options ?? {};
+  if (typeof o !== 'object' || o === null || Array.isArray(o)) throw new PlanError(`plan: options must be an object, got ${JSON.stringify(o)}`);
+  const flag = (key, dflt = false) => {
+    const v = o[key] ?? dflt;
+    if (typeof v !== 'boolean') throw new PlanError(`plan: options.${key} must be a boolean, got ${JSON.stringify(v)}`);
+    return v;
+  };
+  return {
+    nullCheck: flag('nullCheck'),
+    storeCheck: flag('storeCheck'),
+    counters: flag('counters'),
+    syncAll: flag('syncAll'),
+    structured: flag('structured', true),
+  };
+}
+
 function u64(obj, key, where) {
   const v = obj?.[key];
   if (typeof v !== 'string' || !/^0x[0-9a-fA-F]{1,16}$/.test(v)) {
@@ -43,6 +61,7 @@ export function parsePlan(json) {
     stackReserve: u64(json, 'stackReserve', 'plan'),
     stackCommit: u64(json, 'stackCommit', 'plan'),
     hasRelocations: !!json.hasRelocations,
+    options: options(json),
     sections: json.sections.map((s, i) => {
       const w = `sections[${i}]`;
       const sec = {

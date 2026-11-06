@@ -38,6 +38,25 @@ use crate::switch;
 use crate::{CodeRegion, Error};
 use lower::Lower;
 
+/// The memory checks the lifter inserts (`Options::null_check`,
+/// `Options::store_check`; `translator.md`, "Memory checks").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Checks {
+    /// Every guest access below 0x10000 faults.
+    pub null: bool,
+    /// Every store tests the page-state table.
+    pub store: bool,
+}
+
+impl Checks {
+    pub fn of(opts: &crate::Options) -> Self {
+        Checks {
+            null: opts.null_check,
+            store: opts.store_check,
+        }
+    }
+}
+
 /// The instruction can't be lowered (yet).
 #[derive(Debug)]
 pub struct Unsupported;
@@ -117,6 +136,7 @@ struct Lifter<'a> {
     /// Decoded instructions by address; `None` = can't decode there (outside
     /// the region or truncated by its end).
     cache: HashMap<u64, Option<Decoded>>,
+    checks: Checks,
 }
 
 impl<'a> Lifter<'a> {
@@ -244,6 +264,8 @@ impl<'a> Lifter<'a> {
             vtemps: 0,
             ea: None,
             seg_ea: None,
+            checks: self.checks,
+            effect_temps: None,
         };
         match lower.lower() {
             Ok(flow) => Some(Decoded {
@@ -301,7 +323,17 @@ pub fn lift(region: CodeRegion<'_>, entries: &[u64], want_text: bool) -> Result<
 /// Like [`lift`], over a [`Source`]: several code regions, memory that jump
 /// tables are read from, and known addresses.
 pub fn lift_source(src: &Source<'_>, entries: &[u64], want_text: bool) -> Result<Program, Error> {
-    lift_impl(src.code, src.data, src.known, entries, want_text)
+    lift_with(src, entries, want_text, Checks::default())
+}
+
+/// Like [`lift_source`], with the memory checks `checks`.
+pub fn lift_with(
+    src: &Source<'_>,
+    entries: &[u64],
+    want_text: bool,
+    checks: Checks,
+) -> Result<Program, Error> {
+    lift_impl(src.code, src.data, src.known, entries, want_text, checks)
 }
 
 /// Like [`lift`], over several code regions (an image's executable
@@ -315,7 +347,14 @@ pub fn lift_regions(
     entries: &[u64],
     want_text: bool,
 ) -> Result<Program, Error> {
-    lift_impl(regions, regions, known, entries, want_text)
+    lift_impl(
+        regions,
+        regions,
+        known,
+        entries,
+        want_text,
+        Checks::default(),
+    )
 }
 
 fn lift_impl(
@@ -324,6 +363,7 @@ fn lift_impl(
     known: &[u64],
     entries: &[u64],
     want_text: bool,
+    checks: Checks,
 ) -> Result<Program, Error> {
     let mut lifter = Lifter {
         regions,
@@ -336,6 +376,7 @@ fn lift_impl(
         formatter: IntelFormatter::new(),
         want_text,
         cache: HashMap::new(),
+        checks,
     };
     for &entry in entries {
         if lifter.region_of(entry).is_none() {

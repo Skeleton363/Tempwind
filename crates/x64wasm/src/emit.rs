@@ -69,15 +69,18 @@ use crate::ir::{
     reg_name,
 };
 use crate::link::{BlockEntry, encode_blocks};
+use crate::sync::{self, ChunkSync, FLAGS, Set};
 
 mod flags;
 mod fp;
 mod helpers;
 mod simd;
 mod string;
+mod structure;
 mod x87;
 
 use flags::{Known, emit_flags};
+use structure::{Item, Jump, Plan, Sel, Transfer};
 use x87::X87Locals;
 
 // Parameters and locals of a chunk function.
@@ -114,6 +117,36 @@ const TABLE: u32 = 0;
 const G_TABLE_BASE: u32 = 0;
 const G_LOOKUP: u32 = 1;
 const G_DEPTH: u32 = 2;
+/// Present with `Options::counters`, after `depth`.
+const G_COUNTERS: u32 = 3;
+/// The kinds a memory check's site passes to `$fault` (low two bits of
+/// the status local): `FAULT_READ`, `FAULT_WRITE` (as `FAULT_READ` + the
+/// kind) and `EXIT_UNSUPPORTED`.
+const SITE_READ: u32 = 0;
+const SITE_WRITE: u32 = 1;
+const SITE_UNSUPPORTED: u32 = 2;
+const _: () = assert!(abi::FAULT_WRITE == abi::FAULT_READ + SITE_WRITE);
+
+/// Present with `Options::store_check`, after `counters` if present.
+const fn g_page_flags(counters: bool) -> u32 {
+    G_COUNTERS + counters as u32
+}
+
+/// Slots of the counter block (`abi.md`, "Counter block").
+mod slot {
+    pub const ENTRIES_FAST: u64 = 0;
+    pub const ENTRIES_GENERIC: u64 = 1;
+    pub const DISPATCHES: u64 = 2;
+    pub const LOCAL_INDIRECT: u64 = 3;
+    pub const CALLS_DIRECT: u64 = 4;
+    pub const CALLS_PROBED: u64 = 5;
+    pub const TAIL_TRANSFERS: u64 = 6;
+    pub const UNWINDS: u64 = 7;
+    pub const VALUES_STORED: u64 = 8;
+    pub const VALUES_LOADED: u64 = 9;
+    pub const MEM_LOADS: u64 = 10;
+    pub const MEM_STORES: u64 = 11;
+}
 
 fn mem(offset: u64) -> MemArg {
     MemArg {
@@ -126,10 +159,18 @@ fn mem(offset: u64) -> MemArg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Label {
     Leave,
+    /// The shared cold exit of the memory checks, inside `$leave`.
+    Fault,
     Dispatch,
     Block(usize),
     Miss,
     SelfLoop,
+    /// A `block` of the structured layout ([`Plan::items`]).
+    PlanBlock,
+    /// A `loop` of the structured layout (`$dispatch` is [`Label::Dispatch`]).
+    PlanLoop,
+    /// The blocks of a dispatch on a selector or on `entry`.
+    Route,
     If,
     /// Labels of a string instruction's loop.
     StrDone,
@@ -173,6 +214,33 @@ struct ChunkEmitter<'p> {
     cur_addr: u64,
     /// Something branches to `$leave`.
     leave_used: bool,
+    /// Count events in the counter block.
+    counters: bool,
+    /// What this chunk loads, stores and reloads (`sync.rs`).
+    sync: &'p ChunkSync,
+    /// `Options::sync_all`: every boundary moves every value.
+    sync_all: bool,
+    /// The values that may be dirty at the current point.
+    dirty: Set,
+    /// The i32 local that carries a leave's dirty set to the epilogue
+    /// (absent under `sync_all`, where every leave stores everything).
+    l_mask: Option<u32>,
+    /// The dirty set of every branch to `$leave` so far.
+    leave_masks: Vec<Set>,
+    /// The structured layout (`Options::structured`); `None` keeps the
+    /// Phase 0 dispatch layout.
+    plan: Option<&'p Plan>,
+    /// Positions in `labels` of the layout's open labels, outermost first
+    /// (the label depths of a [`Transfer`] count only these).
+    plan_labels: Vec<usize>,
+    /// The selector local (layout position + 1; 0 is `structure::NONE`),
+    /// present when some loop has an interior.
+    l_sel: Option<u32>,
+    /// The chunk has memory checks, which branch to its `$fault` block.
+    has_fault: bool,
+    /// The address check sites pass as an offset (the chunk's lowest
+    /// instruction address).
+    site_base: u64,
 }
 
 impl ChunkEmitter<'_> {
@@ -181,10 +249,12 @@ impl ChunkEmitter<'_> {
         // Block(N-1) .. Block(0), Miss); only the few labels inside a block
         // are searched.
         let n = self.blocks.len();
+        let outer = 1 + usize::from(self.has_fault);
         let pos = match label {
             Label::Leave => 0,
-            Label::Dispatch => 1,
-            Label::Block(j) => 2 + (n - 1 - j),
+            Label::Fault if self.has_fault => 1,
+            Label::Dispatch => outer,
+            Label::Block(j) => outer + 1 + (n - 1 - j),
             _ => self
                 .labels
                 .iter()
@@ -193,6 +263,21 @@ impl ChunkEmitter<'_> {
         };
         debug_assert_eq!(self.labels.get(pos), Some(&label), "label in scope");
         (self.labels.len() - 1 - pos) as u32
+    }
+
+    /// Adds `n` to a slot of the counter block (stack-neutral); nothing
+    /// without `Options::counters`.
+    fn count(&self, f: &mut InstructionSink<'_>, slot: u64, n: i64) {
+        if !self.counters {
+            return;
+        }
+        let m = mem(slot * 8);
+        f.global_get(G_COUNTERS);
+        f.global_get(G_COUNTERS);
+        f.i64_load(m);
+        f.i64_const(n);
+        f.i64_add();
+        f.i64_store(m);
     }
 
     fn temp(&self, t: Temp) -> u32 {
@@ -274,6 +359,8 @@ impl ChunkEmitter<'_> {
             };
             self.op(f, op);
             debug_assert!(self.keep.is_none());
+            // Leaves inside the op stored the dirty set from before it.
+            self.dirty |= sync::op_effect(op).writes;
         }
     }
 
@@ -330,11 +417,13 @@ impl ChunkEmitter<'_> {
                 self.set_temp(f, dst);
             }
             Op::Load { dst, width, addr } => {
+                self.count(f, slot::MEM_LOADS, 1);
                 self.value(f, addr);
                 load(f, width, mem(0));
                 self.set_temp(f, dst);
             }
             Op::Store { width, addr, value } => {
+                self.count(f, slot::MEM_STORES, 1);
                 self.value(f, addr);
                 self.value(f, value);
                 store(f, width, mem(0));
@@ -441,6 +530,14 @@ impl ChunkEmitter<'_> {
                 f.end();
                 self.labels.pop();
             }
+            Op::MemCheck {
+                addr,
+                len,
+                write,
+                null,
+                code,
+                when,
+            } => self.mem_check(f, addr, len, write, null, code, when),
             Op::DivWide {
                 q,
                 r,
@@ -513,46 +610,63 @@ impl ChunkEmitter<'_> {
         self.index.get(&addr).map(|&b| self.part.block_pos[b])
     }
 
-    /// Loads the registers and the lazy flag record from the state block.
-    fn load_state(&self, f: &mut InstructionSink<'_>) {
-        for i in 0..16u32 {
+    /// Loads the values in `set` from the state block.
+    fn load_set(&self, f: &mut InstructionSink<'_>, set: Set) {
+        if set == 0 {
+            return;
+        }
+        self.count(f, slot::VALUES_LOADED, sync::weight(set));
+        for i in (0..16u32).filter(|i| set & 1 << i != 0) {
             f.local_get(P_STATE);
             f.i64_load(mem(abi::gpr_offset(i)));
             f.local_set(L_GPR0 + i);
         }
-        f.local_get(P_STATE);
-        f.i32_load(mem(abi::STATE_CC_OP));
-        f.local_set(self.l_cc_op);
-        for (local, offset) in [
-            (L_CC_A, abi::STATE_CC_A),
-            (L_CC_B, abi::STATE_CC_B),
-            (L_CC_R, abi::STATE_CC_R),
-        ] {
+        if set & FLAGS != 0 {
             f.local_get(P_STATE);
-            f.i64_load(mem(offset));
-            f.local_set(local);
+            f.i32_load(mem(abi::STATE_CC_OP));
+            f.local_set(self.l_cc_op);
+            for (local, offset) in [
+                (L_CC_A, abi::STATE_CC_A),
+                (L_CC_B, abi::STATE_CC_B),
+                (L_CC_R, abi::STATE_CC_R),
+            ] {
+                f.local_get(P_STATE);
+                f.i64_load(mem(offset));
+                f.local_set(local);
+            }
         }
     }
 
-    /// Stores the registers and the lazy flag record to the state block.
-    fn store_state(&self, f: &mut InstructionSink<'_>) {
-        for i in 0..16u32 {
+    /// Stores the values in `set` to the state block.
+    fn store_set(&self, f: &mut InstructionSink<'_>, set: Set) {
+        if set == 0 {
+            return;
+        }
+        self.count(f, slot::VALUES_STORED, sync::weight(set));
+        for i in (0..16u32).filter(|i| set & 1 << i != 0) {
             f.local_get(P_STATE);
             f.local_get(L_GPR0 + i);
             f.i64_store(mem(abi::gpr_offset(i)));
         }
-        f.local_get(P_STATE);
-        f.local_get(self.l_cc_op);
-        f.i32_store(mem(abi::STATE_CC_OP));
-        for (local, offset) in [
-            (L_CC_A, abi::STATE_CC_A),
-            (L_CC_B, abi::STATE_CC_B),
-            (L_CC_R, abi::STATE_CC_R),
-        ] {
+        if set & FLAGS != 0 {
             f.local_get(P_STATE);
-            f.local_get(local);
-            f.i64_store(mem(offset));
+            f.local_get(self.l_cc_op);
+            f.i32_store(mem(abi::STATE_CC_OP));
+            for (local, offset) in [
+                (L_CC_A, abi::STATE_CC_A),
+                (L_CC_B, abi::STATE_CC_B),
+                (L_CC_R, abi::STATE_CC_R),
+            ] {
+                f.local_get(P_STATE);
+                f.local_get(local);
+                f.i64_store(mem(offset));
+            }
         }
+    }
+
+    /// Stores the dirty values (before a call or a tail transfer).
+    fn store_dirty(&self, f: &mut InstructionSink<'_>) {
+        self.store_set(f, self.dirty);
     }
 
     /// Leaves through `$leave` with `status`; RIP must already be in its local.
@@ -562,8 +676,15 @@ impl ChunkEmitter<'_> {
         self.br_leave(f);
     }
 
+    /// Branches to the shared epilogue, which stores this point's dirty
+    /// set (passed in the mask local as a constant).
     fn br_leave(&mut self, f: &mut InstructionSink<'_>) {
         self.leave_used = true;
+        self.leave_masks.push(self.dirty);
+        if let Some(l) = self.l_mask {
+            f.i32_const(self.dirty as i32);
+            f.local_set(l);
+        }
         f.br(self.depth(Label::Leave));
     }
 
@@ -578,13 +699,150 @@ impl ChunkEmitter<'_> {
 
     /// Leaves with `EXIT_FAULT` at the instruction at `rip` (fault address 0).
     fn fault(&mut self, f: &mut InstructionSink<'_>, kind: u32, rip: u64) {
+        self.fault_at(f, kind, rip, Value::Imm(0));
+    }
+
+    /// Leaves with `EXIT_FAULT` at the instruction at `rip`, with the fault
+    /// address `addr`.
+    fn fault_at(&mut self, f: &mut InstructionSink<'_>, kind: u32, rip: u64, addr: Value) {
         f.local_get(P_STATE);
         f.i32_const(kind as i32);
         f.i32_store(mem(abi::STATE_FAULT_KIND));
         f.local_get(P_STATE);
-        f.i64_const(0);
+        self.value(f, addr);
         f.i64_store(mem(abi::STATE_FAULT_ADDR));
         self.exit(f, abi::EXIT_FAULT, rip);
+    }
+
+    /// A memory check's exit: branches to the chunk's `$fault` block with
+    /// what differs per site. The status local carries the kind and the
+    /// instruction's offset from `site_base` (`offset << 2 | kind`), the
+    /// scratch local the fault address, and the mask local the dirty set.
+    fn fault_site(&mut self, f: &mut InstructionSink<'_>, kind: u32, addr: Value) {
+        if kind != SITE_UNSUPPORTED {
+            self.value(f, addr);
+            f.local_set(L_SCRATCH);
+        }
+        let off = self.cur_addr - self.site_base;
+        let site = u32::try_from(off << 2 | u64::from(kind))
+            .ok()
+            .filter(|&s| s <= i32::MAX as u32)
+            .expect("a chunk spans less than 512 MiB");
+        f.i32_const(site as i32);
+        f.local_set(self.l_status);
+        self.leave_used = true;
+        self.leave_masks.push(self.dirty);
+        if let Some(l) = self.l_mask {
+            f.i32_const(self.dirty as i32);
+            f.local_set(l);
+        }
+        f.br(self.depth(Label::Fault));
+    }
+
+    /// The `$fault` block's code, reached from [`Self::fault_site`]: sets
+    /// RIP, the exit reason and (for a fault) its kind and address, then
+    /// falls through to the epilogue with `STATUS_EXIT`.
+    fn fault_block(&mut self, f: &mut InstructionSink<'_>) {
+        f.local_get(self.l_status);
+        f.i32_const(2);
+        f.i32_shr_u();
+        f.i64_extend_i32_u();
+        f.i64_const(self.site_base as i64);
+        f.i64_add();
+        f.local_set(L_RIP);
+        f.local_get(P_STATE);
+        f.local_get(self.l_status);
+        f.i32_const(SITE_UNSUPPORTED as i32);
+        f.i32_and();
+        f.if_(BlockType::Result(ValType::I32));
+        f.i32_const(abi::EXIT_UNSUPPORTED as i32);
+        f.else_();
+        f.local_get(P_STATE);
+        f.local_get(self.l_status);
+        f.i32_const(1);
+        f.i32_and();
+        f.i32_const(abi::FAULT_READ as i32);
+        f.i32_add();
+        f.i32_store(mem(abi::STATE_FAULT_KIND));
+        f.local_get(P_STATE);
+        f.local_get(L_SCRATCH);
+        f.i64_store(mem(abi::STATE_FAULT_ADDR));
+        f.i32_const(abi::EXIT_FAULT as i32);
+        f.end();
+        f.i32_store(mem(abi::STATE_EXIT));
+        f.i32_const(abi::STATUS_EXIT);
+        f.local_set(self.l_status);
+    }
+
+    /// Pushes the page-state byte (i32) of the page holding `addr + off`.
+    fn page_flags(&mut self, f: &mut InstructionSink<'_>, addr: Value, off: u64) {
+        f.global_get(g_page_flags(self.counters));
+        self.value(f, addr);
+        if off != 0 {
+            f.i64_const(off as i64);
+            f.i64_add();
+        }
+        f.i64_const(abi::PAGE_FLAGS_SHIFT as i64);
+        f.i64_shr_u();
+        f.i64_add();
+        f.i32_load8_u(mem(0));
+    }
+
+    /// `Op::MemCheck` (`translator.md`, "Memory checks"): cold exits before
+    /// the access, with the state from before the instruction.
+    #[allow(clippy::too_many_arguments)]
+    fn mem_check(
+        &mut self,
+        f: &mut InstructionSink<'_>,
+        addr: Value,
+        len: u32,
+        write: bool,
+        null: bool,
+        code: bool,
+        when: Option<Value>,
+    ) {
+        if let Some(w) = when {
+            self.value(f, w);
+            f.i64_const(0);
+            f.i64_ne();
+            f.if_(BlockType::Empty);
+            self.labels.push(Label::If);
+        }
+        let kind = if write { SITE_WRITE } else { SITE_READ };
+        match addr {
+            // Known at translation time: no test.
+            Value::Imm(a) if null && a < abi::NULL_LIMIT => self.fault_site(f, kind, addr),
+            Value::Imm(_) => {}
+            _ if null => {
+                self.value(f, addr);
+                f.i64_const(abi::NULL_LIMIT as i64);
+                f.i64_lt_u();
+                f.if_(BlockType::Empty);
+                self.labels.push(Label::If);
+                self.fault_site(f, kind, addr);
+                f.end();
+                self.labels.pop();
+            }
+            _ => {}
+        }
+        if code {
+            self.page_flags(f, addr, 0);
+            if len > 1 {
+                self.page_flags(f, addr, u64::from(len) - 1);
+                f.i32_or();
+            }
+            f.i32_const(i32::from(abi::PAGE_CODE | abi::PAGE_WATCH));
+            f.i32_and();
+            f.if_(BlockType::Empty);
+            self.labels.push(Label::If);
+            self.fault_site(f, SITE_UNSUPPORTED, Value::Imm(0));
+            f.end();
+            self.labels.pop();
+        }
+        if when.is_some() {
+            f.end();
+            self.labels.pop();
+        }
     }
 
     /// Transfers control to the block at `target`: inside the chunk, as a
@@ -595,7 +853,9 @@ impl ChunkEmitter<'_> {
         match self.locate(target) {
             Some((c, j)) if c == self.chunk => {
                 let j = j as usize;
-                if Some(j) == fall {
+                if let Some(plan) = self.plan {
+                    self.goto_planned(f, plan, k, j, fall);
+                } else if Some(j) == fall {
                 } else if j == k
                     && self
                         .labels
@@ -608,13 +868,15 @@ impl ChunkEmitter<'_> {
                 } else if j > k {
                     f.br(self.depth(Label::Block(j)));
                 } else {
+                    self.count(f, slot::DISPATCHES, 1);
                     f.i32_const(j as i32);
                     f.local_set(P_ENTRY);
                     f.br(self.depth(Label::Dispatch));
                 }
             }
             Some((c, j)) => {
-                self.store_state(f);
+                self.count(f, slot::TAIL_TRANSFERS, 1);
+                self.store_dirty(f);
                 f.local_get(P_STATE);
                 f.i32_const(j as i32);
                 f.local_get(P_RET);
@@ -627,6 +889,123 @@ impl ChunkEmitter<'_> {
                 self.probe(f);
                 self.tail_call_indirect(f);
             }
+        }
+    }
+
+    /// The structured layout's edge from block `k` to block `j` of this
+    /// chunk. `fall` is the block control falls through to from here, if
+    /// it can (`None` inside an `if`).
+    fn goto_planned(
+        &mut self,
+        f: &mut InstructionSink<'_>,
+        plan: &Plan,
+        k: usize,
+        j: usize,
+        fall: Option<usize>,
+    ) {
+        let t = plan.edges[k]
+            .iter()
+            .find(|e| e.0 == j)
+            .expect("an edge of the layout")
+            .1;
+        if matches!(t.sel, Sel::Set(_)) {
+            // An entry into a loop's interior through its selector.
+            self.count(f, slot::DISPATCHES, 1);
+        }
+        self.set_sel(f, t.sel);
+        match t.jump {
+            Jump::Fall if fall == Some(j) => {}
+            // Falling through to the next node is leaving the innermost
+            // `block` of the layout (only loops close before it).
+            Jump::Fall => {
+                let pos = *self
+                    .plan_labels
+                    .iter()
+                    .rev()
+                    .find(|&&p| self.labels[p] == Label::PlanBlock)
+                    .expect("a block to fall out of");
+                f.br((self.labels.len() - 1 - pos) as u32);
+            }
+            Jump::Br(d) => {
+                f.br(self.plan_depth(d));
+            }
+        }
+    }
+
+    /// The wasm depth of the layout's label at layout depth `d`.
+    fn plan_depth(&self, d: u32) -> u32 {
+        let pos = self.plan_labels[self.plan_labels.len() - 1 - d as usize];
+        (self.labels.len() - 1 - pos) as u32
+    }
+
+    fn set_sel(&self, f: &mut InstructionSink<'_>, sel: Sel) {
+        // Stored plus one, so `NONE` is 0: the locals' initial value, and
+        // a plain `if` tests for a pending entry.
+        let v = match sel {
+            Sel::Keep => return,
+            Sel::Set(q) => q.wrapping_add(1),
+            Sel::Clear => structure::NONE.wrapping_add(1),
+        };
+        f.i32_const(v as i32);
+        f.local_set(self.l_sel.expect("a selector local"));
+    }
+
+    /// A dispatch: `index` pushes an i32, and index `i` takes `ts[i]`; any
+    /// other index is unreachable. Transfers that change the selector go
+    /// through one small stub each (shared by equal transfers); a `Fall`
+    /// continues after the dispatch.
+    fn route(
+        &mut self,
+        f: &mut InstructionSink<'_>,
+        ts: &[Transfer],
+        index: impl FnOnce(&Self, &mut InstructionSink<'_>),
+    ) {
+        let mut stubs: Vec<Transfer> = Vec::new();
+        for t in ts {
+            if t.sel != Sel::Keep && !stubs.contains(t) {
+                stubs.push(*t);
+            }
+        }
+        let fall = ts.iter().any(|t| t.jump == Jump::Fall).then(|| {
+            f.block(BlockType::Empty);
+            self.labels.push(Label::Route);
+            self.labels.len() - 1
+        });
+        // Stub 0 is the innermost, so its code comes first.
+        let base = self.labels.len();
+        for _ in &stubs {
+            f.block(BlockType::Empty);
+            self.labels.push(Label::Route);
+        }
+        let stub_pos = |i: usize| base + stubs.len() - 1 - i;
+        f.block(BlockType::Empty);
+        self.labels.push(Label::Route);
+        let jump = |e: &Self, j: Jump| match j {
+            Jump::Fall => (e.labels.len() - 1 - fall.expect("a fall label")) as u32,
+            Jump::Br(d) => e.plan_depth(d),
+        };
+        let targets: Vec<u32> = ts
+            .iter()
+            .map(|t| match stubs.iter().position(|s| s == t) {
+                Some(i) => (self.labels.len() - 1 - stub_pos(i)) as u32,
+                None => jump(self, t.jump),
+            })
+            .collect();
+        index(self, f);
+        f.br_table(targets, 0);
+        f.end();
+        self.labels.pop();
+        f.unreachable();
+        for (i, t) in stubs.iter().enumerate() {
+            f.end();
+            debug_assert_eq!(self.labels.len() - 1, stub_pos(i));
+            self.labels.pop();
+            self.set_sel(f, t.sel);
+            f.br(jump(self, t.jump));
+        }
+        if fall.is_some() {
+            f.end();
+            self.labels.pop();
         }
     }
 
@@ -644,7 +1023,8 @@ impl ChunkEmitter<'_> {
 
     /// Stores the state and tail-calls the probed `(func, entry)`.
     fn tail_call_indirect(&mut self, f: &mut InstructionSink<'_>) {
-        self.store_state(f);
+        self.count(f, slot::TAIL_TRANSFERS, 1);
+        self.store_dirty(f);
         f.local_get(P_STATE);
         f.local_get(P_ENTRY);
         f.local_get(P_RET);
@@ -656,7 +1036,8 @@ impl ChunkEmitter<'_> {
     /// `ret` back.
     fn call_probed(&mut self, f: &mut InstructionSink<'_>, ret: u64) {
         self.depth_guard(f);
-        self.store_state(f);
+        self.count(f, slot::CALLS_PROBED, 1);
+        self.store_dirty(f);
         Self::add_depth(f, 1);
         f.local_get(P_STATE);
         f.local_get(P_ENTRY);
@@ -680,6 +1061,7 @@ impl ChunkEmitter<'_> {
     fn unwind_if(&mut self, f: &mut InstructionSink<'_>) {
         f.if_(BlockType::Empty);
         self.labels.push(Label::If);
+        self.count(f, slot::UNWINDS, 1);
         self.leave(f, abi::STATUS_UNWIND);
         f.end();
         self.labels.pop();
@@ -692,19 +1074,21 @@ impl ChunkEmitter<'_> {
         f.global_set(G_DEPTH);
     }
 
-    /// After a call: pass a status other than RETURNED up, else reload.
-    fn after_call(&mut self, f: &mut InstructionSink<'_>) {
+    /// After a call: pass a status other than RETURNED up, else reload
+    /// `reload`. The call stored the dirty set, so nothing is dirty now.
+    fn after_call(&mut self, f: &mut InstructionSink<'_>, reload: Set) {
         Self::add_depth(f, -1);
         f.local_tee(self.l_status);
         f.if_(BlockType::Empty);
         f.local_get(self.l_status);
         f.return_();
         f.end();
-        self.load_state(f);
+        self.load_set(f, reload);
         self.known_cc = None;
+        self.dirty = if self.sync_all { sync::ALL } else { 0 };
     }
 
-    fn call(&mut self, f: &mut InstructionSink<'_>, target: CallTarget, ret: u64) {
+    fn call(&mut self, f: &mut InstructionSink<'_>, target: CallTarget, ret: u64, reload: Set) {
         match target {
             CallTarget::Direct(t) => {
                 let Some((c, j)) = self.locate(t) else {
@@ -713,7 +1097,7 @@ impl ChunkEmitter<'_> {
                     f.local_set(L_RIP);
                     self.probe(f);
                     self.call_probed(f, ret);
-                    self.after_call(f);
+                    self.after_call(f, reload);
                     return;
                 };
                 if self.depth_limit.is_some() {
@@ -721,7 +1105,8 @@ impl ChunkEmitter<'_> {
                     f.local_set(L_RIP);
                 }
                 self.depth_guard(f);
-                self.store_state(f);
+                self.count(f, slot::CALLS_DIRECT, 1);
+                self.store_dirty(f);
                 Self::add_depth(f, 1);
                 f.local_get(P_STATE);
                 f.i32_const(j as i32);
@@ -735,22 +1120,25 @@ impl ChunkEmitter<'_> {
                 self.call_probed(f, ret);
             }
         }
-        self.after_call(f);
+        self.after_call(f, reload);
     }
 
     fn block(&mut self, f: &mut InstructionSink<'_>, k: usize, block: &Block) {
         self.known_cc = None;
+        self.dirty = self.sync.dirty_in[k];
         let addr = block.addr;
-        let self_loop = match block.term {
-            Term::Jump(t) => t == addr,
-            Term::Branch {
-                taken, fallthrough, ..
-            }
-            | Term::BranchIf {
-                taken, fallthrough, ..
-            } => taken == addr || fallthrough == addr,
-            _ => false,
-        };
+        // The structured layout makes a self-loop a loop of its own.
+        let self_loop = self.plan.is_none()
+            && match block.term {
+                Term::Jump(t) => t == addr,
+                Term::Branch {
+                    taken, fallthrough, ..
+                }
+                | Term::BranchIf {
+                    taken, fallthrough, ..
+                } => taken == addr || fallthrough == addr,
+                _ => false,
+            };
         if self_loop {
             f.loop_(BlockType::Empty);
             self.labels.push(Label::SelfLoop);
@@ -760,7 +1148,14 @@ impl ChunkEmitter<'_> {
             self.cur_addr = insn.addr;
             self.insn(f, &insn.ops, last.then_some(&block.term));
         }
-        let next = (k + 1 < self.blocks.len()).then_some(k + 1);
+        // The block control can fall through to from the end of this one.
+        let next = match self.plan {
+            Some(plan) => plan.edges[k]
+                .iter()
+                .find(|e| e.1.jump == Jump::Fall)
+                .map(|e| e.0),
+            None => (k + 1 < self.blocks.len()).then_some(k + 1),
+        };
         match block.term {
             Term::Jump(t) => self.goto(f, t, k, next),
             Term::Branch {
@@ -807,7 +1202,7 @@ impl ChunkEmitter<'_> {
                 self.goto(f, fallthrough, k, next);
             }
             Term::Call { target, ret } => {
-                self.call(f, target, ret);
+                self.call(f, target, ret, self.sync.reload[k]);
                 self.goto(f, ret, k, next);
             }
             Term::Ret(v) => {
@@ -818,6 +1213,12 @@ impl ChunkEmitter<'_> {
                 f.local_get(P_RET);
                 f.i64_ne();
                 f.local_set(self.l_status);
+                if self.counters {
+                    f.local_get(self.l_status);
+                    f.if_(BlockType::Empty);
+                    self.count(f, slot::UNWINDS, 1);
+                    f.end();
+                }
                 self.br_leave(f);
             }
             Term::Indirect(v) => {
@@ -831,7 +1232,16 @@ impl ChunkEmitter<'_> {
                 f.i32_const(self.chunk as i32);
                 f.i32_add();
                 f.i32_eq();
-                f.br_if(self.depth(Label::Dispatch));
+                if self.counters {
+                    f.if_(BlockType::Empty);
+                    self.labels.push(Label::If);
+                    self.count(f, slot::LOCAL_INDIRECT, 1);
+                    f.br(self.depth(Label::Dispatch));
+                    f.end();
+                    self.labels.pop();
+                } else {
+                    f.br_if(self.depth(Label::Dispatch));
+                }
                 f.local_get(self.l_func);
                 f.i32_const(0);
                 f.i32_lt_s();
@@ -848,11 +1258,78 @@ impl ChunkEmitter<'_> {
     }
 
     fn body(&mut self, f: &mut InstructionSink<'_>) {
-        let n = self.blocks.len();
-        self.load_state(f);
+        // The fast entry (the function's own entry block) loads what is live
+        // into it; any other entry loads the union over the chunk.
+        let (own, fast) = match self.sync.fast {
+            Some((k, set)) => (Some(k), set),
+            None => (None, self.sync.generic),
+        };
+        let extra = self.sync.generic & !fast;
+        match own {
+            Some(k) if self.counters => {
+                f.local_get(P_ENTRY);
+                f.i32_const(k as i32);
+                f.i32_eq();
+                f.if_(BlockType::Empty);
+                self.count(f, slot::ENTRIES_FAST, 1);
+                f.else_();
+                self.count(f, slot::ENTRIES_GENERIC, 1);
+                self.load_set(f, extra);
+                f.end();
+            }
+            Some(k) if extra != 0 => {
+                f.local_get(P_ENTRY);
+                f.i32_const(k as i32);
+                f.i32_ne();
+                f.if_(BlockType::Empty);
+                self.load_set(f, extra);
+                f.end();
+            }
+            Some(_) => {}
+            None => self.count(f, slot::ENTRIES_GENERIC, 1),
+        }
+        self.load_set(f, fast);
 
         f.block(BlockType::Empty);
         self.labels.push(Label::Leave);
+        if self.has_fault {
+            f.block(BlockType::Empty);
+            self.labels.push(Label::Fault);
+        }
+        match self.plan {
+            Some(plan) => self.structured(f, plan),
+            None => self.flat(f),
+        }
+        f.unreachable();
+        if self.has_fault {
+            f.end(); // fault block
+            self.labels.pop();
+            self.fault_block(f);
+        }
+        f.end(); // leave block
+        self.labels.pop();
+        if !self.leave_used {
+            f.unreachable();
+            f.end();
+            return;
+        }
+
+        // Leave: RETURNED, UNWIND or EXIT.
+        self.epilogue_stores(f);
+        f.local_get(self.l_status);
+        f.if_(BlockType::Empty);
+        f.local_get(P_STATE);
+        f.local_get(L_RIP);
+        f.i64_store(mem(abi::STATE_RIP));
+        f.end();
+        f.local_get(self.l_status);
+        f.end();
+    }
+
+    /// The Phase 0 layout (`structured: false`): every block's code inside
+    /// `$dispatch`, after a `br_table` over all of them.
+    fn flat(&mut self, f: &mut InstructionSink<'_>) {
+        let n = self.blocks.len();
         f.loop_(BlockType::Empty);
         self.labels.push(Label::Dispatch);
         for k in (0..n).rev() {
@@ -876,25 +1353,88 @@ impl ChunkEmitter<'_> {
         }
         f.end(); // loop
         self.labels.pop();
-        f.unreachable();
-        f.end(); // leave block
-        self.labels.pop();
-        if !self.leave_used {
-            f.unreachable();
-            f.end();
-            return;
-        }
+    }
 
-        // Leave: RETURNED, UNWIND or EXIT.
-        self.store_state(f);
-        f.local_get(self.l_status);
-        f.if_(BlockType::Empty);
-        f.local_get(P_STATE);
-        f.local_get(L_RIP);
-        f.i64_store(mem(abi::STATE_RIP));
-        f.end();
-        f.local_get(self.l_status);
-        f.end();
+    /// The structured layout: walks [`Plan::items`]. Its labels go on the
+    /// label stack above `$leave`, with the emitter's own (`if`s, routes)
+    /// above them.
+    fn structured(&mut self, f: &mut InstructionSink<'_>, plan: &Plan) {
+        let (prog, blocks) = (self.prog, self.blocks);
+        for item in &plan.items {
+            match *item {
+                Item::DispatchLoop | Item::Loop(_) | Item::Block => {
+                    let label = match item {
+                        Item::DispatchLoop => Label::Dispatch,
+                        Item::Loop(_) => Label::PlanLoop,
+                        _ => Label::PlanBlock,
+                    };
+                    if label == Label::PlanBlock {
+                        f.block(BlockType::Empty);
+                    } else {
+                        f.loop_(BlockType::Empty);
+                    }
+                    self.plan_labels.push(self.labels.len());
+                    self.labels.push(label);
+                }
+                Item::End => {
+                    f.end();
+                    let pos = self.plan_labels.pop().expect("an open label");
+                    debug_assert_eq!(pos + 1, self.labels.len());
+                    self.labels.pop();
+                }
+                // Callers only pass entries of this chunk.
+                Item::Select(None) => self.route(f, &plan.entries, |_, f| {
+                    f.local_get(P_ENTRY);
+                }),
+                Item::Select(Some(l)) => {
+                    // Pending interior entry: route on `sel - (start + 1)`
+                    // (the header is never an interior target).
+                    let lp = &plan.loops[l];
+                    let sel = self.l_sel.expect("a selector local");
+                    f.local_get(sel);
+                    f.if_(BlockType::Empty);
+                    self.labels.push(Label::If);
+                    self.route(f, &lp.routes[1..], |_, f| {
+                        f.local_get(sel);
+                        f.i32_const(lp.start as i32 + 2);
+                        f.i32_sub();
+                    });
+                    f.end();
+                    self.labels.pop();
+                }
+                Item::Code(k) => self.block(f, k, &prog.blocks[blocks[k]]),
+            }
+        }
+        debug_assert!(self.plan_labels.is_empty());
+    }
+}
+
+impl ChunkEmitter<'_> {
+    /// The shared epilogue's stores: each leave passed its dirty set in the
+    /// mask local. Values every leave stores are stored unconditionally;
+    /// the others are grouped by the leaves that store them, one test per
+    /// group, so a value outside a leave's mask is never stored.
+    fn epilogue_stores(&self, f: &mut InstructionSink<'_>) {
+        let masks = &self.leave_masks;
+        let always = masks.iter().fold(sync::ALL, |s, &m| s & m);
+        let some = masks.iter().fold(0, |s, &m| s | m) & !always;
+        self.store_set(f, always);
+        let mut groups: Vec<(Vec<bool>, Set)> = Vec::new();
+        for v in (0..17).filter(|v| some & 1 << v != 0) {
+            let key: Vec<bool> = masks.iter().map(|&m| m & 1 << v != 0).collect();
+            match groups.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, set)) => *set |= 1 << v,
+                None => groups.push((key, 1 << v)),
+            }
+        }
+        for (_, set) in groups {
+            f.local_get(self.l_mask.expect("a mask local outside sync_all"));
+            f.i32_const(set as i32);
+            f.i32_and();
+            f.if_(BlockType::Empty);
+            self.store_set(f, set);
+            f.end();
+        }
     }
 }
 
@@ -970,6 +1510,7 @@ fn operands(op: &Op) -> [Option<Value>; 4] {
         } => [Some(set), when, None, None],
         Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. } => [None; 4],
         Op::FaultIf { cond, .. } => [Some(cond), None, None, None],
+        Op::MemCheck { addr, when, .. } => [Some(addr), when, None, None],
         Op::DivWide { hi, lo, d, .. } => [Some(hi), Some(lo), Some(d), None],
         Op::RepString { delta, .. } => [Some(delta), None, None, None],
         Op::VLoad {
@@ -1363,6 +1904,22 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             }),
         );
     }
+    for (name, on) in [
+        (abi::COUNTERS_NAME, opts.counters),
+        (abi::PAGE_FLAGS_NAME, opts.store_check),
+    ] {
+        if on {
+            imports.import(
+                abi::MEMORY_MODULE,
+                name,
+                EntityType::Global(GlobalType {
+                    val_type: ValType::I64,
+                    mutable: false,
+                    shared: false,
+                }),
+            );
+        }
+    }
     for (&func, &ty) in fp.funcs.iter().zip(&fp_types) {
         imports.import(abi::FP_MODULE, func.name(), EntityType::Function(ty));
     }
@@ -1395,6 +1952,7 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
     module.section(&elements);
 
     let index = prog.index_map();
+    let sync = sync::analyze(prog, part, &index, opts.sync_all);
     let mut code = CodeSection::new();
     code.function(&emit_run(fbase));
     code.function(&emit_lookup());
@@ -1408,6 +1966,10 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
                 .flat_map(|&b| prog.blocks[b].insns.iter())
         };
         let t = insns().map(|i| i.temps).max().unwrap_or(0);
+        let has_fault = insns()
+            .flat_map(|i| i.ops.iter())
+            .any(|o| matches!(o, Op::MemCheck { .. }));
+        let site_base = insns().map(|i| i.addr).min().unwrap_or(0);
         let vt = insns().map(|i| i.vtemps).max().unwrap_or(0);
         let uses_fp = insns().flat_map(|i| i.ops.iter()).any(Op::is_fp);
         let uses_x87 = insns()
@@ -1427,7 +1989,32 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             locals.extend(X87Locals::decls());
             l_cc_op + 3 + vt + if uses_fp { 2 } else { 0 }
         });
-        temps.push((t, vt, uses_fp, x87_base));
+        // The mask local comes next (`sync_all` has none).
+        let l_mask = (!opts.sync_all).then(|| {
+            let n: u32 = locals.iter().map(|&(n, _)| n).sum();
+            locals.push((1, ValType::I32));
+            L_GPR0 + n
+        });
+        let plan = opts
+            .structured
+            .then(|| structure::plan(prog, &index, &chunk.blocks));
+        // The selector local comes last, when some loop has an interior.
+        let l_sel = plan
+            .as_ref()
+            .filter(|p| p.items.iter().any(|i| matches!(i, Item::Select(Some(_)))))
+            .map(|_| {
+                let n: u32 = locals.iter().map(|&(n, _)| n).sum();
+                locals.push((1, ValType::I32));
+                L_GPR0 + n
+            });
+        temps.push(ChunkLocals {
+            t,
+            vt,
+            uses_fp,
+            x87_base,
+            l_mask,
+            l_sel,
+        });
         let mut func = Function::new(locals);
         let mut emitter = ChunkEmitter {
             prog,
@@ -1451,6 +2038,17 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             l_x87: x87_base.map(X87Locals::at),
             cur_addr: 0,
             leave_used: false,
+            counters: opts.counters,
+            sync: &sync.chunks[c],
+            sync_all: opts.sync_all,
+            dirty: 0,
+            l_mask,
+            leave_masks: Vec::new(),
+            plan: plan.as_ref(),
+            plan_labels: Vec::new(),
+            l_sel,
+            has_fault,
+            site_base,
         };
         emitter.body(&mut func.instructions());
         code.function(&func);
@@ -1476,17 +2074,37 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
         data: Cow::Owned(encode_blocks(n_chunks, &blocks)),
     });
 
-    module.section(&names(prog, part, &temps, &fp, f_div128));
+    module.section(&names(prog, part, &temps, &fp, f_div128, opts));
     module.finish()
+}
+
+/// What the name section needs of a chunk's locals.
+#[derive(Clone, Copy)]
+struct ChunkLocals {
+    /// Temporaries.
+    t: u32,
+    /// Vector temporaries.
+    vt: u32,
+    uses_fp: bool,
+    x87_base: Option<u32>,
+    l_mask: Option<u32>,
+    l_sel: Option<u32>,
 }
 
 fn names(
     prog: &Program,
     part: &Partition,
-    temps: &[(u32, u32, bool, Option<u32>)],
+    temps: &[ChunkLocals],
     fp: &FpImports,
     f_div128: Option<u32>,
+    opts: &Options,
 ) -> NameSection {
+    let symbols: HashMap<u64, &str> = opts
+        .symbols
+        .iter()
+        .rev()
+        .map(|(a, n)| (*a, n.as_str()))
+        .collect();
     let fbase = fp.len();
     let mut names = NameSection::new();
     let mut funcs = NameMap::new();
@@ -1497,7 +2115,12 @@ fn names(
     funcs.append(fbase + F_LOOKUP, "lookup");
     funcs.append(fbase + F_FLAGS, "flags");
     for c in 0..part.chunks.len() {
-        funcs.append(fbase + F_CHUNK0 + c as u32, &part.chunk_name(prog, c));
+        let mut name = part.chunk_name(prog, c);
+        if let Some(sym) = symbols.get(&part.functions[part.chunks[c].function].entry) {
+            name.push('_');
+            name.push_str(sym);
+        }
+        funcs.append(fbase + F_CHUNK0 + c as u32, &name);
     }
     if let Some(i) = f_div128 {
         funcs.append(i, "div128");
@@ -1523,7 +2146,15 @@ fn names(
         flags.append(i as u32, n);
     }
     locals.append(fbase + F_FLAGS, &flags);
-    for (c, &(t, vt, uses_fp, x87_base)) in temps.iter().enumerate() {
+    for (c, l) in temps.iter().enumerate() {
+        let ChunkLocals {
+            t,
+            vt,
+            uses_fp,
+            x87_base,
+            l_mask,
+            l_sel,
+        } = *l;
         let mut chunk = NameMap::new();
         chunk.append(P_STATE, "state");
         chunk.append(P_ENTRY, "entry");
@@ -1554,6 +2185,12 @@ fn names(
                 chunk.append(base + i as u32, n);
             }
         }
+        if let Some(l) = l_mask {
+            chunk.append(l, "mask");
+        }
+        if let Some(l) = l_sel {
+            chunk.append(l, "sel");
+        }
         locals.append(fbase + F_CHUNK0 + c as u32, &chunk);
     }
     if let Some(i) = f_div128 {
@@ -1572,6 +2209,12 @@ fn names(
     globals.append(G_TABLE_BASE, "table_base");
     globals.append(G_LOOKUP, "lookup");
     globals.append(G_DEPTH, "depth");
+    if opts.counters {
+        globals.append(G_COUNTERS, "counters");
+    }
+    if opts.store_check {
+        globals.append(g_page_flags(opts.counters), "page_flags");
+    }
     names.globals(&globals);
     names
 }

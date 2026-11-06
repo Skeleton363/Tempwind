@@ -30,8 +30,19 @@ Keep this section current; add each command when it first works.
 Moved verbatim from `CLAUDE.md`, "Network and builds".
 
 - Environment: `tools/cloud-setup.sh` is the cloud environment's setup script (MinGW-w64 x86-64, wabt, binaryen, the pinned Rust toolchain with wasm32, Node 24, the emsdk image). When you change it, ask the user to paste the new version into the environment settings.
+- Pre-push hook: `tools/git-hooks/pre-push`, installed by the SessionStart hook (`git config core.hooksPath tools/git-hooks`). On pushes to `main` and `claude/*` it refuses a head commit whose subject starts with `WIP`, and any changed Rust file that rustfmt would change (checked as committed). Other branches pass unchecked. Run it by hand: `echo "x $(git rev-parse HEAD) refs/heads/claude/x $(git rev-parse origin/main)" | tools/git-hooks/pre-push`.
 - Docker: a SessionStart hook (`.claude/settings.json`) starts dockerd in every cloud session, in the background. If `docker info` fails, run `tools/start-dockerd.sh`. Never use `service docker start`; it fails in this sandbox.
 - Emscripten: the emscripten/emsdk Docker image (tag pinned in `scripts/emcc.sh`), with the repo mounted at /src. Run tools through `scripts/emcc.sh`.
 - Node: 24, pinned in `.nvmrc` for CI and sessions.
 - Chrome for headless tests: Playwright's Chromium, preinstalled in the image. Tests find it through Playwright; never hard-code a browser path. Set `CHROME_PATH` to test with another Chrome or Chromium binary (in CI, the `CHROME_PATH` repository variable).
-- Microsoft's documentation: `learn.microsoft.com` is blocked in sessions (403). Its source is reachable as single files through raw.githubusercontent.com, for example `https://raw.githubusercontent.com/MicrosoftDocs/win32/docs/desktop-src/Debug/system-error-codes--0-499-.md` (the Win32 docs). API reference pages are in `MicrosoftDocs/sdk-api`, for example `https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/docs/sdk-api-src/content/fileapi/nf-fileapi-getfileattributesw.md`.
+- Microsoft's documentation: `learn.microsoft.com` is reachable (allowed 2026-11-05). Its source also works as single files through raw.githubusercontent.com: `MicrosoftDocs/win32` (for example `https://raw.githubusercontent.com/MicrosoftDocs/win32/docs/desktop-src/Debug/system-error-codes--0-499-.md`) and `MicrosoftDocs/sdk-api` (for example `https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/docs/sdk-api-src/content/fileapi/nf-fileapi-getfileattributesw.md`).
+
+## Profiling and counters (M6)
+- **Profile:** `node tests/bench/profile.mjs --target coremark|7z [--top 20]` runs the target translated under `node --cpu-prof`. It prints self time per function (chunk names carry COFF symbols) and the split between wasm, JS and other.
+- **Counters:**
+  - Translate with `x64wasm-cli translate-pe --counters ...`.
+  - Run with `TEMPWIND_TRACE=counts`. At exit, the run prints the counter block (`abi.md`, "Counter block") and the host calls per import.
+  - Never time a run that has counters on.
+- **Memory checks:** `x64wasm-cli translate-pe` and `translate` take `--null-check` (accesses below 0x10000 → `EXIT_FAULT`) and `--store-check` (stores into PAGE_CODE/PAGE_WATCH pages → `EXIT_UNSUPPORTED`; the module imports `env.page_flags`, which the runtime supplies). `translate-pe` records them in the plan's `options`, and the runtime translates at run time with them. `tests/sevenzip/matrix.mjs --mode translated --aot-dir DIR --skip-translate` runs a module translated with them.
+- **Reference mode:** `translate-pe` and `translate` take `--sync-all` (write every flag back after each instruction) and `--no-structured` (dispatch-loop control flow instead of structured branches). They are measurement and correctness baselines, not for shipping; the plan's `options` does not record them, so run-time-translated code uses the defaults.
+- **Agent usage:** `node scripts/agent-usage.mjs [--agent ID] [--since ISO] [--json]` sums a run's real usage from its transcript; `node scripts/agent-stats.mjs [--milestone M6]` summarizes `docs/dev/agent-runs.jsonl` (`docs/dev/agent-runs.md`).

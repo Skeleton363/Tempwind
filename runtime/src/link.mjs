@@ -4,7 +4,8 @@
 // APIs only (Node, page, Worker).
 
 import {
-  MEMORY_MODULE, MEMORY_NAME, TABLE_NAME, TABLE_BASE_NAME, LOOKUP_NAME, DEPTH_NAME,
+  MEMORY_MODULE, MEMORY_NAME, TABLE_NAME, TABLE_BASE_NAME, LOOKUP_NAME, DEPTH_NAME, COUNTERS_NAME, COUNTERS_SIZE,
+  PAGE_FLAGS_NAME, PAGE_FLAGS_SIZE, PAGE_FLAGS_SHIFT,
   LOOKUP_SLOTS, LOOKUP_MASK, LOOKUP_USED, LOOKUP_SLOT_SIZE,
   BLOCKS_SECTION, BLOCKS_VERSION, BLOCKS_HEADER_SIZE, BLOCKS_ENTRY_SIZE,
   HOST_FUNC_INDEX, LOOKUP_HASH_MUL,
@@ -152,6 +153,14 @@ export class Linker {
     this.table = new WebAssembly.Table({ element: 'anyfunc', initial: HOST_FUNC_INDEX + 1 });
     this.lookupGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, header);
     this.depth = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
+    /** The counter block, allocated when a module imports `env.counters`. */
+    this.countersAddr = null;
+    this.countersGlobal = null;
+    /** The page-state table, allocated when a module imports `env.page_flags`. */
+    this.pageFlagsAddr = null;
+    this.pageFlagsGlobal = null;
+    /** Called once with the table's linker when it is allocated (to mark the code pages). */
+    this.onPageFlags = null;
     this.used = 0;
     // Mirror of the keys as a BigUint64Array's buffer, written through u32 words.
     this.mirror = new Uint32Array(128);
@@ -304,13 +313,13 @@ export class Linker {
    */
   async link(module) {
     const tableBase = this.reserve(module);
-    return this.insertBlocks(module, tableBase, await WebAssembly.instantiate(module, this.imports(tableBase)));
+    return this.insertBlocks(module, tableBase, await WebAssembly.instantiate(module, this.imports(tableBase, module)));
   }
 
   /** link() for callers that cannot wait (a guest call from a host function). */
   linkSync(module) {
     const tableBase = this.reserve(module);
-    return this.insertBlocks(module, tableBase, new WebAssembly.Instance(module, this.imports(tableBase)));
+    return this.insertBlocks(module, tableBase, new WebAssembly.Instance(module, this.imports(tableBase, module)));
   }
 
   /** A module that imports `fp` needs the helper module (v4). */
@@ -348,8 +357,39 @@ export class Linker {
     return linked;
   }
 
+  /** True if the module imports `env.counters` (built with `Options::counters`). */
+  static wantsCounters(module) {
+    return WebAssembly.Module.imports(module).some((i) => i.module === MEMORY_MODULE && i.name === COUNTERS_NAME);
+  }
+
+  /** True if the module imports `env.page_flags` (built with `Options::store_check`). */
+  static wantsPageFlags(module) {
+    return WebAssembly.Module.imports(module).some((i) => i.module === MEMORY_MODULE && i.name === PAGE_FLAGS_NAME);
+  }
+
+  /** ORs `bits` into the page-state byte of every 4 KiB page that [addr, addr + size) touches. */
+  setPageFlags(addr, size, bits) {
+    if (this.pageFlagsAddr === null) throw new Error('setPageFlags: no module imports env.page_flags');
+    addr = BigInt(addr);
+    size = BigInt(size);
+    if (size === 0n) return;
+    const first = addr >> PAGE_FLAGS_SHIFT;
+    const last = (addr + size - 1n) >> PAGE_FLAGS_SHIFT;
+    if (last >= BigInt(PAGE_FLAGS_SIZE)) throw new Error(`setPageFlags: ${hex(addr)}+${hex(size)} is above the page-state table`);
+    const bytes = new Uint8Array(this.memory.buffer, Number(this.pageFlagsAddr + first), Number(last - first + 1n));
+    for (let i = 0; i < bytes.length; i++) bytes[i] |= bits;
+  }
+
+  /** The counter block (abi.md, "Counter block") as BigInts, or null if no module asked for one. */
+  readCounters() {
+    if (this.countersAddr === null) return null;
+    const dv = this.view();
+    const at = Number(this.countersAddr);
+    return Array.from({ length: COUNTERS_SIZE / 8 }, (_, i) => dv.getBigUint64(at + 8 * i, true));
+  }
+
   /** The import object for a module whose chunk 0 sits at `tableBase`. */
-  imports(tableBase) {
+  imports(tableBase, module = null) {
     const imports = {
       [MEMORY_MODULE]: {
         [MEMORY_NAME]: this.memory,
@@ -360,6 +400,25 @@ export class Linker {
       },
     };
     if (this.fp) imports[FP_NAMESPACE] = this.fp;
+    if (module && Linker.wantsCounters(module)) {
+      if (!this.alloc) throw new Error('the module imports env.counters but the linker has no allocator for the 96-byte counter block');
+      if (this.countersGlobal === null) {
+        this.countersAddr = this.alloc(BigInt(COUNTERS_SIZE), 8n);
+        this.mem.fill(this.countersAddr, COUNTERS_SIZE);
+        this.countersGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, this.countersAddr);
+      }
+      imports[MEMORY_MODULE][COUNTERS_NAME] = this.countersGlobal;
+    }
+    if (module && Linker.wantsPageFlags(module)) {
+      if (!this.alloc) throw new Error('the module imports env.page_flags but the linker has no allocator for the page-state table');
+      if (this.pageFlagsGlobal === null) {
+        this.pageFlagsAddr = this.alloc(BigInt(PAGE_FLAGS_SIZE), 4096n);
+        this.mem.fill(this.pageFlagsAddr, PAGE_FLAGS_SIZE);
+        this.pageFlagsGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, this.pageFlagsAddr);
+        if (this.onPageFlags) this.onPageFlags(this);
+      }
+      imports[MEMORY_MODULE][PAGE_FLAGS_NAME] = this.pageFlagsGlobal;
+    }
     return imports;
   }
 }

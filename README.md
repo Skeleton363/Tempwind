@@ -23,4 +23,4 @@ Tempwind (working name) runs unmodified 64-bit Windows programs in the browser. 
 
 ## License
 
-The project's own code is MIT (see [LICENSE](LICENSE)). Wine and other dependencies keep their own licenses. Our patches to Wine are published under the LGPL.
+The project's own code is proprietary, all rights reserved (see [LICENSE](LICENSE)). The repository is public to read; using, copying or building on it needs the owner's written permission. Wine and other dependencies keep their own licenses. Our patches to Wine are published under the LGPL.

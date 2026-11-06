@@ -78,6 +78,38 @@ pub struct LoadPlan {
     pub imports: Vec<PlanDll>,
     pub tls: Option<PlanTls>,
     pub has_relocations: bool,
+    /// The options the module was translated with that change what the
+    /// code does at run time (`runtime.md`, "Load plan").
+    pub options: PlanOptions,
+}
+
+/// A load plan's `options`: passed as the run-time translator's request
+/// flags (`abi.md`, "Request").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanOptions {
+    pub null_check: bool,
+    pub store_check: bool,
+    pub counters: bool,
+    pub sync_all: bool,
+    pub structured: bool,
+}
+
+impl Default for PlanOptions {
+    fn default() -> PlanOptions {
+        PlanOptions::from(&Options::default())
+    }
+}
+
+impl From<&Options> for PlanOptions {
+    fn from(o: &Options) -> PlanOptions {
+        PlanOptions {
+            null_check: o.null_check,
+            store_check: o.store_check,
+            counters: o.counters,
+            sync_all: o.sync_all,
+            structured: o.structured,
+        }
+    }
 }
 
 /// Version of the load plan format.
@@ -140,6 +172,7 @@ impl LoadPlan {
             has_relocations: reloc.rva != 0
                 && reloc.size != 0
                 && pe.characteristics & FILE_RELOCS_STRIPPED == 0,
+            options: PlanOptions::default(),
         })
     }
 
@@ -216,7 +249,19 @@ impl LoadPlan {
                 )?;
             }
         }
-        writeln!(o, "  \"hasRelocations\": {}", self.has_relocations)?;
+        writeln!(o, "  \"hasRelocations\": {},", self.has_relocations)?;
+        let PlanOptions {
+            null_check,
+            store_check,
+            counters,
+            sync_all,
+            structured,
+        } = self.options;
+        writeln!(
+            o,
+            "  \"options\": {{ \"nullCheck\": {null_check}, \"storeCheck\": {store_check}, \
+             \"counters\": {counters}, \"syncAll\": {sync_all}, \"structured\": {structured} }}"
+        )?;
         writeln!(o, "}}")
     }
 }
@@ -344,5 +389,13 @@ pub fn translate(
         data: &data,
         known: &[],
     };
-    Ok(crate::translate_source(&src, &entries, opts)?)
+    let mut opts = opts.clone();
+    if let Ok(symbols) = pe.symbols() {
+        for s in symbols.iter().filter(|s| s.is_function() && s.section > 0) {
+            if let Some(rva) = pe.symbol_rva(s) {
+                opts.symbols.push((pe.rva_to_va(rva), s.name.clone()));
+            }
+        }
+    }
+    Ok(crate::translate_source(&src, &entries, &opts)?)
 }

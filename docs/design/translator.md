@@ -50,21 +50,34 @@ The IR keeps call and return explicit, because they map to wasm call and return:
 ## Lowering
 
 ### Registers and flags
-- Inside a wasm function, the 16 GPRs and the lazy flag record (`cc_op`, `cc_a`, `cc_b`, `cc_r`) live in locals, as in Phase 0.
-- At function entry (any entry) they are loaded from the state block.
-- At every boundary (call, return, tail transfer, unwind, exit) they are stored to the state block. After a call returns with `STATUS_RETURNED` they are reloaded, since the callee may have changed any of them.
-- M1 loads and stores all 20 values at every boundary. M6 narrows this with liveness (store only what was written since the last sync, reload only what is read before being written).
+- **In locals:** inside a wasm function, the 16 GPRs and the lazy flag record (`cc_op`, `cc_a`, `cc_b`, `cc_r`) live in locals. For syncing, the flag record is one value, so there are 17 values.
+- **The state block is the truth at every boundary** (call, return, tail transfer, unwind, exit, fault). When control leaves the function, every value whose local may differ from the state block has been stored.
+- **Since M6, an analysis decides what moves** (`sync.rs`):
+  - **Dirty set:** a forward may-analysis over the chunk.
+    - A write makes a value dirty: `SetReg`, a flag record, the implicit registers of `rep` string ops, or `pop` (a restore is not proved).
+    - Storing it makes it clean. Nothing is dirty at entry, and values reloaded after a call are clean.
+  - **Stores:**
+    - A call, return or tail transfer stores its dirty set inline.
+    - Cold leaves (exits, faults, probe misses, the depth guard's unwind) go through one shared epilogue and pass their own dirty set to it as a constant mask.
+    - A value outside the mask is never stored, so a stale local can't overwrite the state block, and cold paths force no reloads.
+  - **Loads at entry:** backward liveness over the chunk. A local indirect dispatch counts as an edge to every block, and the stores above count as uses.
+    - The **fast entry**, the guest function's own entry block in the chunk that holds it, loads the values live into that block.
+    - **Any other entry** loads the union of the values live into the chunk's blocks, so every block stays a valid entry.
+  - **Reload after a call:** after `STATUS_RETURNED`, the caller reloads the values that are live after the call and that the callee may change.
+    - That set, `MOD(callee)`, is a fixpoint over the module's direct calls and tail transfers.
+    - Indirect, probed (outside the module) and host targets may change everything.
+- **`Options::sync_all`** keeps M1's protocol as the reference mode for differential tests: load all 20 values at every entry, store them at every boundary, and reload them after every call.
 
 ### Direct call to a translated function
 ```text
 <ops: push return address>
-if depth >= CALL_DEPTH_LIMIT: store; state.rip = target; return UNWIND
-store
+if depth >= CALL_DEPTH_LIMIT: store dirty; state.rip = target; return UNWIND
+store dirty
 depth += 1
 status = call $g(state, entry_of(target), ret_addr)
 depth -= 1
 if status != RETURNED: return status         ; state already stored by the callee
-load
+reload live ∩ MOD(target)
 <continue at the return-site block>          ; usually the next block: a fall-through
 ```
 A direct call to an address outside the module probes the lookup table (`abi.md` v3) and becomes an indirect call through the shared table on a hit; on a miss it stores the state, sets `state.rip = target` and returns `UNWIND`.
@@ -79,21 +92,36 @@ The return address is already on the guest stack either way.
 ### Return
 ```text
 <ops: load return address into t, adjust RSP>
-store
+store dirty
 if t == ret: return RETURNED
 state.rip = t; return UNWIND
 ```
-In code: `rip = t; status = (t != ret)` (RETURNED is 0, UNWIND is 1), then the function's shared epilogue, which stores the registers and the flag record, and RIP unless the status is RETURNED. Unwinds and exits leave through the same epilogue; a chunk that never uses it doesn't get one.
+In code: `rip = t; status = (t != ret)` (RETURNED is 0, UNWIND is 1), then the function's shared epilogue, which stores the leave's dirty set (a constant mask), and RIP unless the status is RETURNED. Unwinds and exits leave through the same epilogue; a chunk that never uses it doesn't get one.
 `ret` is the function's third parameter, the address its wasm caller expects. Returns to anywhere else unwind to the trampoline, which resumes at the popped address through `lookup`. This keeps every unusual control flow correct: longjmp, C++ and SEH unwinding, return-address tricks, coroutines and stack switching. Only their speed changes.
 
 ### Jumps and branches
-- To a block of the same wasm function: forward `br`, backward `br` to the dispatch loop with the block index, a self-loop as its own `loop`. This is the Phase 0 scheme.
+- **To a block of the same wasm function (since M6, `emit/structure.rs`):** blocks are laid out by loop nesting.
+  - **Ordering:** each chunk's loop forest comes from recursive SCC decomposition of its CFG. Blocks are ordered as LLVM's CFGSort orders them: each loop's blocks are contiguous, with its header first.
+  - **Loops:** each loop is a wasm `loop` whose back edges are `br` to it. Forward edges are `br` out of enclosing `block`s, as in CFGStackify.
+  - **Entries into a loop's interior** (a generic entry, a return site whose frame is gone, an irreducible edge) set a selector local and enter at the loop's top. The top tests the selector and dispatches, so the normal path pays one compare per iteration. Nested loops dispatch level by level.
+  - **`$dispatch`** stays only for entries the structure can't reach otherwise. When nothing uses it, it is a plain block, so no function-wide loop keeps every local live.
+  - **`Options::structured = false`** keeps the Phase 0 scheme: forward `br`, backward `br` to the dispatch loop with the block index, and a self-loop as its own `loop`.
 - To a block of another wasm function: store, then `return_call $g(state, entry, ret)`. `ret` passes through unchanged, because the tail-called code returns to our caller.
 - To an address outside the module: probe the lookup table; a hit becomes `return_call_indirect`, a miss stores, sets `state.rip = target` and unwinds.
 - `Indirect(value)`: `lookup(value)`. A hit in the same chunk becomes a local dispatch; a hit elsewhere becomes `return_call_indirect`; a miss becomes `UNWIND`.
 
 ### Exits
 `Exit { reason, rip }`: store, `state.rip = rip`, `state.exit = reason`, return `EXIT`. Callers pass `EXIT` up untouched, and `run` materializes RFLAGS. The lifter produces `Exit` for unsupported instructions and for falling off the end of the region; a jump, call or return to an address without a block unwinds instead, and the trampoline's lookup miss then exits with `EXIT_LEFT_CODE`.
+
+### Memory checks (M6)
+Both checks are off by default. M6 measures their cost, which feeds `guest-memory.md`'s "Decision".
+- **`Options::null_check`:** before each guest memory access, `addr <u 0x10000` faults: `FaultIf` with `FAULT_READ` or `FAULT_WRITE` and the address. A read-modify-write faults as a write, as x86 reports it. The run then exits with `EXIT_FAULT`, and the state is as it was before the instruction.
+- **`Options::store_check`:** before each store, the page-state byte for `addr` (and for the last byte, when a store crosses a page) is tested against `PAGE_CODE | PAGE_WATCH` (`abi.md`, "Page-state table"). A hit exits with `EXIT_UNSUPPORTED` until code invalidation and write-watch exist (Phase 2).
+- **Emission (WP4b):** a check reuses the access's address (the same IR value, so the same local). A failing check branches to its chunk's one cold `$fault` block, passing only what differs per site: in the status local `offset << 2 | kind` (offset of the instruction from the chunk's lowest instruction address; kind 0 `FAULT_READ`, 1 `FAULT_WRITE`, 2 `EXIT_UNSUPPORTED`), the fault address in the scratch local and the dirty set in the mask local. `$fault` sets RIP, the exit and fault fields, and falls into the shared epilogue. A null check on an address known at translation time (an absolute or RIP-relative operand) is decided at translation time: no code at or above 0x10000, an unconditional fault below it.
+- **Placement:** the checks sit in the lifter's central load and store builders. They cover every access form: integer, SSE, x87, and `rep` string ranges (first and last byte). For the store check that leaves a gap: a range over three or more pages is not tested on the pages between. It must close before Phase 2 turns the checks on (`phase-1.md`, "Known issues"). They come before the instruction's first side effect.
+
+### Counters (M6)
+**`Options::counters`** adds 1 to a slot of the counter block (`abi.md`, "Counter block") at each counted event. The counters exist for measurement. Timed runs build without them.
 
 ### Call-depth guard
 Guest recursion maps onto the wasm stack, which is about 1 MB in V8 (less in some workers). The mutable global `depth` counts nested guest calls. Past `Options::call_depth_limit` (default below), a call stores the state, sets `rip` to the target and unwinds instead. The trampoline then runs the callee at depth 0, and its eventual return unwinds again and resumes the caller at its return site. Deep recursion costs speed, never a wasm stack overflow, which would lose the registers held in locals.

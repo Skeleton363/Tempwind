@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 
 pub use record::generated_inputs;
-pub use replay::{ReplayReport, Stats, replay_dir};
+pub use replay::{ReplayReport, Stats, replay_dir, replay_dir_with};
 
 /// Address of the code page holding the instruction under test.
 pub const CODE_ADDR: u64 = 0x10_0000;
@@ -54,9 +54,10 @@ pub fn record(check: bool) -> Result<()> {
     record::record(check)
 }
 
-/// `testkit replay`: replays every fixture and prints a summary per family.
-pub fn replay() -> Result<()> {
-    let report = replay_dir(&fixtures_dir())?;
+/// `testkit replay`: replays every fixture, translated with `opts`, and
+/// prints a summary per family.
+pub fn replay(opts: &x64wasm::Options) -> Result<()> {
+    let report = replay_dir_with(&fixtures_dir(), opts)?;
     print!("{}", report.render());
     if !report.ok() {
         let t = report.total();

@@ -791,6 +791,21 @@ pub enum Op {
     /// If `cond != 0`, the instruction faults with `kind` (EXIT_FAULT, RIP
     /// at the instruction, the state from before it).
     FaultIf { cond: Value, kind: u32 },
+    /// The M6 memory checks (`translator.md`, "Memory checks") of a guest
+    /// access of `len` bytes at `addr`, a store if `write`. With `null`,
+    /// `addr <u 0x10000` faults (FAULT_READ or FAULT_WRITE, the fault
+    /// address `addr`); with `code`, a page-state byte of the first or last
+    /// byte with PAGE_CODE or PAGE_WATCH exits with EXIT_UNSUPPORTED. Both
+    /// leave the state from before the instruction. With `when`, only if
+    /// `when != 0`.
+    MemCheck {
+        addr: Value,
+        len: u32,
+        write: bool,
+        null: bool,
+        code: bool,
+        when: Option<Value>,
+    },
     /// 128-by-64-bit division of `hi:lo` by `d` through the `div128`
     /// helper: quotient, remainder, and 1 in `fault` if `d` is 0 or the
     /// quotient doesn't fit in 64 bits (signed or unsigned).
@@ -1382,6 +1397,27 @@ impl fmt::Display for Op {
                 when_suffix(f, when, *live)
             }
             Op::FaultIf { cond, kind } => write!(f, "fault {kind} if {cond}"),
+            Op::MemCheck {
+                addr,
+                len,
+                write,
+                null,
+                code,
+                when,
+            } => {
+                let access = if *write { "write" } else { "read" };
+                write!(f, "check {access} {len} at {addr}")?;
+                if *null {
+                    write!(f, " null")?;
+                }
+                if *code {
+                    write!(f, " code")?;
+                }
+                if let Some(w) = when {
+                    write!(f, " if {w}")?;
+                }
+                Ok(())
+            }
             Op::DivWide {
                 q,
                 r,

@@ -12,6 +12,6 @@ disable-model-invocation: true
 5. In `docs/status/phase-1.md`, add or refresh a section `## Mn progress (paused YYYY-MM-DD)` with:
    - what is committed (commit ids, tests that pass);
    - what is in progress (agent, files, state);
-   - how to resume (the first command, which agent to message, open decisions).
+   - how to resume, written for a fresh session without this conversation: per track, its side branch and head, where its brief is (the decisions section), what is left, the first command. "Message agent X" is only a shortcut for the same session. Point at artifacts instead of repeating them.
 6. Commit that file by pathspec, then `git push` (plain).
-7. Report in a few lines: commits pushed, what is in progress, the resume step.
+7. Report in a few lines: commits pushed, what is in progress, the resume step. End with a starter message of at most 3 lines for a fresh session, pointing at that section (trial 3 in `docs/dev/agent-runs.md`).

@@ -66,6 +66,18 @@ export const TABLE_NAME = 'table';
 export const TABLE_BASE_NAME = 'table_base';
 export const LOOKUP_NAME = 'lookup';
 export const DEPTH_NAME = 'depth';
+// Optional (Options::counters): address of the counter block, an immutable i64.
+export const COUNTERS_NAME = 'counters';
+export const COUNTER_SLOTS = ['entries_fast', 'entries_generic', 'dispatches', 'local_indirect', 'calls_direct', 'calls_probed',
+  'tail_transfers', 'unwinds', 'values_stored', 'values_loaded', 'mem_loads', 'mem_stores'];
+export const COUNTERS_SIZE = 8 * COUNTER_SLOTS.length;
+// Optional (Options::store_check): address of the page-state table, an
+// immutable i64. One byte per 4 KiB page of the largest guest memory.
+export const PAGE_FLAGS_NAME = 'page_flags';
+export const PAGE_CODE = 1;
+export const PAGE_WATCH = 2;
+export const PAGE_FLAGS_SHIFT = 12n;
+export const PAGE_FLAGS_SIZE = MAX_MEMORY_PAGES * (PAGE_SIZE / 4096);
 
 // Lookup table: header at `env.lookup`, 16-byte slots (key u64, func u32, entry u32).
 export const LOOKUP_SLOTS = 0;
@@ -94,6 +106,12 @@ export const RT_REQ_ENTRY = 16;
 export const RT_REQ_KNOWN_PTR = 24;
 export const RT_REQ_KNOWN_LEN = 28;
 export const RT_REQ_FLAGS = 32;
+// Request flags: the translator options (Options::null_check, store_check, counters).
+export const RT_FLAG_NULL_CHECK = 1 << 0;
+export const RT_FLAG_STORE_CHECK = 1 << 1;
+export const RT_FLAG_COUNTERS = 1 << 2;
+export const RT_FLAG_SYNC_ALL = 1 << 3;
+export const RT_FLAG_REFERENCE_LAYOUT = 1 << 4;
 export const RT_RESULT_SIZE = 20;
 export const RT_RES_STATUS = 0;
 export const RT_RES_WASM_PTR = 4;

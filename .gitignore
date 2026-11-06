@@ -4,3 +4,6 @@ node_modules/
 /playwright-report/
 /native/spike/out/
 .DS_Store
+
+# Agent worktrees (Agent tool isolation)
+.claude/worktrees/

@@ -21,12 +21,14 @@ import { Process } from '../../../runtime/src/process.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../../..');
 const args = process.argv.slice(2);
-const VALUED = ['--runs', '--configs', '--out', '--child'];
+const VALUED = ['--runs', '--configs', '--out', '--child', '--translate-flags'];
 const opt = (name, dflt) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : dflt; };
 const positional = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]));
 const runs = Number(opt('--runs', 3));
 const out = resolve(opt('--out', join(root, 'target/bench/images')));
 const exes = (positional.length ? positional : ['target/targets/7zz.exe', 'target/targets/coremark.exe']).map((p) => resolve(root, p));
+const translateFlags = opt('--translate-flags', '').split(/\s+/).filter(Boolean);
+const FP = join(root, 'target/wasm32-unknown-unknown/release/x64wasm_fp.wasm');
 const stem = (exe) => basename(exe).replace(/\.exe$/i, '');
 
 const CONFIGS = {
@@ -39,6 +41,7 @@ const now = () => performance.now();
 
 if (args.includes('--child')) {
   const res = [];
+  const fp = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(FP)), {}).exports; // (loadFp's async compile never settles under --no-wasm-lazy-compilation) // images with `fp` imports need the helper module
   for (const exe of exes) {
     const wasm = new Uint8Array(readFileSync(join(out, `${stem(exe)}.wasm`)));
     const plan = JSON.parse(readFileSync(join(out, `${stem(exe)}.plan.json`), 'utf8'));
@@ -50,7 +53,7 @@ if (args.includes('--child')) {
       const t0 = now();
       const module = new WebAssembly.Module(fresh);
       compile.push(now() - t0);
-      const p = await Process.load({ exe: bytes, plan, aot: module });
+      const p = await Process.load({ exe: bytes, plan, aot: module, fp });
       link.push(p.timings.link);
       info = { chunks: p.aot.chunks, blocks: p.aot.blocks };
     }
@@ -63,7 +66,7 @@ if (args.includes('--child')) {
 if (!args.includes('--no-translate')) {
   for (const exe of exes) {
     if (!existsSync(exe)) { console.error(`missing ${exe}; fetch it with scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" ${basename(exe)} target/targets`); process.exit(1); }
-    const r = spawnSync('cargo', ['run', '-q', '-p', 'x64wasm-cli', '--release', '--', 'translate-pe', exe, '--out-dir', out, '--entries', 'all'], { cwd: root, encoding: 'utf8' });
+    const r = spawnSync('cargo', ['run', '-q', '-p', 'x64wasm-cli', '--release', '--', 'translate-pe', exe, '--out-dir', out, '--entries', 'all', ...translateFlags], { cwd: root, encoding: 'utf8' });
     if (r.status !== 0) { console.error(r.stdout, r.stderr); process.exit(1); }
     console.log(r.stdout.trim());
   }
