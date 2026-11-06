@@ -119,6 +119,14 @@ const G_LOOKUP: u32 = 1;
 const G_DEPTH: u32 = 2;
 /// Present with `Options::counters`, after `depth`.
 const G_COUNTERS: u32 = 3;
+/// The kinds a memory check's site passes to `$fault` (low two bits of
+/// the status local): `FAULT_READ`, `FAULT_WRITE` (as `FAULT_READ` + the
+/// kind) and `EXIT_UNSUPPORTED`.
+const SITE_READ: u32 = 0;
+const SITE_WRITE: u32 = 1;
+const SITE_UNSUPPORTED: u32 = 2;
+const _: () = assert!(abi::FAULT_WRITE == abi::FAULT_READ + SITE_WRITE);
+
 /// Present with `Options::store_check`, after `counters` if present.
 const fn g_page_flags(counters: bool) -> u32 {
     G_COUNTERS + counters as u32
@@ -151,6 +159,8 @@ fn mem(offset: u64) -> MemArg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Label {
     Leave,
+    /// The shared cold exit of the memory checks, inside `$leave`.
+    Fault,
     Dispatch,
     Block(usize),
     Miss,
@@ -226,6 +236,11 @@ struct ChunkEmitter<'p> {
     /// The selector local (layout position + 1; 0 is `structure::NONE`),
     /// present when some loop has an interior.
     l_sel: Option<u32>,
+    /// The chunk has memory checks, which branch to its `$fault` block.
+    has_fault: bool,
+    /// The address check sites pass as an offset (the chunk's lowest
+    /// instruction address).
+    site_base: u64,
 }
 
 impl ChunkEmitter<'_> {
@@ -234,10 +249,12 @@ impl ChunkEmitter<'_> {
         // Block(N-1) .. Block(0), Miss); only the few labels inside a block
         // are searched.
         let n = self.blocks.len();
+        let outer = 1 + usize::from(self.has_fault);
         let pos = match label {
             Label::Leave => 0,
-            Label::Dispatch => 1,
-            Label::Block(j) => 2 + (n - 1 - j),
+            Label::Fault if self.has_fault => 1,
+            Label::Dispatch => outer,
+            Label::Block(j) => outer + 1 + (n - 1 - j),
             _ => self
                 .labels
                 .iter()
@@ -697,6 +714,66 @@ impl ChunkEmitter<'_> {
         self.exit(f, abi::EXIT_FAULT, rip);
     }
 
+    /// A memory check's exit: branches to the chunk's `$fault` block with
+    /// what differs per site. The status local carries the kind and the
+    /// instruction's offset from `site_base` (`offset << 2 | kind`), the
+    /// scratch local the fault address, and the mask local the dirty set.
+    fn fault_site(&mut self, f: &mut InstructionSink<'_>, kind: u32, addr: Value) {
+        if kind != SITE_UNSUPPORTED {
+            self.value(f, addr);
+            f.local_set(L_SCRATCH);
+        }
+        let off = self.cur_addr - self.site_base;
+        let site = u32::try_from(off << 2 | u64::from(kind))
+            .ok()
+            .filter(|&s| s <= i32::MAX as u32)
+            .expect("a chunk spans less than 512 MiB");
+        f.i32_const(site as i32);
+        f.local_set(self.l_status);
+        self.leave_used = true;
+        self.leave_masks.push(self.dirty);
+        if let Some(l) = self.l_mask {
+            f.i32_const(self.dirty as i32);
+            f.local_set(l);
+        }
+        f.br(self.depth(Label::Fault));
+    }
+
+    /// The `$fault` block's code, reached from [`Self::fault_site`]: sets
+    /// RIP, the exit reason and (for a fault) its kind and address, then
+    /// falls through to the epilogue with `STATUS_EXIT`.
+    fn fault_block(&mut self, f: &mut InstructionSink<'_>) {
+        f.local_get(self.l_status);
+        f.i32_const(2);
+        f.i32_shr_u();
+        f.i64_extend_i32_u();
+        f.i64_const(self.site_base as i64);
+        f.i64_add();
+        f.local_set(L_RIP);
+        f.local_get(P_STATE);
+        f.local_get(self.l_status);
+        f.i32_const(SITE_UNSUPPORTED as i32);
+        f.i32_and();
+        f.if_(BlockType::Result(ValType::I32));
+        f.i32_const(abi::EXIT_UNSUPPORTED as i32);
+        f.else_();
+        f.local_get(P_STATE);
+        f.local_get(self.l_status);
+        f.i32_const(1);
+        f.i32_and();
+        f.i32_const(abi::FAULT_READ as i32);
+        f.i32_add();
+        f.i32_store(mem(abi::STATE_FAULT_KIND));
+        f.local_get(P_STATE);
+        f.local_get(L_SCRATCH);
+        f.i64_store(mem(abi::STATE_FAULT_ADDR));
+        f.i32_const(abi::EXIT_FAULT as i32);
+        f.end();
+        f.i32_store(mem(abi::STATE_EXIT));
+        f.i32_const(abi::STATUS_EXIT);
+        f.local_set(self.l_status);
+    }
+
     /// Pushes the page-state byte (i32) of the page holding `addr + off`.
     fn page_flags(&mut self, f: &mut InstructionSink<'_>, addr: Value, off: u64) {
         f.global_get(g_page_flags(self.counters));
@@ -731,20 +808,22 @@ impl ChunkEmitter<'_> {
             f.if_(BlockType::Empty);
             self.labels.push(Label::If);
         }
-        if null {
-            self.value(f, addr);
-            f.i64_const(abi::NULL_LIMIT as i64);
-            f.i64_lt_u();
-            f.if_(BlockType::Empty);
-            self.labels.push(Label::If);
-            let kind = if write {
-                abi::FAULT_WRITE
-            } else {
-                abi::FAULT_READ
-            };
-            self.fault_at(f, kind, self.cur_addr, addr);
-            f.end();
-            self.labels.pop();
+        let kind = if write { SITE_WRITE } else { SITE_READ };
+        match addr {
+            // Known at translation time: no test.
+            Value::Imm(a) if null && a < abi::NULL_LIMIT => self.fault_site(f, kind, addr),
+            Value::Imm(_) => {}
+            _ if null => {
+                self.value(f, addr);
+                f.i64_const(abi::NULL_LIMIT as i64);
+                f.i64_lt_u();
+                f.if_(BlockType::Empty);
+                self.labels.push(Label::If);
+                self.fault_site(f, kind, addr);
+                f.end();
+                self.labels.pop();
+            }
+            _ => {}
         }
         if code {
             self.page_flags(f, addr, 0);
@@ -756,7 +835,7 @@ impl ChunkEmitter<'_> {
             f.i32_and();
             f.if_(BlockType::Empty);
             self.labels.push(Label::If);
-            self.exit(f, abi::EXIT_UNSUPPORTED, self.cur_addr);
+            self.fault_site(f, SITE_UNSUPPORTED, Value::Imm(0));
             f.end();
             self.labels.pop();
         }
@@ -1213,11 +1292,20 @@ impl ChunkEmitter<'_> {
 
         f.block(BlockType::Empty);
         self.labels.push(Label::Leave);
+        if self.has_fault {
+            f.block(BlockType::Empty);
+            self.labels.push(Label::Fault);
+        }
         match self.plan {
             Some(plan) => self.structured(f, plan),
             None => self.flat(f),
         }
         f.unreachable();
+        if self.has_fault {
+            f.end(); // fault block
+            self.labels.pop();
+            self.fault_block(f);
+        }
         f.end(); // leave block
         self.labels.pop();
         if !self.leave_used {
@@ -1878,6 +1966,10 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
                 .flat_map(|&b| prog.blocks[b].insns.iter())
         };
         let t = insns().map(|i| i.temps).max().unwrap_or(0);
+        let has_fault = insns()
+            .flat_map(|i| i.ops.iter())
+            .any(|o| matches!(o, Op::MemCheck { .. }));
+        let site_base = insns().map(|i| i.addr).min().unwrap_or(0);
         let vt = insns().map(|i| i.vtemps).max().unwrap_or(0);
         let uses_fp = insns().flat_map(|i| i.ops.iter()).any(Op::is_fp);
         let uses_x87 = insns()
@@ -1955,6 +2047,8 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
             plan: plan.as_ref(),
             plan_labels: Vec::new(),
             l_sel,
+            has_fault,
+            site_base,
         };
         emitter.body(&mut func.instructions());
         code.function(&func);
