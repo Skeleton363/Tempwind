@@ -5,7 +5,7 @@
 
 import {
   PAGE_SIZE, STATE_RIP, STATE_RFLAGS, STATE_EXIT, STATE_SIZE, STATE_GS_BASE, STATE_FS_BASE,
-  STATE_FAULT_ADDR, STATE_FAULT_KIND, EXIT_LEFT_CODE, EXIT_UNSUPPORTED, EXIT_FAULT, EXIT_HOST,
+  STATE_FAULT_ADDR, STATE_FAULT_KIND, EXIT_LEFT_CODE, EXIT_UNSUPPORTED, EXIT_FAULT, EXIT_HOST, PAGE_CODE,
   FAULT_READ, FAULT_WRITE, FAULT_EXECUTE, SENTINEL_RET, LOOKUP_HEADER_ADDR, MAIN_STATE_ADDR,
   THUNK_BASE, THUNK_SIZE, THUNK_BYTES, HOST_FUNC_INDEX, MAX_THUNKS, MIN_LOOKUP_SLOTS, LOOKUP_SLOT_SIZE,
   PEB_ADDR, TEB_ADDR, PROCESS_ID, THREAD_ID, RFLAGS_INIT, GUEST_CALL_FRAME, DLL_PROCESS_ATTACH,
@@ -146,6 +146,10 @@ export class Process {
       alloc: (size, align) => this.runtimeHeap.alloc(size, align),
       fp: this.fp,
     });
+    // The store check (abi.md, "Page-state table"): the image's code pages.
+    this.linker.onPageFlags = (linker) => {
+      for (const s of this.plan.sections) if (s.executable) linker.setPageFlags(s.va, s.mappedSize, PAGE_CODE);
+    };
     this.imports = imports.map((f, id) => ({ ...f, thunk: THUNK_BASE + THUNK_SIZE * BigInt(id), impl: findShim(f.dll, f.name, this.shim) }));
     const hostCall = makeHostCall({
       mem: this.mem,
@@ -434,7 +438,8 @@ export class Process {
         if (executableSection(this.plan, rip)) return { translate: rip };
         throw new ProcessError(`fault: execute at ${hex(rip)}`);
       case EXIT_UNSUPPORTED:
-        throw new ProcessError(`unsupported instruction at ${hex(rip)} (bytes ${this.codeBytes(rip)})`);
+        throw new ProcessError(`unsupported instruction at ${hex(rip)} (bytes ${this.codeBytes(rip)})${
+          this.linker.pageFlagsAddr === null ? '' : ', or a store into a code or write-watched page (store check)'}`);
       case EXIT_HOST: {
         const stop = this.stop;
         this.stop = null;
