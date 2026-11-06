@@ -250,7 +250,7 @@ impl Host {
         let fp = fp_funcs(&mut store);
         let pages = memory_bytes.div_ceil(PAGE).max(1);
         let page_flags = pages * PAGE;
-        let flag_pages = (pages * PAGE >> abi::PAGE_FLAGS_SHIFT).div_ceil(PAGE);
+        let flag_pages = ((pages * PAGE) >> abi::PAGE_FLAGS_SHIFT).div_ceil(PAGE);
         let lookup = (pages + flag_pages) * PAGE;
         let memory = Memory::new(&mut store, MemoryType::new64(pages + flag_pages + 1, None))?;
         let table = Table::new(

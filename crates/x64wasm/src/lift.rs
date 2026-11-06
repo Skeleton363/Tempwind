@@ -347,7 +347,14 @@ pub fn lift_regions(
     entries: &[u64],
     want_text: bool,
 ) -> Result<Program, Error> {
-    lift_impl(regions, regions, known, entries, want_text, Checks::default())
+    lift_impl(
+        regions,
+        regions,
+        known,
+        entries,
+        want_text,
+        Checks::default(),
+    )
 }
 
 fn lift_impl(

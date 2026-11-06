@@ -259,6 +259,13 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
   - the fast entry loads live-in of the function's entry block. Any other entry also loads the rest of the chunk's union inside `if entry != own`;
   - `sync_all` produces byte-identical output to `a745ad6` (checked on 7zz.exe and coremark.exe with counters on and off and three depth limits, and on every spike case);
   - `values_*` count locals (the flag record is four), so they compare with WP1's 20 per sync.
+- **WP4 as built** (`lift/lower.rs`, `lift/string.rs`, `lift/sse.rs`, `lift/x87.rs`, `ir.rs`, `sync.rs`, `emit.rs`; runtime `link.mjs`, `process.mjs`):
+  - one IR op, `MemCheck { addr, len, write, null, code, when }`, inserted by the lifter's `load`/`store`, `vload`/`vstore` (memory), `x87_op` (memory operands) and the string instructions. `op_effect` gives it its address uses and `may_leave`;
+  - a check goes before the instruction's first side effect: an access after one (the store of a read-modify-write, after its flag record) is inserted there and merges into the check of the same bytes. So `add [rbx], rcx` at NULL faults as a read, as the CPU's first access would. The lifter asserts that the address was computed before the side effect. `fnstenv` checks its m28 once and stores unchecked;
+  - the store check tests the page byte of the first and the last byte (two `load8_u`, or'ed) for every store wider than a byte;
+  - `rep movs`/`stos`/`lods` check the first and the last element (`ptr + (RCX - 1) * delta`), only if RCX != 0. `repe`/`repne` `cmps`/`scas` check only the first, since they may stop early (`repne scasb` with RCX = -1 is the strlen idiom). A string fault comes before any iteration;
+  - the runtime allocates the page-state table (4 MiB, for the 16 GiB maximum) from the runtime heap only when a module imports `env.page_flags`, and marks the executable sections PAGE_CODE. A store-check hit stops with "unsupported instruction …, or a store into a code or write-watched page (store check)";
+  - **not covered:** run-time translations (`x64wasm-rt`) still use the default options, so code they translate has no checks (its request `flags` must be 0). Accesses the runtime makes for host calls are not checked either.
 - **Loop structuring (WP3, deep-worker):**
   - loop forests by recursive SCC decomposition (Tarjan, `func.rs`), ordered as LLVM's CFGSort does and emitted as CFGStackify does, with one wasm `loop` per loop;
   - a selector local for entries into a loop's interior;
@@ -608,6 +615,19 @@ Reading:
 - **Values moved per call drop from 80 to about 35.** Loads fall more than stores. Most of what is still stored is the flag record (four locals, dirty after almost every instruction) and callee-saved registers restored with `pop`, which the analysis counts as writes.
 - **CoreMark gains 8.8 %; 7z b stays within noise** (three runs of three on each side, alternating; +1 % at most). 7z spends its time in loops (1.8 G dispatches against 143 M calls), and two calls in three are probed, so MOD there is "all". That points at WP3 (loop structuring) for 7z.
 - Neither timing was repeated at other guest base addresses.
+
+### WP4 (M6, memory checks; preliminary)
+
+One run of each, on `74f0308` (WP2 code plus WP4, before WP3b), `tests/bench/coremark.mjs --runs 1` and `tests/bench/sevenzip.mjs --runs 1`, `--skip-native`, Xeon @ 2.10 GHz, Node 24.22.0. Every run validated. The final numbers are WP5's (5 interleaved runs each, on the final code).
+
+| Variant | CoreMark (it/s) | 7z b (MIPS) | coremark.wasm (bytes) | 7zz.wasm (bytes) |
+|---|---|---|---|---|
+| none | 9,621 | 2,152 | 366,247 | 20,615,016 |
+| `null_check` | 8,200 | 1,766 | 552,072 | 33,384,535 |
+| `store_check` | 7,809 | 1,643 | 457,531 | 26,803,555 |
+| both | 7,430 | 1,536 | 637,828 | 39,212,596 |
+
+Reading (single runs, so only the size of the effect): both checks cost about 23 % on CoreMark and 29 % on 7z b, and the modules grow by 74 % and 90 %. Each check site inlines its own cold exit (the state stores of a fault or an exit), which is most of the growth; a shared exit per chunk would shrink it. With both checks on, the spike sweep, basic.exe, the four L2 programs, CoreMark, 7z b and the translated 7-Zip matrix give the same results.
 
 ## Known issues and risks
 
