@@ -1,28 +1,28 @@
 # Agent runs: cost and quality ledger
 
-We judge workflow decisions (effort levels, caps, agent rules) by data, at almost no token cost. Every number here is one the harness already reports.
+We judge workflow decisions (effort levels, caps, agent rules) by data, at almost no token cost: the numbers come from files the harness already writes.
 
 ## What is recorded
 
-**`agent-runs.jsonl`** gets one line per finished agent run. The coordinator writes it from the run's completion notice.
-- **From the notice:**
-  - `tokens`: the harness's subagent token count;
-  - `tool_uses`;
-  - `minutes`.
-- **The run's setup:** date, milestone, task, agent, model and effort.
-- **`resume`:** true when the line continues an earlier run. Notices report running totals, so a resume's line records the increment.
+**`agent-runs.jsonl`** gets one line per agent run, a run's resumes included. The coordinator writes it when the run finishes, with `node scripts/agent-usage.mjs --agent ID --json`. The script sums the usage of every request in the run's transcript (`~/.claude/projects/<project>/<session>/subagents/`). Transcripts live only as long as the container, so the line is written at once.
+- **Usage:**
+  - `requests`, `input`, `cache_write`, `cache_read` and `output`;
+  - `index`: the cost in the model's input-token equivalents (cache writes 1.25, cache reads 0.1, output 5). Compare it within a model.
+- **The run's setup:** date, milestone, task, agent, model (the one that served the requests) and effort.
 - **Quality:**
   - `rework`: follow-up messages needed before the result passed the coordinator's verification (0 means right the first time);
   - `findings`: valid review findings in the run's own diff, filled in at milestone close-out.
 - **`kind`** (optional): `"diverge"` for a bug hunt run through `/diverge` (trial 5).
 
+**Not a cost measure:** the token count in a completion notice. It is the context size of the run's last request. It fell from 172,549 to 158,912 between two notices of one run, and WP4's 161,269 hid 44.2M cache-read tokens. Cache reads, the context re-read at every request, are most of a run's cost. Until 2026-11-06 the ledger recorded the notice's count; on that day every line was rebuilt from the transcripts (`source: transcript`), keeping the quality fields and the efforts that were recorded.
+
 **The main session** gets a `main` line at each milestone's start and end, from `get_session`: the cumulative `cost_usd`, `output_tokens` and `cache_read_tokens`. The difference between two lines is that stretch's usage.
 
-**The baseline** comes from the session history for M1 to M5 (34 runs, `source: backfill`). Effort before 2026-10-31 was not recorded.
+**Effort** is `unrecorded` before 2026-10-31, when the agent definitions got their efforts.
 
 ## Reading it
 
-`node scripts/agent-stats.mjs [--milestone M6]` prints, per agent and effort, the runs, median tokens, tokens per tool use, rework and findings, then the main session's usage between snapshots.
+`node scripts/agent-stats.mjs [--milestone M6]` prints, per agent, model and effort, the runs, the median index and requests, the index per request, rework and findings, then the main session's usage between snapshots.
 
 ## How we judge a change
 - **Every workflow change is a trial.** It records:
@@ -51,9 +51,9 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 | Change | Where | Measure | Kept if |
 |---|---|---|---|
 | At most 3 subagents at once, none spawning its own | `.claude/settings.json` `env` | "limit reached" refusals | it never blocks planned work |
-| Subagents that name no effort (Plan, general-purpose reviewers) run at `high`, not the session's `max` | `CLAUDE_CODE_SUBAGENT_EFFORT` | tokens per review or plan, against the baseline (306k and 314k at `max`) | tokens fall, and the close-out reviews still find the real defects (none escapes to CI or later) |
-| deep-worker at `medium` for M6's WP3a and WP4; `high` for WP2 and WP3b | the Agent tool's `effort` per spawn | tokens per tool use, rework, findings | `medium` uses at least 25 % fewer tokens with no more rework or findings; it then becomes the default for Phase 2 |
-| Read a file once; wait on backgrounded commands | builder and deep-worker fixed rules | tokens per tool use, against the baseline | no measured harm |
+| Subagents that name no effort (Plan, general-purpose reviewers) run at `high`, not the session's `max` | `CLAUDE_CODE_SUBAGENT_EFFORT` | `index` per review or plan, against the baseline at `max` (Plan 2.06M, the M5 spec review 2.57M) | tokens fall, and the close-out reviews still find the real defects (none escapes to CI or later) |
+| deep-worker at `medium` for M6's WP3a and WP4; `high` for WP2 and WP3b | the Agent tool's `effort` per spawn | `index` per run and per request, rework, findings | `medium` costs at least 25 % less (`index`) with no more rework or findings; it then becomes the default for Phase 2 |
+| Read a file once; wait on backgrounded commands | builder and deep-worker fixed rules | `index` per request, against the baseline | no measured harm |
 
 **Decision rule:** samples are small, so only large effects count: 20-25 % or more in tokens. Any rise in rework, findings or escalations ("retry one tier up") counts against a change.
 
