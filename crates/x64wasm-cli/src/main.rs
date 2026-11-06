@@ -201,13 +201,15 @@ fn translate_pe(file: &Path, out_dir: &Path, entries: Entries, extra: &Extra) ->
         .file_stem()
         .and_then(|n| n.to_str())
         .context("file name is not UTF-8")?;
-    let plan = LoadPlan::from_pe(&pe, name).context("building the load plan")?;
+    let mut plan = LoadPlan::from_pe(&pe, name).context("building the load plan")?;
+    let opts = extra.apply(Options::default());
+    plan.options = (&opts).into();
     let start = Instant::now();
     let set = match entries {
         Entries::All => EntrySet::All,
         Entries::Entry => EntrySet::EntryPoint,
     };
-    let t = image::translate(&pe, set, &extra.apply(Options::default())).context("translating")?;
+    let t = image::translate(&pe, set, &opts).context("translating")?;
     let ms = start.elapsed().as_secs_f64() * 1e3;
     validate(&t.wasm)?;
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;

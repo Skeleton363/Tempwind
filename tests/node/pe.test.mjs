@@ -71,6 +71,24 @@ test('basic.exe built with --null-check --store-check: the same output (no false
   assert.equal(r.status, EXIT_CODE);
 });
 
+test('basic.exe with --null-check --store-check: `hidden` is translated at run time with the plan\'s checks', async () => {
+  const { aot, plan } = inputs('checks');
+  const json = JSON.parse(readFileSync(plan, 'utf8'));
+  assert.deepEqual(json.options, { nullCheck: true, storeCheck: true, counters: false });
+  const rt = await RuntimeTranslator.load(readFileSync(RT));
+  const modules = [];
+  const translate = rt.translate.bind(rt);
+  rt.translate = (req) => { const wasm = translate(req); modules.push(wasm); return wasm; };
+  const p = await Process.load({ exe: new Uint8Array(readFileSync(EXE)), plan: json, aot: readFileSync(aot), rt });
+  assert.equal(await p.start(), EXIT_CODE);
+  assert.deepEqual(Buffer.from(p.captured('stdout')), expected);
+  assert.ok(modules.length >= 1, 'a run-time translation');
+  for (const wasm of modules) {
+    const imports = WebAssembly.Module.imports(new WebAssembly.Module(wasm)).map((i) => `${i.module}.${i.name}`);
+    assert.ok(imports.includes('env.page_flags'), `the run-time module has the store check: ${imports}`);
+  }
+});
+
 test('basic.exe built with --counters: TEMPWIND_TRACE=counts reports the block and host calls', () => {
   const { aot, plan } = inputs('counters');
   const r = spawnSync(process.execPath, [CLI, '--exe', EXE, '--aot', aot, '--plan', plan, '--rt', RT], {

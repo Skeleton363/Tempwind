@@ -682,6 +682,7 @@ fn load_plan_follows_the_runtime_schema() {
             "callbacks": ["0x140001040", "0x140001050"],
         },
         "hasRelocations": true,
+        "options": { "nullCheck": false, "storeCheck": false, "counters": false },
     });
     assert_eq!(got, want);
 

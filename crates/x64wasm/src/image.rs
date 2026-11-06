@@ -78,6 +78,28 @@ pub struct LoadPlan {
     pub imports: Vec<PlanDll>,
     pub tls: Option<PlanTls>,
     pub has_relocations: bool,
+    /// The options the module was translated with that change what the
+    /// code does at run time (`runtime.md`, "Load plan").
+    pub options: PlanOptions,
+}
+
+/// A load plan's `options`: passed as the run-time translator's request
+/// flags (`abi.md`, "Request").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlanOptions {
+    pub null_check: bool,
+    pub store_check: bool,
+    pub counters: bool,
+}
+
+impl From<&Options> for PlanOptions {
+    fn from(o: &Options) -> PlanOptions {
+        PlanOptions {
+            null_check: o.null_check,
+            store_check: o.store_check,
+            counters: o.counters,
+        }
+    }
 }
 
 /// Version of the load plan format.
@@ -140,6 +162,7 @@ impl LoadPlan {
             has_relocations: reloc.rva != 0
                 && reloc.size != 0
                 && pe.characteristics & FILE_RELOCS_STRIPPED == 0,
+            options: PlanOptions::default(),
         })
     }
 
@@ -216,7 +239,17 @@ impl LoadPlan {
                 )?;
             }
         }
-        writeln!(o, "  \"hasRelocations\": {}", self.has_relocations)?;
+        writeln!(o, "  \"hasRelocations\": {},", self.has_relocations)?;
+        let PlanOptions {
+            null_check,
+            store_check,
+            counters,
+        } = self.options;
+        writeln!(
+            o,
+            "  \"options\": {{ \"nullCheck\": {null_check}, \"storeCheck\": {store_check}, \
+             \"counters\": {counters} }}"
+        )?;
         writeln!(o, "}}")
     }
 }

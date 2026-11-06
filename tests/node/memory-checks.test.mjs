@@ -13,6 +13,7 @@ import {
   MAIN_STATE_ADDR, MEMORY_MODULE, COUNTERS_NAME, PAGE_FLAGS_NAME, PAGE_CODE,
 } from '../../runtime/src/abi.mjs';
 import { Process, ProcessError } from '../../runtime/src/process.mjs';
+import { RuntimeTranslator } from '../../runtime/src/rt.mjs';
 import { fakeExe, fakePlan, TEXT, DATA } from './pe-fixture.mjs';
 
 const root = new URL('../../', import.meta.url).pathname;
@@ -81,4 +82,33 @@ test('imports: env.page_flags only with --store-check, neither global without th
   assert.deepEqual(globals(['--null-check']), []);
   assert.deepEqual(globals(['--store-check']), [PAGE_FLAGS_NAME]);
   assert.deepEqual(globals(['--counters', ...BOTH]), [COUNTERS_NAME, PAGE_FLAGS_NAME]);
+});
+
+// Run-time translation with the image's options (runtime.md, "Load plan"; abi.md, "Request").
+const RT = `${root}target/wasm32-unknown-unknown/release/x64wasm_rt.wasm`;
+
+/**
+ * lea rax, [rip + 3]; call rax; ret / (.text + 10) mov rax, [8]; ret: the read is
+ * reachable only through the computed pointer, so it is translated at run time.
+ */
+async function loadHidden(flags, options) {
+  assert.ok(existsSync(RT), `${RT} is missing. Build it with: tests/pe/prepare.sh`);
+  const exe = fakeExe();
+  exe.set(hexBytes('488d0503000000 ffd0 c3 488b042508000000 c3'), 0x400);
+  const plan = await fakePlan(exe, (json) => { if (options) json.options = options; });
+  const p = await Process.load({ exe, plan, aot: translate('488d0503000000 ffd0 c3', flags), rt: await RuntimeTranslator.load(readFileSync(RT)) });
+  return p;
+}
+
+test('run-time-translated code with the plan\'s checks faults on NULL like AOT code', async () => {
+  const p = await loadHidden(BOTH, { nullCheck: true, storeCheck: true, counters: false });
+  await assert.rejects(p.start(), new ProcessError('fault: read at 0x8 (rip 0x14000100a)'));
+  assert.deepEqual(state(p), { exit: EXIT_FAULT, kind: FAULT_READ, addr: 8n });
+  assert.equal(p.translations, 1, 'the read was translated at run time');
+});
+
+test('without the plan\'s options, run-time-translated code has no checks', async () => {
+  const p = await loadHidden([], undefined);
+  await p.start();
+  assert.equal(p.translations, 1);
 });

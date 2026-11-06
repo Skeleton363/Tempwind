@@ -14,6 +14,7 @@ import {
   TEB_TLS_POINTER, TEB_PEB, PEB_BEING_DEBUGGED, PEB_IMAGE_BASE, PEB_NUMBER_OF_PROCESSORS,
   PEB_OS_MAJOR, PEB_OS_MINOR, PEB_OS_BUILD, PEB_OS_PLATFORM_ID, OS_VERSION, gprOffset,
   DLL_THREAD_ATTACH, DLL_THREAD_DETACH, TEB_SIZE, STACK_ALIGN, COUNTER_SLOTS,
+  RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_FLAG_COUNTERS,
 } from './abi.mjs';
 import { createMemory64 } from './memory.mjs';
 import { GuestMemory } from './guest-memory.mjs';
@@ -540,7 +541,10 @@ export class Process {
     if (!this.rt) throw new ProcessError(`no translated code at ${hex(rip)} and no run-time translator loaded`);
     const s = executableSection(this.plan, rip);
     try {
-      return this.rt.translate({ codeBase: s.va, code: this.mem.read(s.va, Number(s.mappedSize)), entry: rip, known: this.linker.sortedKeys() });
+      // The image's options (the plan's `options`): the same checks and counters as the AOT module.
+      const o = this.plan.options;
+      const flags = (o.nullCheck ? RT_FLAG_NULL_CHECK : 0) | (o.storeCheck ? RT_FLAG_STORE_CHECK : 0) | (o.counters ? RT_FLAG_COUNTERS : 0);
+      return this.rt.translate({ codeBase: s.va, code: this.mem.read(s.va, Number(s.mappedSize)), entry: rip, known: this.linker.sortedKeys(), flags });
     } catch (e) {
       throw new ProcessError(`run-time translation at ${hex(rip)}: ${e.message}`);
     }

@@ -93,3 +93,44 @@ fn writes_module_and_plan() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("parsing"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The plan's `options` name the options the module was translated with
+/// (`runtime.md`, "Load plan"), which the runtime passes on to the
+/// run-time translator.
+#[test]
+fn plan_records_the_options() {
+    let dir = std::env::temp_dir().join(format!("x64wasm-plan-options-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("tiny.exe");
+    std::fs::write(&exe, minimal_image()).unwrap();
+    let cases: [(&[&str], [bool; 3]); 3] = [
+        (&[], [false, false, false]),
+        (&["--null-check", "--counters"], [true, false, true]),
+        (&["--store-check"], [false, true, false]),
+    ];
+    for (flags, [null_check, store, counters]) in cases {
+        let out_dir = dir.join(format!("out{}", flags.join("")));
+        let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
+            .arg("translate-pe")
+            .arg(&exe)
+            .arg("--out-dir")
+            .arg(&out_dir)
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let plan: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out_dir.join("tiny.plan.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            plan["options"],
+            serde_json::json!({ "nullCheck": null_check, "storeCheck": store, "counters": counters }),
+            "{flags:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

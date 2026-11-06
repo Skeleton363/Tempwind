@@ -40,11 +40,10 @@ pub struct Options {
     pub call_depth_limit: Option<u32>,
     /// Reference mode for M6's liveness-based sync: load, store and reload all
     /// 20 values at every boundary, as in M1-M5 (`translator.md`, "Registers
-    /// and flags"). For differential tests. No effect until WP2 lands.
+    /// and flags"). For differential tests.
     pub sync_all: bool,
     /// Lay blocks out by loop nesting (`translator.md`, "Jumps and branches").
-    /// `false` keeps the Phase 0 dispatch layout, as a reference mode. No
-    /// effect until WP3 lands.
+    /// `false` keeps the Phase 0 dispatch layout, as a reference mode.
     pub structured: bool,
     /// Count events in the counter block (`abi.md`, "Counter block"); the
     /// module then imports `env.counters`. For measurement only.

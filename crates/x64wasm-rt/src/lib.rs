@@ -10,8 +10,9 @@
 //! with a message.
 
 use x64wasm::abi::{
-    RT_REQ_CODE_BASE, RT_REQ_CODE_LEN, RT_REQ_CODE_PTR, RT_REQ_ENTRY, RT_REQ_FLAGS,
-    RT_REQ_KNOWN_LEN, RT_REQ_KNOWN_PTR, RT_REQUEST_SIZE,
+    RT_FLAG_COUNTERS, RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_REQ_CODE_BASE, RT_REQ_CODE_LEN,
+    RT_REQ_CODE_PTR, RT_REQ_ENTRY, RT_REQ_FLAGS, RT_REQ_KNOWN_LEN, RT_REQ_KNOWN_PTR,
+    RT_REQUEST_SIZE,
 };
 use x64wasm::{CodeRegion, Options};
 
@@ -63,9 +64,16 @@ pub fn handle(mem: &impl Memory, request_ptr: u32) -> Result<Vec<u8>, String> {
     let known_ptr = u32_at(req, RT_REQ_KNOWN_PTR);
     let known_len = u32_at(req, RT_REQ_KNOWN_LEN);
     let flags = u32_at(req, RT_REQ_FLAGS);
-    if flags != 0 {
+    let all = RT_FLAG_NULL_CHECK | RT_FLAG_STORE_CHECK | RT_FLAG_COUNTERS;
+    if flags & !all != 0 {
         return Err(format!("unknown flags {flags:#x}"));
     }
+    let opts = Options {
+        null_check: flags & RT_FLAG_NULL_CHECK != 0,
+        store_check: flags & RT_FLAG_STORE_CHECK != 0,
+        counters: flags & RT_FLAG_COUNTERS != 0,
+        ..Options::default()
+    };
     if code_base.checked_add(code_len.into()).is_none() {
         return Err(format!(
             "code at {code_base:#x}+{code_len:#x} wraps around the address space"
@@ -88,7 +96,7 @@ pub fn handle(mem: &impl Memory, request_ptr: u32) -> Result<Vec<u8>, String> {
         base: code_base,
         bytes: code,
     };
-    let t = x64wasm::translate_regions(&[region], &[entry], &known, &Options::default())
+    let t = x64wasm::translate_regions(&[region], &[entry], &known, &opts)
         .map_err(|e| e.to_string())?;
     Ok(t.wasm)
 }

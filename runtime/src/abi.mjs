@@ -106,6 +106,10 @@ export const RT_REQ_ENTRY = 16;
 export const RT_REQ_KNOWN_PTR = 24;
 export const RT_REQ_KNOWN_LEN = 28;
 export const RT_REQ_FLAGS = 32;
+// Request flags: the translator options (Options::null_check, store_check, counters).
+export const RT_FLAG_NULL_CHECK = 1 << 0;
+export const RT_FLAG_STORE_CHECK = 1 << 1;
+export const RT_FLAG_COUNTERS = 1 << 2;
 export const RT_RESULT_SIZE = 20;
 export const RT_RES_STATUS = 0;
 export const RT_RES_WASM_PTR = 4;

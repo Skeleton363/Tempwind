@@ -92,6 +92,33 @@ fn known_addresses_are_not_translated_again() {
     assert_eq!(blocks(&wasm), [CODE_BASE + 6]);
 }
 
+/// The flags name the options (`abi.md`, "Request"): the module is the one
+/// `translate_regions` makes with them.
+#[test]
+fn flags_name_the_options() {
+    for flags in 0..8u32 {
+        let req = Req { flags, ..request() };
+        let wasm = handle(&memory(&req, &[]), REQ_PTR).unwrap();
+        let opts = x64wasm::Options {
+            null_check: flags & abi::RT_FLAG_NULL_CHECK != 0,
+            store_check: flags & abi::RT_FLAG_STORE_CHECK != 0,
+            counters: flags & abi::RT_FLAG_COUNTERS != 0,
+            ..x64wasm::Options::default()
+        };
+        let region = x64wasm::CodeRegion {
+            base: CODE_BASE,
+            bytes: &CODE,
+        };
+        let want = x64wasm::translate_regions(&[region], &[CODE_BASE], &[], &opts).unwrap();
+        assert!(wasm == want.wasm, "flags {flags:#x}");
+    }
+    // Distinct flags give distinct modules.
+    let w = |flags| handle(&memory(&Req { flags, ..request() }, &[]), REQ_PTR).unwrap();
+    assert!(w(0) != w(abi::RT_FLAG_NULL_CHECK));
+    assert!(w(0) != w(abi::RT_FLAG_STORE_CHECK));
+    assert!(w(0) != w(abi::RT_FLAG_COUNTERS));
+}
+
 fn error(req: &Req, known: &[u64], req_ptr: u32) -> String {
     match handle(&memory(req, known), req_ptr) {
         Ok(_) => panic!("expected an error"),
@@ -163,7 +190,7 @@ fn bad_requests_are_errors() {
     assert!(e.contains("already"), "{e}");
     let e = error(
         &Req {
-            flags: 1,
+            flags: 1 << 3,
             ..request()
         },
         &[],

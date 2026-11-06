@@ -257,8 +257,14 @@ pub const RT_REQ_ENTRY: usize = 16;
 pub const RT_REQ_KNOWN_PTR: usize = 24;
 /// Request field: number of known addresses (u32).
 pub const RT_REQ_KNOWN_LEN: usize = 28;
-/// Request field: flags, 0 (u32).
+/// Request field: flags (u32), the `RT_FLAG_*` bits.
 pub const RT_REQ_FLAGS: usize = 32;
+/// Request flag: translate with `Options::null_check`.
+pub const RT_FLAG_NULL_CHECK: u32 = 1 << 0;
+/// Request flag: translate with `Options::store_check`.
+pub const RT_FLAG_STORE_CHECK: u32 = 1 << 1;
+/// Request flag: translate with `Options::counters`.
+pub const RT_FLAG_COUNTERS: u32 = 1 << 2;
 /// Size of a run-time translator result.
 pub const RT_RESULT_SIZE: usize = 20;
 /// Result field: 0 ok, 1 error (u32).
