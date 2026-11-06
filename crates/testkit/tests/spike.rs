@@ -305,7 +305,10 @@ fn irreducible_loop() {
 
 /// The structured layout enters the irreducible loop's middle through the
 /// selector once, on one of the two entry paths (which one depends on the
-/// header it picks), and takes every back edge with a `br`.
+/// header it picks), and takes every back edge with a `br`. The contract
+/// (translator.md, "Jumps and branches"): an entry into a loop's interior
+/// goes through the selector, a back edge never does. Each run enters the
+/// loop once, so the two runs together count 1.
 #[test]
 fn structured_loops_skip_dispatch() {
     let opts = Options {
@@ -385,9 +388,10 @@ fn counters_are_deterministic_and_validate() {
     assert_eq!(c[2], 0, "dispatches");
     assert_eq!((c[4], c[5], c[6]), (0, 0, 0), "no calls");
     assert_eq!(c[7], 1, "the final ret unwinds to the sentinel");
-    // Entry loads what is live into the entry block (RCX, RSP); the ret
-    // stores what the function wrote: RAX, RCX, RSP and the flag record
-    // (four locals).
+    // The contract (translator.md, "Registers and flags"): entry loads what
+    // is live into the entry block (RCX, RSP); the ret stores the dirty set,
+    // what the function wrote: RAX, RCX, RSP and the flag record (four
+    // fields, abi.md "Counter block").
     assert_eq!((c[8], c[9]), (7, 2), "stores and loads of the state");
     assert_eq!((c[10], c[11]), (1, 0), "only the ret loads from memory");
     let all = counted(

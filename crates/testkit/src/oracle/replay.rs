@@ -109,6 +109,12 @@ impl ReplayReport {
 
 /// Replays every `*.json` fixture in `dir`.
 pub fn replay_dir(dir: &Path) -> Result<ReplayReport> {
+    replay_dir_with(dir, &Options::default())
+}
+
+/// Replays every `*.json` fixture in `dir`, translating with `opts` (for
+/// example the reference modes, `translator.md`).
+pub fn replay_dir_with(dir: &Path, opts: &Options) -> Result<ReplayReport> {
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .with_context(|| format!("reading {}", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -153,7 +159,7 @@ pub fn replay_dir(dir: &Path) -> Result<ReplayReport> {
                     let Some(&(f, start)) = chunks.get(i) else {
                         break;
                     };
-                    let r = replay_cases(&host, f, &fixtures[f], start);
+                    let r = replay_cases(&host, f, &fixtures[f], start, opts);
                     results.lock().unwrap()[i] = Some(r);
                 }
             });
@@ -206,7 +212,7 @@ struct Partial {
 }
 
 /// Replays cases `start..start + CHUNK` of `f`, fixture number `fixture`.
-fn replay_cases(host: &Host, fixture: usize, f: &Fixture, start: usize) -> Partial {
+fn replay_cases(host: &Host, fixture: usize, f: &Fixture, start: usize, opts: &Options) -> Partial {
     let mut cache: HashMap<Vec<u8>, Result<Module, Outcome>> = HashMap::new();
     let mut forms: BTreeMap<String, Stats> = BTreeMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -219,7 +225,7 @@ fn replay_cases(host: &Host, fixture: usize, f: &Fixture, start: usize) -> Parti
         }
         let s = forms.entry(case.form.clone()).or_default();
         s.cases += 1;
-        let outcome = run_case(host, &mut cache, case);
+        let outcome = run_case(host, &mut cache, case, opts);
         let (msg, kind) = match outcome {
             Outcome::Pass => {
                 s.pass += 1;
@@ -324,12 +330,12 @@ fn flag_names(bits: u64) -> String {
     }
 }
 
-fn compile(host: &Host, bytes: &[u8]) -> Result<Module, Outcome> {
+fn compile(host: &Host, bytes: &[u8], opts: &Options) -> Result<Module, Outcome> {
     let region = CodeRegion {
         base: CODE_ADDR,
         bytes,
     };
-    let t = match x64wasm::translate(region, &[CODE_ADDR], &Options::default()) {
+    let t = match x64wasm::translate(region, &[CODE_ADDR], opts) {
         Ok(t) => t,
         Err(x64wasm::Error::Unimplemented(what)) => {
             return Err(Outcome::Unsupported(format!(
@@ -375,10 +381,11 @@ fn run_case(
     host: &Host,
     cache: &mut HashMap<Vec<u8>, Result<Module, Outcome>>,
     case: &Case,
+    opts: &Options,
 ) -> Outcome {
     let module = cache
         .entry(case.bytes.clone())
-        .or_insert_with(|| compile(host, &case.bytes));
+        .or_insert_with(|| compile(host, &case.bytes, opts));
     let module = match module {
         Ok(m) => m.clone(),
         Err(o) => return clone_outcome(o),

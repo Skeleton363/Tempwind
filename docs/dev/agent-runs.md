@@ -60,3 +60,34 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 **Not adopted:** `maxEffortLevel`. It would also cap the main session's effort, which the owner sets.
 
 **The largest lever is not a trial.** The main session re-reads its whole context at every step: 818M cache-read tokens over M1-M5, about 400k per step at today's context size. A fresh session per milestone, with the status note as the hand-off, would start each milestone small. Adopting it is the owner's decision, since `CLAUDE.md` says a session covers a phase. The `main` lines would measure it.
+
+## Retro: M6 (2026-11-06)
+
+**Avoidable costs, worst first:**
+- **The ledger measured the wrong thing for five milestones.** It recorded a completion notice's token count, which is only the last request's context. WP4's notice said 161k; its transcript holds 44.2M cache-read tokens. Fixed: every line is rebuilt from the transcripts (`scripts/agent-usage.mjs`), and the trial measures moved to `index`.
+- **2 red CI runs,** both before the pre-push hook: the WIP head `8b6ef85` and the fmt break `4c02685`. After `785d5f9`, which installed the hook, every PR head was green.
+- **3 rework rounds:**
+  - WP2's `% 20` assertion, which pinned the full sync;
+  - WP4's inline check exits, which grew 7zz.wasm 87 %. The brief hadn't asked for shared exits, so that gap was the coordinator's;
+  - WP5's mislabelled "M5 ratio" column.
+- **One push against the brief:** WP4b pushed to the PR branch. It was green, but agents' fixed rules now allow a PR-branch push only when the brief says so.
+- **The spec review's 11 items** included a regression of the coordinator's own: a test that still rejected a request-flag bit that had become valid. `cargo test` caught it before any push, so the existing checks did their job and no new one is needed.
+
+**Changes from this retro:**
+- **Mechanical, now automated:** the pre-push hook (refuses a WIP head and unformatted Rust), and the ledger script.
+- **Judgement, now rules:**
+  - tests assert contracts (the fixed rules and the spec-review brief);
+  - PR-branch pushes only when the brief says so (the fixed rules);
+  - speedups are measured within one run against the reference build (`phase-1.md`, "Lessons").
+
+**Trials decided:**
+
+| Trial | Result | Verdict |
+|---|---|---|
+| At most 3 subagents, none spawning its own | never blocked planned work | kept |
+| Subagents without a set effort at `high` | the M6 spec review cost 1.06M against M5's 2.57M at `max`, and found two real blockers | kept |
+| deep-worker `medium` (WP3a, WP4) against `high` (WP2, WP3b) | median 3.29M against 3.53M (−7 %); rework 1 against 0 | not adopted; `high` stays |
+| Read a file once; wait on backgrounded commands | builder index per request 18-27k, against 25k before; no rework traced to it | kept |
+| 1. The prune of the always-loaded files | no rework traced to content that moved behind a pointer | kept |
+| 4. The merge-danger line | the owner's verdict at the M6 merge | open |
+| 2, 3, 5 | not due | running |

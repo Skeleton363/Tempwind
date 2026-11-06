@@ -194,7 +194,7 @@ fn bad_requests_are_errors() {
     assert!(e.contains("already"), "{e}");
     let e = error(
         &Req {
-            flags: 1 << 3,
+            flags: 1 << 5,
             ..request()
         },
         &[],

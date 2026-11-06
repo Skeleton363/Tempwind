@@ -118,8 +118,10 @@ test('basic.exe built with --counters: TEMPWIND_TRACE=counts reports the block a
       return [`${kind} ${name}`, Number(value)];
     }),
   );
-  // rec(1000) and fib(20) (21,891 calls) are direct calls inside the module.
-  assert.equal(lines['count calls_direct'], 22927);
+  // The program makes 22,927 calls to targets inside the module (rec(1000), fib(20) and the helpers), so no more
+  // can be direct. fib(20)'s 21,891 calls nest at most 22 deep, below the depth limit, so they are always direct
+  // calls (translator.md, "Call-depth guard"); deeper rec calls may unwind instead.
+  assert.ok(lines['count calls_direct'] >= 21891 && lines['count calls_direct'] <= 22927, `${lines['count calls_direct']} direct calls`);
   assert.ok(lines['count entries_fast'] > 0 && lines['count entries_generic'] > 0);
   // Since WP3 the structured layout takes loops without `$dispatch`, so dispatches may be 0; the slot is still reported.
   assert.ok(Number.isInteger(lines['count dispatches']) && lines['count unwinds'] > 0);

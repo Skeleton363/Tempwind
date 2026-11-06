@@ -132,16 +132,16 @@ The counter block is `u64` slots at `env.counters`. Each counted event adds 1; `
 |---|---|---|
 | 0 | `entries_fast` | entry at a function's own entry block |
 | 1 | `entries_generic` | any other entry |
-| 2 | `dispatches` | a branch through `$dispatch`; with `structured`, also an entry into a loop's interior through its selector |
+| 2 | `dispatches` | a branch through `$dispatch`; with `structured`, also a branch inside the chunk into a loop's interior through its selector (entries into the chunk count as entries, slots 0-1) |
 | 3 | `local_indirect` | an indirect jump that hits the current chunk |
 | 4 | `calls_direct` | a direct call into the module |
 | 5 | `calls_probed` | a call through the lookup table (indirect, or outside the module) |
 | 6 | `tail_transfers` | a `return_call` or `return_call_indirect` |
 | 7 | `unwinds` | an `UNWIND` leaving a function |
-| 8 | `values_stored` | GPRs and flag records stored to the state block |
-| 9 | `values_loaded` | GPRs and flag records loaded from it |
-| 10 | `mem_loads` | guest memory loads |
-| 11 | `mem_stores` | guest memory stores |
+| 8 | `values_stored` | state-block fields stored: a GPR counts 1, the flag record 4 (its four fields), so a full sync is 20 |
+| 9 | `values_loaded` | state-block fields loaded, counted the same way |
+| 10 | `mem_loads` | guest memory loads by integer instructions (`Op::Load`); SSE, x87 and string accesses are not counted |
+| 11 | `mem_stores` | guest memory stores by integer instructions (`Op::Store`), counted the same way |
 
 ## Page-state table (`Options::store_check`, M6)
 One byte per 4 KiB guest page, at `env.page_flags + (addr >> 12)`.

@@ -1,6 +1,6 @@
 # Phase 1 status: Translator
 
-**M1-M5 are done and merged (M5, 7-Zip exactly like native: PR #7). M6, speed and close-out, is planned (below) and paused before its contracts.** Phase 1 is done when all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native, and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`.
+**Phase 1 is done: M1-M6 are built, and M6 (speed and close-out) is in PR #9, which the owner merges.** Phase 1's exit criteria hold: all instruction fixtures pass, the 64-bit 7-Zip CLI (`7zz.exe`) compresses and extracts exactly like native (138 of 138 matrix steps), and CoreMark and `7z b` are tracked in CI. Milestones are in `docs/plan.md`; the next phase is Phase 2, Wine underneath.
 
 - **Session 1 (2026-10-22/23):** planned Phase 1 and built M1 with two parallel tracks: the translator (deep-worker) and the targets, PE reader and census (builder).
 - **Session 1, continued (2026-10-23/24):**
@@ -12,6 +12,14 @@
 - **Session 1, continued (2026-10-30 to 11-04):**
   - M5 with the shim and the guest-threads agents (deep-worker each) and the builder (the matrix, the workflow changes, the review fixes);
   - paused for the owner's usage limits, and resumed after a session restart.
+- **Session 1, continued (2026-11-04 to 11-06):** M6 in five work packages (WP1 and WP5 builder; WP2, WP3a, WP3b and WP4 deep-worker), paused twice for the owner's usage limits. Along the way: the workflow trials, a ledger that measures real usage, and the license change (the owner's decisions).
+
+## Phase 1 summary
+
+- **Built:** an x86-64 to WebAssembly (memory64) translator (iced-x86 decoding, our IR, wasm-encoder), whole-image AOT plus a run-time translator built for wasm32, bit-exact soft float for SSE and x87, and a JS runtime with a Win32 shim and cooperative guest threads.
+- **Correctness:** @@REPLAY@@ L1 instruction cases recorded on a real CPU pass. The soft float matched the CPU in 850M cases. 7-Zip 25.01 matches native Windows on all 138 matrix steps.
+- **Speed** (V8 in Node, against wine64 on the same machine): CoreMark at 0.42 of native and `7z b` at 0.40. In one run, M6's code is 1.44× and 1.20× faster than the code before it.
+- **What carries into Phase 2:** the translator, the loader, host calls, threads, the oracle and the five test levels. The Win32 shim is scaffolding that Wine replaces.
 
 ## Lessons for future sessions
 
@@ -44,6 +52,8 @@ Phase 0's lessons still hold. New ones from M1:
 - **Name implementation-dependent behaviour early.** The fixtures and native tests must agree on every vendor CI may use, so mask or vendor-gate what the SDM leaves open before recording.
 - **A zeroed state block isn't a thread's state.** With MXCSR = 0 every SSE exception is unmasked; hosts must set the FP defaults a real thread starts with.
 - **A worker restart stops background agents, but their transcripts survive.** A message resumes them where they were; the coordinator commits their uncommitted files in the meantime.
+- **A completion notice's token count is not a run's cost.** It is the context size of the run's last request. A run's real usage is in its transcript (`node scripts/agent-usage.mjs --agent ID`), and cache reads are most of it.
+- **Measure a speedup within one run, against the reference build.** This VM's speed drifts by up to 10 % between sessions (wine64 itself ran 8-9 % slower on 2026-11-06), so ratios from different sessions don't compare. `tests/bench/memchecks.mjs --variants none,reference` interleaves the two builds.
 
 ## Decisions taken when planning (2026-10-22)
 
@@ -278,7 +288,7 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
   - a `Fall` edge inside an `if` (a branch whose two targets are one block) becomes a `br` out of the innermost layout `block`, which is where falling through goes;
   - dispatches (the root one on `entry`, a loop's on the selector) are a `br_table`. Transfers that change the selector go through a stub each (`sel = v; br d`), shared by equal transfers;
   - the selector local holds layout position + 1, so `NONE` is 0: no initialisation, and a loop's check is `local.get sel; if`. It exists only in chunks with a loop that has an interior;
-  - `dispatches` also counts an edge that enters a loop's interior through the selector, so it stays comparable across the two layouts (`abi.md`'s row still says only "a branch through `$dispatch`": a one-line doc fix is pending);
+  - `dispatches` also counts an edge that enters a loop's interior through the selector, so it stays comparable across the two layouts (`abi.md`, "Counter block");
   - `structured: false` gives byte-identical modules to `4c02685` (checked on 7zz.exe and coremark.exe, with and without counters);
   - **jump-table targets stay outside the loop forest** (WP3a's open point 1): adding them as edges would not remove `$dispatch`, because the indirect jump still goes through `lookup`, `entry` and the root dispatch. It would also make case blocks interior entries, which costs a selector stub each. `local_indirect` is 5 (CoreMark) and 0 (7z b), so it is not worth doing;
   - every loop with more than one block keeps its selector check (open point 3), since every block is an entry. The contract asks for exactly this.
@@ -307,38 +317,23 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
   - **For the owner:** copyright in AI-written code is legally unsettled. Before relying on the license commercially, check it with an IP lawyer.
   - **Later (Phase 3, the public demo):** a third-party notices file for the dependencies whose licenses ask for one.
 
-## M6 progress (paused 2026-11-06)
+## Decisions taken at the M6 close (2026-11-06)
 
-**Done** (on the PR branch, PR #9, head after this note; CI green through `230d78a`, later commits are docs and scripts):
-- **Workflow trials** (`785d5f9`, `docs/dev/agent-runs.md`). One of them is a pre-push hook that refuses a WIP head or unformatted Rust on `main` and `claude/*`. The SessionStart hook installs it.
-- **Ledger measured right** (`93287f3`): real usage per run from the transcripts (`scripts/agent-usage.mjs`). A notice's token count is only the last request's context.
-- **WP3b, structured loops** (`1c4454d`): dispatches fall 50× (CoreMark) and 400× (`7z b`). CoreMark went from 0.354 to 0.465 of native, `7z b` from 0.379 to 0.436 (WP3 under "Measurements").
-- **WP4 and WP4b, memory checks** (merged in `2d268f0`, then `230d78a`). Check sites share one cold exit per chunk. Code translated at run time gets the image's options (contract `a7080b6`). With both checks, modules grow 44 % (coremark) and 54 % (7zz). Timings come in WP5.
-- Merge verification (`3a3b01d`): 218 Rust tests, Node 241/241, the 7-Zip matrix 138/138. WP4b then reported 220 Rust tests and Node 244/244.
-
-**In progress: WP5** (builder, Sonnet, medium). It was stopped by the pause before any timing. Its WIP is on the side branch `m6-wp5-wip` (`316dc19`), **not verified**. It has the `translate-pe` flags `--sync-all` and `--no-structured` with a CLI test, the floating-point module in `images.mjs`, `tests/bench/memchecks.mjs`, and an L2 test in the reference mode.
-
-WP5's brief:
-1. The two reference-mode flags, with a test that each gives the same module as translating with the option.
-2. The L2 programs in the reference mode (a Node test, like WP4's variant with both checks), and the translated 7-Zip matrix twice: with `--sync-all --no-structured`, and with `--null-check --store-check`. Both must give 138/138.
-3. `images.mjs` with the floating-point module. V8 compile times (lazy, and eager TurboFan) for 7zz.exe and coremark.exe: reference, default, and default with both checks, medians of 3.
-4. `tests/bench/memchecks.mjs`: four variants (none, null, store, both) of both targets, runs interleaved with the order rotated, 5 rounds, medians and sizes as one JSON line.
-5. The final benchmarks against wine64: CoreMark, `7z b`, the spike microbenchmarks, and `profile.mjs`'s top 10 for both targets.
-6. Results in "Measurements" as "M6 final (WP5)", numbers only.
-
-Nothing else may run while it times.
-
-**How to resume:**
-1. `git fetch origin m6-wp5-wip`, then `git merge origin/m6-wp5-wip` on the PR branch. That is local only: push nothing until it is green.
-2. Continue WP5. The same session messages its agent. A fresh session starts a builder with the brief above from that state; the brief allows pushing green work to the PR branch.
-3. Then `/milestone-close`:
-   - verification, the two-stage review, and the status note (M6 and the Phase 1 summary);
-   - the PR description with its merge-danger line (trial 4);
-   - the effort-trial verdict, from `node scripts/agent-stats.mjs --milestone M6`;
-   - the retro.
-4. The decisions still open are judgements for the close-out:
-   - the memory-check defaults for Phase 2 (`guest-memory.md`, "Decision"), from WP5's matrix;
-   - the effort trial. So far deep-worker `medium` costs no less than `high`: median index 3.29M against 3.53M.
+- **Memory checks** (`guest-memory.md`, "Phase 2 defaults"):
+  - identity mapping stays, because the checks cost less than option B would;
+  - both checks are on by default in Phase 2;
+  - the next cut to measure is no checks on accesses based on RSP.
+- **The reference modes reach run-time translation:** the load plan's `options` gained `syncAll` and `structured`, which become the run-time translator's request flags, bits 3 and 4 (`abi.md`, `runtime.md`). `/diverge` uses the reference mode.
+  - **In CI:** the spike sweep and `sync_diff` run the reference modes.
+  - **By hand at the close:** L1 replay (`testkit replay --sync-all --no-structured`), the L2 programs and the 7-Zip matrix.
+- **Not built:**
+  - the multi-block-loop bench case (WP1). WP3's effect is measured on CoreMark and `7z b` and by the dispatch counters, and the spike case `loop_branch` tests the shape;
+  - no depth guard for leaf callees, which the plan left optional;
+  - XMM caching in locals, left out at planning.
+- **The counters are defined as built** (`abi.md`, "Counter block"): `mem_loads` and `mem_stores` count integer accesses only, and the flag record counts as 4 values.
+- **The effort trial** (`docs/dev/agent-runs.md`): deep-worker stays at `high`. `medium` cost 7 % less by median (3.29M against 3.53M) and needed one rework (WP4b) where `high` needed none. The rule asks for 25 % less with no more rework.
+- **Subagents without a set effort run at `high`:** kept. The M6 spec review cost 1.06M, against M5's 2.57M at `max`, and found two real blockers.
+- **The retro** is in `docs/dev/agent-runs.md`, "Retro: M6".
 
 ## What works
 
@@ -377,6 +372,22 @@ Nothing else may run while it times.
 | **The 7-Zip command matrix** (`tests/sevenzip/`): 138 steps in 40 groups (7z, zip, tar, gz, bz2, xz, the hashes, AES round trips) | Translated in Node: 138/138 identical to `expected/` (output, exit codes and every file written). Native on windows-x64 in CI: identical too. |
 | **`7z b`** (`tests/bench/sevenzip.mjs`, `bench.yml`) | Runs to its "Tot:" line translated and under wine64 (measurements below). |
 | **The census gate on every program** | `census --check`: 614 of 614 forms, 7zz.exe included. CI gates it. |
+| **Register and flag liveness** (M6, `sync.rs`): a boundary stores only dirty values and loads only live ones; after a call, only what the callee may change is reloaded | Values moved per call fell from 80 to about 35 (counters). `sync_diff` runs random CFGs in all four sync and layout combinations, and the spike sweep runs every case in both sync modes. |
+| **Structured loops** (M6, `emit/structure.rs`): loop forests, one wasm `loop` per loop, a selector for interior entries | Dispatches fall 50× on CoreMark and 400× on `7z b`. The `irreducible_loop` spike case, and the spike sweep in both layouts. |
+| **Memory checks** (M6, off by default):<br>• the NULL page and stores to code pages, checked before the first side effect<br>• one shared exit per chunk<br>• run-time translation with the image's options | `lowering.rs` order tests with the checks on. Node tests for NULL reads and writes, code-page stores and run-time translation. The 7-Zip matrix gives 138/138 with both checks on. |
+| **Counters and profiling** (M6): `translate-pe --counters`, `TEMPWIND_TRACE=counts`, `tests/bench/profile.mjs` with COFF symbol names | `pe.test.mjs` and the spike counter tests. |
+| **The reference modes, end to end:** `--sync-all` and `--no-structured`, kept in the load plan and passed to the run-time translator | CLI and request tests. In them, the L2 programs and the 7-Zip matrix (138/138) give the native results, and L1 replay passes @@REPLAY@@ cases. |
+
+### Test summary (local, M6, Node 24.22.0)
+
+- **Rust:** `cargo fmt --all --check`, workspace clippy and the wasm32 clippy of `x64wasm-fp` are clean. `cargo test --workspace`: @@RUST@@ passed, 0 failed.
+- `record --check`: "75 fixture files match a fresh recording".
+- `census --check` on 7zz.exe and coremark.exe: 487 of 487 in-scope forms have fixtures.
+- L1 replay in the reference modes (`replay --sync-all --no-structured`): @@REPLAY@@ cases pass.
+- `npm run test:node`: @@NODE@@. `npm run test:browser`: 4/4.
+- **The translated 7-Zip matrix** gives 138/138 steps identical to `expected/` in three builds:
+  - the default build, at the close;
+  - `--sync-all --no-structured` and `--null-check --store-check`, both in WP5.
 
 ### Test summary (local, M5, Node 24.22.0)
 
@@ -797,14 +808,14 @@ The M5 wasmtime column was not re-measured. `bench.mjs` also has an eager config
 | `flags` (lazy-flag helper) | 2.7 | `fn_0x140012a90` | 0.6 |
 | wasm / JS / other | 99.0 / 0.5 / 0.5 | wasm / JS / other | 98.1 / 0.6 / 1.3 |
 
-Caveats: single sessions; the reference-mode and check builds were timed once per variant (compile) or five interleaved times (matrix); nothing was repeated at other guest base addresses. The plan's `options` does not record `sync_all` or `structured`, so code translated at run time from a reference-mode image uses the defaults.
+Caveats: single sessions; the reference-mode and check builds were timed once per variant (compile) or five interleaved times (matrix); nothing was repeated at other guest base addresses. At the M6 close the plan's `options` gained `syncAll` and `structured` (request flags bits 3 and 4), so code translated at run time keeps the reference modes too.
 
 ## Known issues and risks
 
-- **Calls are still expensive:** since WP2, a call moves about 35 values instead of 80 ("WP2" under "Measurements"). The flag record and registers restored with `pop` make up most of the rest.
+- **Calls are still expensive:** a call moves about 35 values instead of 80 since WP2, and `fib_rec` runs at 4.4× native in V8 (12.5× in M5). The flag record and the registers restored with `pop` make up most of the rest.
 - **Guest threads take turns; they don't run in parallel** (Phase 4). A thread switches only at a blocking call, so a thread that spins on memory without one never lets the others run. 7-Zip doesn't do that.
 - **The research digest has not reached the repository yet.** Its routine session starts without a checkout, and both runs so far (2026-11-01 and a test on 2026-11-04) stopped there. The owner selects Skeleton363/Tempwind for the "Workflow research digest" routine on claude.ai; until then, research happens at each milestone's start.
-- **Floating point is slow:** about 7× native in a dot product (XMM in the state block, an MXCSR load and operand tests per operation). x87 code is large (400-600 wasm bytes per instruction). Both are M6's.
+- **Floating point is slow:** about 7× native in a dot product (XMM in the state block, an MXCSR load and operand tests per operation). x87 code is large (400-600 wasm bytes per instruction). M6 left XMM caching out by decision; `dot_product` runs at 6.35× native.
 - **Unmasked floating-point exceptions** exit with `EXIT_UNSUPPORTED` until Windows exceptions (Phase 4).
 - **Checked only on Intel so far:**
   - `record --check`;
@@ -824,7 +835,9 @@ Caveats: single sessions; the reference-mode and check builds were timed once pe
   - `FormatMessageW` has system messages only, without inserts.
 
   Each of these stops loudly.
-- **7zz.exe's module is large under Cranelift:** 27.6 MB after M4. M6 narrows the state syncs at boundaries.
+- **7zz.exe's module:** 21.5 MB since M6. The reference build is 27.9 MB, and the build with both checks 33.0 MB. Eager TurboFan compiles the default build in 7.1 s.
+- **The memory checks cost 26-33 % with both on,** and they are on by default in Phase 2. The cut for accesses based on RSP is the next measurement (`guest-memory.md`).
+- **Firefox is untested.** SpiderMonkey pays a bounds check on every memory64 access, which V8 doesn't. Phase 3's browser targets need a measurement there.
 - **5 of 138 jump tables in 7zz.exe aren't recovered:** 4 load the table base earlier in the function, and 1 sits in a handler nothing reaches. Run-time translation covers them.
 - **The run-time translator compiles on first use** (about 24 ms). Compiling it while the image loads would hide that.
 - **Runtime limits in Phase 1:**
@@ -836,13 +849,11 @@ Caveats: single sessions; the reference-mode and check builds were timed once pe
 - **apt installs in CI were flaky:** the Azure Ubuntu mirror trickled at about 40 KB/s, and 3 targets runs hung or timed out. `scripts/apt-install.sh` now limits each attempt and retries without that mirror; a mock test covered both the stall and the failure path.
 - **One release publish failed with a transient 403.** The `targets` run of `6d4536c` was refused by the GitHub releases API with "Resource not accessible by integration", although its token had `contents: write`. `hello-7613c87` published 38 s later, and the same step published `targets-7613c87` on the next commit. If it recurs, re-run the job once, or retry the publish step.
 
-## Next step: M6 (speed and close-out)
+## Next step: Phase 2 (Wine underneath)
 
-`docs/plan.md`: register-sync and flag liveness, loop structuring and a call fast path; the cost of the guest-memory checks is measured on real code. Phase 1 closes with M6: the fixtures pass, 7-Zip matches native, and CoreMark and `7z b` are tracked in CI.
+`docs/plan.md`: Wine's PE DLLs are built in CI from the dl.winehq.org tarball, 64-bit console programs run in the browser, and kernel32/ntdll test pass rates are tracked.
 
-1. **Research pass** (`docs/dev/research.md`): code generation in binary translators that target WebAssembly, V8's tiers and memory64 bounds checks.
-2. **Baselines:** CoreMark at 0.30 of native and `7z b` at 0.35; calls cost 10-20x native.
-3. **Liveness:** at calls, returns and host calls, store and reload only the live registers and flags, instead of the whole state.
-4. **Loop structuring and the call fast path**, measured against the baselines after each step.
-5. **The guest-memory checks:** measure what they cost on CoreMark and `7z b`.
-6. **Close Phase 1:** a summary in this note, then plan Phase 2.
+1. **A fresh session.** The rule is that a session covers a phase, and trial 3's hand-off gets its first test. It starts from `docs/plan.md`, this note and `ARCHITECTURE.md`.
+2. **A research pass** (`docs/dev/research.md`): Wine 11's PE/Unix split and syscall dispatch, and Emscripten for the Unix side (threads, signals, mmap).
+3. **Phase 2's milestones, contracts first.** The M5 shim is scaffolding that Wine replaces; the loader, host calls, threads, translator and tests carry over.
+4. **Settled already:** the memory checks are on by default (`guest-memory.md`), and dependencies stay permissive or LGPL (`LICENSE`, `CLAUDE.md`).

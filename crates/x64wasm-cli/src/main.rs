@@ -78,7 +78,8 @@ struct Extra {
     /// `env.page_flags`).
     #[arg(long)]
     store_check: bool,
-    /// Reference mode: write every flag back after each instruction.
+    /// Reference mode: store and load all 20 state values at every
+    /// boundary (`Options::sync_all`) instead of only the dirty and live ones.
     #[arg(long)]
     sync_all: bool,
     /// Reference mode: the dispatch-loop control flow instead of
