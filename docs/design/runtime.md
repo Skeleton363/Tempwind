@@ -68,7 +68,8 @@ u64 values are `"0x…"` hex strings, as in the spike manifest; addresses are vi
       "functions": [ { "name": "ExitProcess", "ordinal": null, "iat": "0x140005070" } ] }
   ],
   "tls": null,
-  "hasRelocations": true
+  "hasRelocations": true,
+  "options": { "nullCheck": false, "storeCheck": false, "counters": false }
 }
 ```
 
@@ -77,6 +78,7 @@ u64 values are `"0x…"` hex strings, as in the spike manifest; addresses are vi
 - `hasRelocations` is true when the relocation directory is non-empty and the image isn't marked `IMAGE_FILE_RELOCS_STRIPPED`.
 - An import by ordinal has `"name": null` and the ordinal as a number.
 - `sha256` is the SHA-256 of the PE file. The runtime refuses a plan whose `sha256` doesn't match the file it was given.
+- `options` (M6): the translator options the AOT module was built with that change what the code does at run time. The runtime passes them as the run-time translator's request flags (`abi.md`), and supplies `env.page_flags` and `env.counters` to every module that imports them. A plan without `options` means all false.
 
 ## Loading
 

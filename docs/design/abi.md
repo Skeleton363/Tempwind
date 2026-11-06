@@ -132,7 +132,7 @@ The counter block is `u64` slots at `env.counters`. Each counted event adds 1; `
 |---|---|---|
 | 0 | `entries_fast` | entry at a function's own entry block |
 | 1 | `entries_generic` | any other entry |
-| 2 | `dispatches` | a branch through `$dispatch` |
+| 2 | `dispatches` | a branch through `$dispatch`; with `structured`, also an entry into a loop's interior through its selector |
 | 3 | `local_indirect` | an indirect jump that hits the current chunk |
 | 4 | `calls_direct` | a direct call into the module |
 | 5 | `calls_probed` | a call through the lookup table (indirect, or outside the module) |
@@ -233,7 +233,7 @@ Every translated block appears exactly once.
 | `+16` | u64 | `entry`: guest address to translate from |
 | `+24` | u32 | `known_ptr`: sorted u64 array of guest addresses that already have blocks |
 | `+28` | u32 | `known_len`: number of addresses in it |
-| `+32` | u32 | flags, 0 |
+| `+32` | u32 | flags: bit 0 `null_check`, bit 1 `store_check`, bit 2 `counters`; the other bits 0 |
 | `+36` | u32 | reserved, 0 |
 
 **Result** (20 bytes):
@@ -247,9 +247,9 @@ Every translated block appears exactly once.
 | `+16` | u32 | `msg_len`: UTF-8 error text (status 1) |
 
 **Semantics:**
-- It translates, with `Options::default()`, what is reachable from `entry` inside `[code_base, code_base + code_len)`.
+- It translates what is reachable from `entry` inside `[code_base, code_base + code_len)`, with `Options::default()` plus the options the flags name. The runtime passes the options the image was translated with (the load plan's `options`, `runtime.md`), so code translated at run time has the same checks and counters as the AOT module.
 - An address in `known` counts as outside the code: a transfer to it, or a fall-through into it, is a lookup transfer, and nothing is translated twice.
-- Status 1 (error) when `entry` is itself in `known`, `flags` is not 0, `known` isn't sorted, the code range wraps past the end of the address space, or translation fails.
+- Status 1 (error) when `entry` is itself in `known`, `flags` has a bit other than 0-2 set, `known` isn't sorted, the code range wraps past the end of the address space, or translation fails.
 
 ## Floating-point helper module (`x64wasm_fp.wasm`, v4)
 
