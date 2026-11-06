@@ -48,6 +48,20 @@ fn option_sweep() -> Vec<Options> {
             sync_all: true,
             ..o(1, 1, Some(0))
         },
+        // The reference layout: Phase 0's dispatch loop.
+        Options {
+            structured: false,
+            ..Options::default()
+        },
+        Options {
+            structured: false,
+            ..o(1, 1, Some(0))
+        },
+        Options {
+            structured: false,
+            sync_all: true,
+            ..o(30, 60, Some(3))
+        },
     ]
 }
 
@@ -140,6 +154,35 @@ fn loop_branch() {
 }
 
 #[test]
+fn irreducible_loop() {
+    for n in [1, 2, 3, 4, 101] {
+        run_case(&spike::irreducible_loop(n).unwrap());
+    }
+}
+
+/// The structured layout enters the irreducible loop's middle through the
+/// selector once, on one of the two entry paths (which one depends on the
+/// header it picks), and takes every back edge with a `br`.
+#[test]
+fn structured_loops_skip_dispatch() {
+    let opts = Options {
+        counters: true,
+        ..Options::default()
+    };
+    let flat = Options {
+        structured: false,
+        ..opts.clone()
+    };
+    let mut entries = 0;
+    for n in [100, 101] {
+        let case = spike::irreducible_loop(n).unwrap();
+        entries += counted(&case, &opts)[2];
+        assert!(counted(&case, &flat)[2] >= n / 2, "n = {n}: reference");
+    }
+    assert_eq!(entries, 1, "dispatches into the loop's middle");
+}
+
+#[test]
 fn merge_call() {
     for n in [0, 4, 5, 9] {
         run_case(&spike::merge_call(n).unwrap());
@@ -192,9 +235,9 @@ fn counters_are_deterministic_and_validate() {
     let c = counted(&case, &opts);
     assert_eq!(c, counted(&case, &opts), "deterministic");
     // One entry at the function's own entry block; the back edge of the
-    // 100 iterations goes through `$dispatch` 99 times.
+    // 100 iterations is a `br` to the loop, never a dispatch.
     assert_eq!((c[0], c[1]), (1, 0), "entries");
-    assert_eq!(c[2], 99, "dispatches");
+    assert_eq!(c[2], 0, "dispatches");
     assert_eq!((c[4], c[5], c[6]), (0, 0, 0), "no calls");
     assert_eq!(c[7], 1, "the final ret unwinds to the sentinel");
     // Entry loads what is live into the entry block (RCX, RSP); the ret
@@ -213,6 +256,20 @@ fn counters_are_deterministic_and_validate() {
         (all[8], all[9]),
         (20, 20),
         "sync_all: one load and one store of the whole state"
+    );
+    let flat = counted(
+        &case,
+        &Options {
+            structured: false,
+            ..opts.clone()
+        },
+    );
+    // The reference layout sends the 99 back edges through `$dispatch`.
+    assert_eq!(flat[2], 99, "structured: false dispatches");
+    assert_eq!(
+        (flat[0], flat[1], flat[7], flat[8], flat[9]),
+        (c[0], c[1], c[7], c[8], c[9]),
+        "the layout changes no other counter"
     );
 }
 
@@ -385,6 +442,7 @@ fn manifest_follows_the_abi_doc() {
             "longjmp_like",
             "big_function",
             "loop_branch",
+            "irreducible_loop",
             "merge_call",
             "loop_calls",
             "clobber_calls",
