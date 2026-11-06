@@ -727,8 +727,20 @@ Machine: Intel Xeon @ 2.10 GHz, 4 vCPUs (cloud VM), Node 24.22.0 (V8 13.6.233.17
 
 | | translated | wine64 | ratio | M5 ratio |
 |---|---|---|---|---|
-| CoreMark (iterations/s) | 10,268 | 24,652 | 0.417 | 0.354 |
-| `7z b 2 -mmt1 -md18` (MIPS, "Tot:") | 2,017 | 5,019 | 0.402 | 0.379 |
+| CoreMark (iterations/s) | 10,268 | 24,652 | 0.417 | 0.30 |
+| `7z b 2 -mmt1 -md18` (MIPS, "Tot:") | 2,017 | 5,019 | 0.402 | 0.35 |
+
+The M5 ratios come from M5's own sessions, and this machine's speed drifts between sessions (wine64 ran 8-9 % slower here than in the WP3 session). So M6's gain is measured within one run, below.
+
+**M6's gain, in one run** (`node tests/bench/memchecks.mjs --variants none,reference --rounds 5`, interleaved, the order rotated; median, min-max in brackets). The reference build (`--sync-all --no-structured`) is the code generation from before M6: WP2 and WP3b checked that each reference mode gives byte-identical modules to the code before them.
+
+| | default (M6) | reference (before M6) | speedup |
+|---|---|---|---|
+| CoreMark (iterations/s) | 10,257 (10,045-10,435) | 7,137 (6,893-7,271) | 1.44× |
+| `7z b` (MIPS) | 1,983 (1,941-2,042) | 1,652 (1,620-1,672) | 1.20× |
+| 7zz.wasm (bytes) | 21,467,033 | 27,942,383 | 0.77× |
+
+Against the same day's wine64, the reference runs at 0.29 (CoreMark) and 0.33 (`7z b`), matching M5's 0.30 and 0.35.
 
 Spread: the CoreMark runs inside the memory-check matrix (variant "none", 5 runs) span 10,355-10,655 it/s (2.9 %); the 7z b runs span 2,014-2,077 MIPS (3.1 %). The WP2-WP4b sections show up to 7 % between sessions on the same build.
 
