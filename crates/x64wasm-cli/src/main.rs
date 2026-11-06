@@ -78,6 +78,13 @@ struct Extra {
     /// `env.page_flags`).
     #[arg(long)]
     store_check: bool,
+    /// Reference mode: write every flag back after each instruction.
+    #[arg(long)]
+    sync_all: bool,
+    /// Reference mode: the dispatch-loop control flow instead of
+    /// structured branches.
+    #[arg(long)]
+    no_structured: bool,
 }
 
 impl Extra {
@@ -86,6 +93,8 @@ impl Extra {
             counters: self.counters,
             null_check: self.null_check,
             store_check: self.store_check,
+            sync_all: self.sync_all,
+            structured: !self.no_structured,
             ..opts
         }
     }
