@@ -14,6 +14,7 @@ We judge workflow decisions (effort levels, caps, agent rules) by data, at almos
 - **Quality:**
   - `rework`: follow-up messages needed before the result passed the coordinator's verification (0 means right the first time);
   - `findings`: valid review findings in the run's own diff, filled in at milestone close-out.
+- **`kind`** (optional): `"diverge"` for a bug hunt run through `/diverge` (trial 5).
 
 **The main session** gets a `main` line at each milestone's start and end, from `get_session`: the cumulative `cost_usd`, `output_tokens` and `cache_read_tokens`. The difference between two lines is that stretch's usage.
 
@@ -33,17 +34,17 @@ We judge workflow decisions (effort levels, caps, agent rules) by data, at almos
 - **An outside recommendation is a lead** (docs, a skill library, the digest). It becomes a trial only when it addresses a problem we have.
 - **The quality guard:** a change that saves tokens but raises rework, review findings, CI failures or escalations is reverted.
 
-## Planned trials (applied on resume, from the 2026-11-06 review of mattpocock/skills, `research.md`)
+## Trials (started 2026-11-06, from the review of mattpocock/skills, `research.md`)
 
-| Change | The problem we saw | Measure | Decided at |
-|---|---|---|---|
-| 1. Prune the always-loaded files (`CLAUDE.md`, rules, agent definitions) by `writing-for-agents`' rules: pointers over content, positive targets, nothing a command or a deny rule already shows | They load into every turn of every agent. Many lines restate deny rules or commands. | Words in the always-loaded files; ledger tokens per tool use; rework and findings must not rise | M6 close |
-| 2. A retro as the last step of `milestone-close`: improvements by severity, a mechanical mistake getting an automated check and a judgement call getting a reviewer rule | Three avoidable failures in M6: a merge broke `cargo fmt` in CI; a WIP push turned CI red; a test asserted an implementation detail (`% 20`) | Avoidable red CI runs and rework rounds per milestone, against M6 | The second milestone after adoption |
-| 3. A hand-off in `/pause`: a short brief for a fresh session that points to artifacts rather than repeating them | The main session re-reads its whole context at every step (818M cache-read tokens through M5) | Main-session usage per milestone (`main` lines) when a milestone runs in a fresh session | The first milestone in a fresh session |
-| 4. A merge-danger line in PR descriptions: one-way or two-way door, and the blast radius | Weak evidence: the owner decides every merge, but no merge has gone wrong | The owner's verdict at the next merge: useful or noise | M6 merge |
-| 5. Gates in `/diverge`: one command that already goes red on the bug, a minimised reproduction, ranked falsifiable hypotheses, one change at a time, tagged debug logs | Weak evidence: no recent bug hunt went wrong. Adopted at the owner's request. | Rework and escalations on bug-hunt runs | After three bug hunts |
+| Change | Applied as | Baseline | Measure | Decided at |
+|---|---|---|---|---|
+| 1. Prune the always-loaded files: pointers over content, nothing a hook or deny rule already enforces | `CLAUDE.md`: commands behind `commands.md`, deny-rule duplicates out, the stale layout fixed (`x64wasm-fp` was missing). Agent files: duplicate lines out. | `CLAUDE.md` 965 words, builder 297, deep-worker 299. Now 912, 347 and 344, after trial 2's two rules. A builder run loads 1,259 words, against 1,262 before. | The token effect is at most about 1 % of a run, too small for the ledger, so this is judged on quality. No rework from a command that moved behind a pointer. | M6 close |
+| 2. A retro as `milestone-close` step 5: a mechanical mistake gets an automated check, a judgement call a rule where its writer or reviewer reads it | The first retro, from M6's three failures, applied now:<br>• `tools/git-hooks/pre-push`, installed by the SessionStart hook, refuses a WIP head and unformatted Rust on `main` and `claude/*`. Tested on `8b6ef85` and `4c02685`: both refused.<br>• The WIP-to-side-branch rule is in the agents' fixed rules and `CLAUDE.md`.<br>• The test-contract rule is in the fixed rules and the spec-review brief. | M6: 2 avoidable red CI runs (the WIP head `8b6ef85`, the fmt break `4c02685`) and 1 rework (the `% 20` assertion) | Avoidable red CI runs and rework rounds per milestone | Phase 2's second milestone |
+| 3. A hand-off in `/pause`: the resume path works for a fresh session, and the report ends with a starter message | `/pause` steps 5 and 7 | Main session: 818M cache-read tokens over M1-M5 in one session | `main` lines for a milestone that starts in a fresh session | Phase 2's first milestone, fresh by the rule "a session covers a phase" |
+| 4. A merge-danger line opening each PR description: one-way or two-way door, and the blast radius | `milestone-close` step 4 | none (no merge has gone wrong) | The owner's verdict at the next merge: useful or noise | M6 merge |
+| 5. Gates in `/diverge`: one red command, a minimal input, ranked falsifiable hypotheses, one change at a time, `[dbg]`-tagged debug output | `/diverge` steps 3 and 4. Ledger lines of bug hunts get `"kind": "diverge"`. | none (no recent bug hunt went wrong) | Rework and escalations on bug-hunt runs | After three bug hunts |
 
-Items 4 and 5 are cheap. If they show nothing, they are removed.
+Trials 4 and 5 are cheap; if they show nothing, they are removed.
 
 ## Trials (started 2026-11-05, decided at the M6 close-out)
 

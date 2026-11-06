@@ -1,0 +1,47 @@
+#!/bin/bash
+# Pre-push check for the branches CI runs on (main and the PR branches,
+# claude/*). It refuses what CI would reject at once, the two avoidable red
+# runs of M6 (docs/dev/agent-runs.md, trial 2):
+# - a head commit whose subject starts with "WIP" (WIP goes to a side branch:
+#   git push origin HEAD:refs/heads/<track>-wip);
+# - a Rust file that rustfmt would change, checked as committed, so other
+#   agents' uncommitted edits in a shared tree don't matter.
+# Pushes to other branches (WIP side branches) pass unchecked.
+# The SessionStart hook installs it with `git config core.hooksPath tools/git-hooks`.
+set -u
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r _local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main | refs/heads/claude/*) ;;
+    *) continue ;;
+  esac
+  [ "$local_sha" = "$zero" ] && continue
+  subject=$(git log -1 --format=%s "$local_sha")
+  case "$subject" in
+    WIP*)
+      echo "pre-push: refusing a WIP head on ${remote_ref#refs/heads/} (\"$subject\")." >&2
+      echo "  Push WIP to a side branch: git push origin HEAD:refs/heads/<track>-wip" >&2
+      status=1
+      continue
+      ;;
+  esac
+  if ! command -v rustfmt >/dev/null; then
+    echo "pre-push: rustfmt not found; the format check is left to CI." >&2
+    continue
+  fi
+  # The Rust files this push changes; all of them when the remote head is unknown here.
+  if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    files=$(git diff --name-only --diff-filter=AMR "$remote_sha" "$local_sha" -- '*.rs')
+  else
+    files=$(git ls-tree -r --name-only "$local_sha" -- | grep '\.rs$')
+  fi
+  for f in $files; do
+    if ! git show "$local_sha:$f" | rustfmt --edition 2024 --emit stdout 2>/dev/null |
+      cmp -s - <(git show "$local_sha:$f"); then
+      echo "pre-push: $f is not rustfmt-clean in ${local_sha:0:7} (CI runs cargo fmt --all --check)." >&2
+      status=1
+    fi
+  done
+done
+exit $status

@@ -299,8 +299,8 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
 - **WP4**, the memory checks (deep-worker, `medium`), in a worktree. Its WIP is on the side branch `m6-wp4` and **builds**. It touches the lifter, the IR, `sync.rs`, `emit.rs`'s import and global sections, and `lowering.rs`. The runtime, CLI and measurements are still missing.
 
 **How to resume:**
-0. Apply the five planned workflow trials (`docs/dev/agent-runs.md`, "Planned trials") in one commit. Each records its problem and its measure.
-1. `git fetch origin m6-wip m6-wp4`, then `git merge --ff-only origin/m6-wip` on the PR branch to get WP3b's WIP.
+0. Done 2026-11-06: the five workflow trials (`docs/dev/agent-runs.md`, "Trials (started 2026-11-06)").
+1. `git fetch origin m6-wip m6-wp4`, then `git merge origin/m6-wip` on the PR branch to get WP3b's WIP (not `--ff-only`: the PR branch moved past `m6-wip`'s base).
 2. Message the WP3b agent to continue. If its transcript is gone, start a deep-worker (`high`) on "WP3b" in the decisions above, from `m6-wip`.
 3. Message WP4 to continue in its worktree (or start a deep-worker, `medium`, from `m6-wp4`). Merge it after WP3b lands.
 4. Then WP5 (benchmarks, the memory-check matrix), the effort-pilot verdict (`node scripts/agent-stats.mjs --milestone M6`), and `milestone-close`.

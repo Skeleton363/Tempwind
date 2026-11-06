@@ -30,6 +30,7 @@ Keep this section current; add each command when it first works.
 Moved verbatim from `CLAUDE.md`, "Network and builds".
 
 - Environment: `tools/cloud-setup.sh` is the cloud environment's setup script (MinGW-w64 x86-64, wabt, binaryen, the pinned Rust toolchain with wasm32, Node 24, the emsdk image). When you change it, ask the user to paste the new version into the environment settings.
+- Pre-push hook: `tools/git-hooks/pre-push`, installed by the SessionStart hook (`git config core.hooksPath tools/git-hooks`). On pushes to `main` and `claude/*` it refuses a head commit whose subject starts with `WIP`, and any changed Rust file that rustfmt would change (checked as committed). Other branches pass unchecked. Run it by hand: `echo "x $(git rev-parse HEAD) refs/heads/claude/x $(git rev-parse origin/main)" | tools/git-hooks/pre-push`.
 - Docker: a SessionStart hook (`.claude/settings.json`) starts dockerd in every cloud session, in the background. If `docker info` fails, run `tools/start-dockerd.sh`. Never use `service docker start`; it fails in this sandbox.
 - Emscripten: the emscripten/emsdk Docker image (tag pinned in `scripts/emcc.sh`), with the repo mounted at /src. Run tools through `scripts/emcc.sh`.
 - Node: 24, pinned in `.nvmrc` for CI and sessions.
