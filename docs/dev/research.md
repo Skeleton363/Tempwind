@@ -117,3 +117,39 @@ The M6 planning pass, with 4 searches. Several hosts are blocked here (github.co
 - `code-review`: our two-stage review already covers standards and spec; running both at once would save time, not tokens.
 - `research`: we have this log and the digest.
 - `prototype`, `wizard`, `teach`, `to-questionnaire`, `wait-what`, `ask-matt` and the setup skill.
+
+## 2026-11-06: Phase 2, Wine underneath
+
+The Phase 2 planning pass: 6 searches, plus reads of single files streamed from the wine-11.0 tarball (`curl … | tar -xJO wine-11.0/<path>`). gitlab.winehq.org answers automated fetches with an Anubis block page, so the tarball is the way to read Wine's source. Phase 0's analysis (`native/README.md`) still holds; these are the additions.
+
+### Official
+- **Wine 11.0 release** (January 2026; release coverage on linuxiac and Phoronix).
+  - New WoW64 is fully supported and there is one unified loader. NTSync needs Linux 6.14's driver.
+  - Decision: we build x86_64 only (`--enable-archs=x86_64`). NTSync doesn't apply.
+- **The wine-11.0 tarball** (dl.winehq.org).
+  - x86_64 image bases: ntdll 0x1_7000_0000, kernelbase 0x1_7400_0000, kernel32 0x1_7800_0000 (`dlls/*/Makefile.in`). They lie in the guest high region. Other DLLs take the linker default, so M1 lists the closure's bases and overlaps.
+  - The first process without a parent always runs `wineboot.exe --init` as a child process (`dlls/ntdll/unix/env.c`, `build_initial_params` → `run_wineboot`), unless `\KernelObjects\__wineboot_event` already exists. Decision: Phase 2 has no child processes, so a patch skips it. The prefix comes from native wineboot in CI, plus a generated overlay for wineboot's per-boot keys.
+  - `ConsoleHandle` becomes `CONSOLE_HANDLE_SHELL` only when fd 0, 1 or 2 is a tty (`env.c` L1352-1370). Only then does kernelbase start `conhost.exe` (`kernelbase/console.c` L2356). Decision: fds 0-2 are non-tty byte devices, so there is no conhost.
+  - The kernel32 and ntdll tests import user32 and advapi32. Decision: win32u's Unix side must load (M4), with the null driver.
+  - There are 33 kernel32 and 26 ntdll test units. Each prints `%04x:%s:%s %d tests executed (%d marked as todo, %d as flaky, %d failures), %d skipped.` (`include/wine/test.h` L791). Decision: the conformance runner parses that line per unit.
+  - Unix side size: ntdll/unix is 45.8k lines, plus `signal_x86_64.c` (3.5k), which we replace. The server is 50.2k and win32u 105.7k. None of them uses `__thread`. Decision: green threads need no TLS emulation.
+  - The PE side's `RtlCaptureContext` uses `pushfq` and `fxsave`. Decision: M1's census expects new forms like these.
+  - The server maps an image at its preferred base and moves it only on a conflict, then keeps that address for the file (`server/mapping.c`, `get_image_map_address`). Decision: AOT is keyed by the base actually used, which is deterministic.
+- **Emscripten 6.0.8** (2026-08-20; changelog mirror): JSPI is no longer experimental. Our pinned emsdk is 6.0.12. Decision: Phase 2 relies on JSPI through Emscripten-compiled frames, and M1's spike proves it.
+- **Firefox JSPI**: Mozilla's intent to ship (2026-06-10, via a secondary source) enables it by default in Firefox 153. Chrome has shipped it since 137. Decision: Phase 2 targets Chromium; Firefox is measured in Phase 3.
+
+### Community
+- **Hacker News** (searched: Wine, WebAssembly, browser): no port of Wine's Unix side to Emscripten turned up. The nearest projects emulate a whole Linux. Boxedwine is off-limits under the clean-room rule, and we read nothing of its code.
+
+### Review
+- **A Plan-agent review of the draft** found six blockers. All are folded into the plan (`docs/status/phase-2.md`):
+  - JS frames between `promising` and `Suspending`, so the Unix side owns the run loop;
+  - the green-thread save set;
+  - fds passed in-process must be duplicated;
+  - symbol collisions between the server and ntdll;
+  - the server's page size and DLL range;
+  - volatile registry keys.
+
+### Not adopted
+- **A wineserver in its own Worker with a SharedArrayBuffer channel** (Phase 0's risk 6). With one Windows process per run it is pure cost, and Phase 4 needs its cross-worker form anyway.
+- **Emscripten pthreads for Wine's threads:** each would be a Worker, with no shared table. Phase 2 keeps cooperative threads; parallel threads are Phase 4.

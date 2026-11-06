@@ -68,7 +68,7 @@ Phases run in order. Each has a done-when.
 | 1 | Translator | All instruction fixtures pass. The 64-bit 7-Zip CLI compresses and extracts exactly like native. Benchmarks are tracked. |
 | 2 | Wine underneath | Wine's PE DLLs are built in CI from the dl.winehq.org tarball. 64-bit console programs run in the browser. kernel32/ntdll test pass rates are tracked. |
 | 3 | Windows on screen + shell | 64-bit Notepad++ installs from its real installer and survives a reload. A public demo runs with open-source apps only. |
-| 4 | Threads and hard parts | Threads, Windows exceptions, child processes, and .NET via Wine Mono work. 7-Zip uses all cores. A WinForms app runs. |
+| 4 | Threads and hard parts | Threads, Windows exceptions, child processes, and .NET via Wine Mono work. 7-Zip uses all cores. A WinForms app runs. (A basic raise path comes earlier, in Phase 2's M5. Phase 4 keeps C++ exceptions across host frames, guard pages, stack overflow and vectored handlers.) |
 | 5 | Graphics | Direct3D 11 samples match native-Wine screenshots. 64-bit VLC plays video. A DirectX 11 indie game runs at 30+ fps on a good PC. |
 | 6 | Speed and product | Profile-guided re-translation, fast startup, Drive sync, and a public compatibility list. |
 
@@ -105,6 +105,32 @@ Each milestone ends with CI green, a draft PR "[Phase 1] <milestone>", and `docs
 | M4 | SSE, x87 and CoreMark | The in-scope SSE/SSE2 floating-point forms (arithmetic, compares, conversions) and x87 forms. hello.exe and a float L2 program run translated == native. CoreMark validates translated and is tracked in CI. |
 | M5 | 7-Zip exactly like native | The command matrix (formats, methods, `t`, `l`, `x`, `h`) matches native Windows byte for byte. Every in-scope form has fixtures and replay is 100 %. `7z b` is tracked. |
 | M6 | Speed and close-out | Register-sync and flag liveness, loop structuring, call fast path. The cost of the guest-memory checks is measured on real code. |
+
+## Phase 2 milestones
+
+Each milestone ends with:
+- CI green;
+- a draft PR "[Phase 2] <milestone>";
+- `docs/status/phase-2.md` updated;
+- `/milestone-close` and its retro.
+
+**From Phase 2, a session covers one milestone** (the owner's decision, 2026-11-06). The decisions taken when planning Phase 2 are in `docs/status/phase-2.md`. In short:
+
+- **What the done-when means:**
+  - *Console programs:* hello.exe, the three L2 programs, CoreMark and the 7-Zip matrix run on Wine's DLLs with both memory checks on, in Node and in headless Chromium, matching native.
+  - *Pass rates:* every unit of `kernel32_test.exe` and `ntdll_test.exe` runs translated in CI, against windows-2025 and native Wine 11 baselines.
+- **The PE side is unmodified Wine 11**, built from the tarball with MinGW GCC.
+- **The Unix side:** ntdll's Unix part, wineserver and win32u, built with Emscripten (wasm64) into the guest's own memory. It owns the run loop, and calls translated code wasm to wasm.
+- **wineserver runs in-process.** There is one Windows process per run, with no child processes (Phase 4), and guest threads stay cooperative.
+
+| # | Milestone | Done when |
+|---|---|---|
+| M1 | Wine in CI, and the boundary spike | CI publishes Wine's PE modules, test exes, prefix and a native build. Windows and native-Wine test baselines are recorded. The DLL closure is listed with its bases. `census --check` passes on the closure, and every closure DLL translates and compiles in V8. A spike proves the JSPI boundary in Node and Chromium: an Emscripten wasm64 module owns the loop, translated code calls into it, it suspends, and green threads switch. |
+| M2 | Wine's Unix side boots | ntdll's Unix part and the in-process wineserver build with Emscripten in CI. In Node they boot to `LdrInitializeThunk`, with ntdll, apisetschema and the exe mapped, the registry and NLS loaded, and KUSER filled. A C harness covers virtual memory and server waits. |
+| M3 | Boot: hello.exe on Wine | hello.exe and the L2 programs run on Wine in Node, matching native, with both checks on. hello.exe does the same in a Chromium Worker. |
+| M4 | Console programs on Wine | Green threads; win32u loads; CoreMark validates and the 7-Zip matrix gives 138/138 on Wine; both benchmarks are tracked on Wine; the JS shim is deleted. |
+| M5 | Exceptions and conformance tracked | A basic raise path through Wine's own dispatcher. `l2_seh.exe` matches native. Both test exes run in CI, with rates tracked against the baselines. |
+| M6 | In the browser, and close-out | The M4 programs, the full matrix included, match native in headless Chromium. Sizes, startup and run times are measured. Phase 2 summary. |
 
 ## Working rules
 

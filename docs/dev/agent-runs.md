@@ -40,7 +40,7 @@ We judge workflow decisions (effort levels, caps, agent rules) by data, at almos
 |---|---|---|---|---|
 | 1. Prune the always-loaded files: pointers over content, nothing a hook or deny rule already enforces | `CLAUDE.md`: commands behind `commands.md`, deny-rule duplicates out, the stale layout fixed (`x64wasm-fp` was missing). Agent files: duplicate lines out. | `CLAUDE.md` 965 words, builder 297, deep-worker 299. Now 912, 347 and 344, after trial 2's two rules. A builder run loads 1,259 words, against 1,262 before. | The token effect is at most about 1 % of a run, too small for the ledger, so this is judged on quality. No rework from a command that moved behind a pointer. | M6 close |
 | 2. A retro as `milestone-close` step 5: a mechanical mistake gets an automated check, a judgement call a rule where its writer or reviewer reads it | The first retro, from M6's three failures, applied now:<br>• `tools/git-hooks/pre-push`, installed by the SessionStart hook, refuses a WIP head and unformatted Rust on `main` and `claude/*`. Tested on `8b6ef85` and `4c02685`: both refused.<br>• The WIP-to-side-branch rule is in the agents' fixed rules and `CLAUDE.md`.<br>• The test-contract rule is in the fixed rules and the spec-review brief. | M6: 2 avoidable red CI runs (the WIP head `8b6ef85`, the fmt break `4c02685`) and 1 rework (the `% 20` assertion) | Avoidable red CI runs and rework rounds per milestone | Phase 2's second milestone |
-| 3. A hand-off in `/pause`: the resume path works for a fresh session, and the report ends with a starter message | `/pause` steps 5 and 7 | Main session: 818M cache-read tokens over M1-M5 in one session | `main` lines for a milestone that starts in a fresh session | Phase 2's first milestone, fresh by the rule "a session covers a phase" |
+| 3. A hand-off in `/pause`: the resume path works for a fresh session, and the report ends with a starter message | `/pause` steps 5 and 7 | Main session: 818M cache-read tokens over M1-M5 in one session | `main` lines of a milestone that starts in a fresh session (M2 of Phase 2, from M1's hand-off) against Phase 1's per-milestone stretches | Phase 2's M2 close |
 | 4. A merge-danger line opening each PR description: one-way or two-way door, and the blast radius | `milestone-close` step 4 | none (no merge has gone wrong) | The owner's verdict at the next merge: useful or noise | M6 merge |
 | 5. Gates in `/diverge`: one red command, a minimal input, ranked falsifiable hypotheses, one change at a time, `[dbg]`-tagged debug output | `/diverge` steps 3 and 4. Ledger lines of bug hunts get `"kind": "diverge"`. | none (no recent bug hunt went wrong) | Rework and escalations on bug-hunt runs | After three bug hunts |
 
@@ -59,7 +59,11 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 
 **Not adopted:** `maxEffortLevel`. It would also cap the main session's effort, which the owner sets.
 
-**The largest lever is not a trial.** The main session re-reads its whole context at every step: 818M cache-read tokens over M1-M5, about 400k per step at today's context size. A fresh session per milestone, with the status note as the hand-off, would start each milestone small. Adopting it is the owner's decision, since `CLAUDE.md` says a session covers a phase. The `main` lines would measure it.
+**The largest lever, adopted (the owner's decision, 2026-11-06).**
+- **The problem:** the main session re-reads its whole context at every step: 818M cache-read tokens over M1-M5, about 400k per step at that context size.
+- **The change:** from Phase 2 a session covers one milestone (`CLAUDE.md`). Each milestone starts small, with the status note as the hand-off.
+- **The measure:** the `main` lines (trial 3).
+- **Ledger labels:** from Phase 2 the ledger names milestones `P2-Mn`, so that they don't mix with Phase 1's `Mn`.
 
 ## Retro: M6 (2026-11-06)
 
