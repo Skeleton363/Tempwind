@@ -265,7 +265,8 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
   - the store check tests the page byte of the first and the last byte (two `load8_u`, or'ed) for every store wider than a byte;
   - `rep movs`/`stos`/`lods` check the first and the last element (`ptr + (RCX - 1) * delta`), only if RCX != 0. `repe`/`repne` `cmps`/`scas` check only the first, since they may stop early (`repne scasb` with RCX = -1 is the strlen idiom). A string fault comes before any iteration;
   - the runtime allocates the page-state table (4 MiB, for the 16 GiB maximum) from the runtime heap only when a module imports `env.page_flags`, and marks the executable sections PAGE_CODE. A store-check hit stops with "unsupported instruction …, or a store into a code or write-watched page (store check)";
-  - **not covered:** run-time translations (`x64wasm-rt`) still use the default options, so code they translate has no checks (its request `flags` must be 0). Accesses the runtime makes for host calls are not checked either.
+  - run-time translations get the image's options since WP4b: `translate-pe` writes them into the plan (`options`), the runtime passes them as the request flags, and `x64wasm-rt` translates with them (`memory-checks.test.mjs`: code reached only through a computed pointer faults on NULL as AOT code does; `pe.test.mjs`: basic.exe's `hidden` is translated at run time with the store check);
+  - **not covered:** accesses the runtime makes for host calls are not checked.
 - **Loop structuring (WP3, deep-worker):**
   - loop forests by recursive SCC decomposition (Tarjan, `func.rs`), ordered as LLVM's CFGSort does and emitted as CFGStackify does, with one wasm `loop` per loop;
   - a selector local for entries into a loop's interior;
@@ -686,6 +687,19 @@ One run of each, on `74f0308` (WP2 code plus WP4, before WP3b), `tests/bench/cor
 | both | 7,430 | 1,536 | 637,828 | 39,212,596 |
 
 Reading (single runs, so only the size of the effect): both checks cost about 23 % on CoreMark and 29 % on 7z b, and the modules grow by 74 % and 90 %. Each check site inlines its own cold exit (the state stores of a fault or an exit), which is most of the growth; a shared exit per chunk would shrink it. With both checks on, the spike sweep, basic.exe, the four L2 programs, CoreMark, 7z b and the translated 7-Zip matrix give the same results.
+
+### WP4b (M6, cheaper check sites; preliminary)
+
+Each check site used to inline its own cold exit. Now it passes `offset << 2 | kind`, the address and the dirty mask to one `$fault` block per chunk (`translator.md`, "Memory checks", "Emission"). Null checks on constant addresses are decided at translation time. The address was already shared with the access (one IR value), so that needed no change. Before = `3a3b01d`, after = this change, both `--entries all`; one run of each, as in WP4.
+
+| Variant | coremark.wasm before → after | 7zz.wasm before → after | CoreMark it/s before / after | 7z b MIPS before / after |
+|---|---|---|---|---|
+| none | 376,369 → 376,369 | 21,467,033 → 21,467,033 | 12,956 / 12,053 | 2,401 / 2,477 |
+| `null_check` | 562,125 → 478,285 (+49 % → +27 %) | 34,222,929 → 28,660,274 (+59 % → +34 %) | 10,114 / 10,171 | 2,026 / 2,036 |
+| `store_check` | 467,610 → 452,039 | 27,649,187 → 26,581,515 | 9,928 / 9,533 | 1,877 / 1,925 |
+| both | 647,839 → 541,952 (+72 % → +44 %) | 40,044,592 → 32,992,804 (+87 % → +54 %) | 8,989 / 9,240 | 1,705 / 1,711 |
+
+Reading: with both checks, the growth over unchecked code falls by about 40 %. Nearly all of that comes from the shared exit: deciding constant addresses at translation time saves only another ~0.5 % (`null_check` without it: 485,854 and 28,816,622 bytes). Speed is unchanged within the noise of single runs: the unchanged "none" module itself moves 7 % between runs. What is left per site is the test, the address `local.set`, two `i32.const`/`local.set` pairs and the `br`; the store check's two page-byte loads stay as they were. WP5 makes the final measurement.
 
 ## Known issues and risks
 
