@@ -353,11 +353,16 @@ fn memory_checks_come_before_side_effects() {
                 _ => None,
             })
             .collect();
-        // A read-modify-write keeps one check of its bytes: NULL as the
-        // read (it faults first), and the page byte for the store.
+        // A check reported as a read exists exactly when the instruction
+        // reads bytes it doesn't also write. A read-modify-write of the same
+        // bytes keeps one check, reported as a write as x86 reports the fault
+        // (translator.md, "Memory checks"), which also tests the page byte.
+        // push, pop, call [m] and movs read one place and write another, so
+        // they keep both kinds.
+        const SAME_BYTES: [&str; 5] = ["48ff03", "f0480fc103", "488703", "480fb10b", "0fab03"];
         assert_eq!(
             kinds.iter().any(|k| !k.0),
-            reads,
+            reads && !SAME_BYTES.contains(&code),
             "{code}: read checks\n{}",
             prog.dump()
         );
