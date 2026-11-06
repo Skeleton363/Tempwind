@@ -34,7 +34,7 @@ Core verification. The oracle, census, 7-Zip matrix, benchmarks, profiling and r
 
 ## Clean room and licenses
 - Never read or copy code from WebWindows, BottleShip, DirectWebGPU/Theseus or Boxedwine/Boxedwine64. Work from specs (Intel SDM, PE/COFF, WebAssembly, WebGPU) and Wine's own source.
-- Wine, Emscripten, iced-x86, wasm-encoder, vkd3d-shader and Naga are fine as dependencies under their own licenses. Our own code is MIT; our patches to Wine stay public under the LGPL.
+- Wine, Emscripten, iced-x86, wasm-encoder, vkd3d-shader and Naga are fine as dependencies under their own licenses. A new dependency must be permissive (MIT, Apache-2.0, BSD and the like) or LGPL, never GPL. Our own code is all rights reserved (`LICENSE`) in a public repository; our patches to Wine stay public under the LGPL.
 
 ## Delegation and effort
 - Agents (`.claude/agents/`): Explore (Haiku, low) searches and reads code; builder (Sonnet, medium) does routine work (docs, CI, test plumbing, shell UI, small fixes); deep-worker (Opus, high) does the translator core, Wine's system-call layer, memory model and threads, the graphics backend and hard bugs.

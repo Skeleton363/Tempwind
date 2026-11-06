@@ -97,7 +97,7 @@ Phase 0's lessons still hold. New ones from M1:
   - Build:
     - 7-Zip's own `cmpl_gcc.mak`, with build-system tweaks only, all documented in `tests/targets/7zip/build.sh`: cross-compile variables, case shims for Windows header and library names, symbols kept;
     - `--no-insert-timestamp`, so the builds are bit-for-bit reproducible;
-    - our own MIT Win64 CoreMark port with a QueryPerformanceCounter timer.
+    - our own Win64 CoreMark port with a QueryPerformanceCounter timer.
 - **CoreMark smoke check:** short runs never print "Correct operation validated" (the under-10 s check counts as an error). The smoke test checks the performance-run seed CRC and the list, matrix and state CRCs instead.
 - **`pause` and multi-byte `nop` are baseline**, since they have no CPUID bit. `xgetbv` is a user-mode instruction (XSAVE, out of profile), not a privileged one.
 
@@ -300,6 +300,12 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
   At most two deep-workers run at once.
 - **Estimates, to be measured:** calls drop from 10-20× to about 4-7× native; CoreMark and `7z b` rise from 0.30 and 0.35 to perhaps 0.45-0.6.
 - **The research digest routine** now runs on Sonnet 5.5 (your choice). Its effort is set on its page on claude.ai.
+- **License (the owner's decision, 2026-11-06):** our own code is all rights reserved (`LICENSE`), and the repository stays public. Nobody may use or build on it without the owner's written permission.
+  - **Earlier copies:** copies already made under MIT (clones and forks up to `3a506d7`) keep that license, which can't be revoked.
+  - **CI stays free,** because the repository stays public.
+  - **What stays open:** dependencies keep their own licenses, and a new one must be permissive or LGPL, never GPL. Our patches to Wine stay LGPL, as Wine's license requires.
+  - **For the owner:** copyright in AI-written code is legally unsettled. Before relying on the license commercially, check it with an IP lawyer.
+  - **Later (Phase 3, the public demo):** a third-party notices file for the dependencies whose licenses ask for one.
 
 ## M6 progress (paused 2026-11-06)
 

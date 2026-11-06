@@ -4,7 +4,7 @@ description = "Exact x86 soft float (SSE and x87) for translated code: x64wasm_f
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 publish.workspace = true
 

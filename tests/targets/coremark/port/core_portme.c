@@ -1,6 +1,6 @@
 /*
  * CoreMark port for 64-bit Windows (MinGW-w64): timer and start-up hooks.
- * MIT license (see /LICENSE); see core_portme.h.
+ * All rights reserved (see /LICENSE); see core_portme.h.
  */
 #include "coremark.h"
 #include "core_portme.h"

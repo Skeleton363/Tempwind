@@ -81,7 +81,7 @@ Contracts are committed before the code that uses them. The ABI is versioned; bo
 - Guest threads are cooperative: they take turns on one JS thread and switch only at blocking host calls, which suspend through JSPI (`threads.mjs`). The schedule is deterministic.
 - A new thread's state block carries real FP defaults (MXCSR), not zeros.
 - JS never parses PE files; `translate-pe` writes the plan.
-- Clean room: never read or copy WebWindows, BottleShip, DirectWebGPU/Theseus or Boxedwine. Work from specs, Wine's source and the programs' own source. Wine's source is read, not copied. Our code is MIT; our Wine patches stay LGPL.
+- Clean room: never read or copy WebWindows, BottleShip, DirectWebGPU/Theseus or Boxedwine. Work from specs, Wine's source and the programs' own source. Wine's source is read, not copied. Our code is all rights reserved (`LICENSE`); our Wine patches stay LGPL.
 
 ## Cross-cutting concerns
 

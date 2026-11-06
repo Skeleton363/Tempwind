@@ -6,7 +6,7 @@ members = ["crates/x64wasm", "crates/x64wasm-cli", "crates/x64wasm-rt", "crates/
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.97"
-license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/skeleton363/tempwind"
 publish = false
 

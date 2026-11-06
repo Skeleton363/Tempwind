@@ -9,9 +9,9 @@ its state in `docs/status/phase-N.md`.
 
 - Run unmodified 64-bit Windows applications of 2010s weight in Chrome and Firefox.
 - Everything runs on the user's device, served from static hosting. There is no server-side execution.
-- Users bring their own programs. We host only open-source code.
+- Users bring their own programs. The only third-party software we host is open source.
 - Wine ships under its LGPL, and our patches to Wine stay public.
-- Our own code is MIT.
+- Our own code is proprietary, all rights reserved (`LICENSE`, the owner's decision of 2026-11-06). The repository stays public.
 
 ## Architecture
 
