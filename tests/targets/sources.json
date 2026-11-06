@@ -1,5 +1,5 @@
 {
-  "note": "Pinned upstream sources for the Phase 1 targets. .github/workflows/targets.yml fetches them, verifies sha256 and mirrors them as releases src-<name>-<version>. An empty sha256 or commit means: not pinned yet; the sources job prints the value it found and fails until it is pinned here (trust on first use, recorded in docs/status/phase-1.md).",
+  "note": "Pinned upstream sources for the Phase 1 targets and, under \"wine\", the Wine 11 tarball (.github/workflows/wine.yml, mirrored as src-wine-<version>). .github/workflows/targets.yml fetches them, verifies sha256 and mirrors them as releases src-<name>-<version>. An empty sha256 or commit means: not pinned yet; the sources job prints the value it found and fails until it is pinned here (trust on first use, recorded in docs/status/phase-1.md).",
   "7zip": {
     "version": "25.01",
     "url": "https://www.7-zip.org/a/7z2501-src.tar.xz",
@@ -13,5 +13,13 @@
     "commit": "1f483d5b8316753a742cbf5590caf5bd0a4e4777",
     "sha256": "4067e7f260218df13f2875d8f821a8ff32a84153c6e0759d7c89f96c0a8bf987",
     "license": "Apache-2.0 (LICENSE.md)"
+  },
+  "wine": {
+    "version": "11.0",
+    "url": "https://dl.winehq.org/wine/source/11.0/wine-11.0.tar.xz",
+    "sha256": "c07a6857933c1fc60dff5448d79f39c92481c1e9db5aa628db9d0358446e0701",
+    "sha512": "a2c3db14f8cf0d19927466805c8f17c68ee7e93d1196d1162dd2279af497c21ec611a63f7a9de59953bbdfdb44c87d7bf55373c6533224a5d54e434c29428d1b",
+    "sha512_source": "https://dl.winehq.org/wine/source/11.0/sha512sums.asc",
+    "license": "LGPL-2.1-or-later"
   }
 }

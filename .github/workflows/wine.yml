@@ -1,0 +1,456 @@
+# Phase 2 M1: build Wine 11 from the dl.winehq.org tarball (pristine, 64-bit
+# only, minimal libraries), run the conformance units on Windows and under the
+# native Wine build, compute the DLL closure, and publish `wine-<sha7>`
+# (docs/design/wine-build.md). Sessions download the release with
+# scripts/fetch-artifact.sh "$(cat tests/targets/wine.lock)" ASSET.
+name: wine
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - ".github/workflows/wine.yml"
+      - "tests/targets/sources.json"
+      - "tests/targets/wine-build-info.sh"
+      - "crates/testkit/src/closure.rs"
+      - "crates/x64wasm/src/pe.rs"
+      - "tests/conformance/**"
+  pull_request:
+    paths:
+      - ".github/workflows/wine.yml"
+      - "tests/targets/sources.json"
+      - "tests/targets/wine-build-info.sh"
+      - "crates/testkit/src/closure.rs"
+      - "crates/x64wasm/src/pe.rs"
+      - "tests/conformance/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wine-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  # The commit under test (a pull request run checks out a merge commit).
+  SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  WINE_PREFIX_DIR: /opt/wine-11.0
+  # docs/design/wine-build.md, "configure".
+  WINE_CONFIGURE_FLAGS: >-
+    --enable-archs=x86_64
+    --without-x --without-wayland --without-freetype --without-fontconfig
+    --without-opengl --without-vulkan --without-xcomposite --without-alsa
+    --without-pulse --without-oss --without-gstreamer --without-ffmpeg
+    --without-cups --without-sane --without-gphoto --without-usb
+    --without-v4l2 --without-netapi --without-krb5 --without-gssapi
+    --without-gnutls --without-opencl --without-pcap --without-dbus
+    --without-udev --without-sdl --without-capi
+
+jobs:
+  # Fetch the tarball, verify sha256 and sha512 against tests/targets/sources.json
+  # and mirror it as the release src-wine-<version>. Trust on first use: an empty
+  # sha256 fails the job and prints the value to pin.
+  source:
+    # A claude/** branch with a pull request runs on its push event only.
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'claude/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+
+      - name: Wine source
+        run: |
+          set -euo pipefail
+          version=$(jq -r .wine.version tests/targets/sources.json)
+          url=$(jq -r .wine.url tests/targets/sources.json)
+          pin256=$(jq -r .wine.sha256 tests/targets/sources.json)
+          pin512=$(jq -r .wine.sha512 tests/targets/sources.json)
+          mkdir -p dl
+          file="dl/$(basename "$url")"
+          curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$file"
+          found256=$(sha256sum "$file" | awk '{print $1}')
+          found512=$(sha512sum "$file" | awk '{print $1}')
+          echo "Wine $version: $(stat -c %s "$file") bytes, sha256 $found256, sha512 $found512"
+          if [ -z "$pin256" ] || [ -z "$pin512" ]; then
+            echo "::error file=tests/targets/sources.json::Not pinned yet: set \"wine\".\"sha256\" to \"$found256\" and \"wine\".\"sha512\" to \"$found512\" (check the sha512 against $(dirname "$url")/sha512sums.asc)"
+            exit 1
+          fi
+          [ "$pin256" = "$found256" ] || { echo "::error file=tests/targets/sources.json::sha256 mismatch for Wine $version: pinned $pin256, found $found256"; exit 1; }
+          [ "$pin512" = "$found512" ] || { echo "::error file=tests/targets/sources.json::sha512 mismatch for Wine $version: pinned $pin512, found $found512"; exit 1; }
+          curl -fsSL --retry 3 "$(dirname "$url")/sha512sums.asc" -o dl/sha512sums.asc
+          grep -q "^$found512  $(basename "$url")\$" dl/sha512sums.asc || { echo "::error::sha512 is not in sha512sums.asc"; exit 1; }
+          tag="src-wine-$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          (cd dl && sha256sum "$(basename "$file")" > "$(basename "$file").sha256")
+          notes="Mirror of the Wine $version source, fetched from $url. License: LGPL-2.1-or-later. sha256 $found256. sha512 $found512 (listed in sha512sums.asc). Mirrored by workflow run $RUN_URL."
+          gh release create "$tag" "$file" "$file.sha256" \
+            --target "$SHA" --prerelease --title "$tag" --notes "$notes"
+          echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+
+      - name: Install the toolchain
+        timeout-minutes: 30
+        run: |
+          scripts/apt-install.sh build-essential flex bison ccache zstd jq \
+            gcc-mingw-w64-x86-64-win32 binutils-mingw-w64-x86-64 mingw-w64-x86-64-dev
+
+      - name: Download and verify the mirrored source
+        run: |
+          set -euo pipefail
+          version=$(jq -r .wine.version tests/targets/sources.json)
+          pin256=$(jq -r .wine.sha256 tests/targets/sources.json)
+          mkdir -p dl
+          gh release download "src-wine-$version" -D dl --clobber
+          echo "$pin256  dl/wine-$version.tar.xz" | sha256sum -c -
+          tar -xJf "dl/wine-$version.tar.xz"
+          ls -d "wine-$version"
+
+      # ccache: the key covers the tarball sha256, the configure flags and the compiler versions.
+      - name: ccache key
+        id: ccache
+        run: |
+          key=$( { jq -r .wine.sha256 tests/targets/sources.json; echo "$WINE_CONFIGURE_FLAGS"
+                   gcc -dumpfullversion; x86_64-w64-mingw32-gcc -dumpfullversion; } | sha256sum | cut -c1-16)
+          echo "key=wine-ccache-$key" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ steps.ccache.outputs.key }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ steps.ccache.outputs.key }}-
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          # ccache in masquerade mode for the Unix compiler and the PE cross compiler.
+          mkdir -p "$PWD/ccache-bin"
+          for c in gcc x86_64-w64-mingw32-gcc; do ln -sf "$(command -v ccache)" "$PWD/ccache-bin/$c"; done
+          export PATH="$PWD/ccache-bin:$PATH"
+          export CCACHE_DIR="$PWD/.ccache" CCACHE_BASEDIR="$PWD" CCACHE_MAXSIZE=1500M CCACHE_COMPRESS=1
+          ccache --zero-stats
+          version=$(jq -r .wine.version tests/targets/sources.json)
+          mkdir -p build
+          cd build
+          # shellcheck disable=SC2086
+          ../wine-$version/configure $WINE_CONFIGURE_FLAGS 2>&1 | tee ../configure.log | tail -n 60
+          grep -iE "unrecognized|WARNING" ../configure.log | head -n 30 || true
+
+      - name: Build
+        id: make
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/ccache-bin:$PATH"
+          export CCACHE_DIR="$PWD/.ccache" CCACHE_BASEDIR="$PWD" CCACHE_MAXSIZE=1500M CCACHE_COMPRESS=1
+          start=$(date +%s)
+          make -C build -j"$(nproc)" > make.log 2>&1 || { tail -n 80 make.log; exit 1; }
+          secs=$(( $(date +%s) - start ))
+          tail -n 5 make.log
+          ccache --show-stats
+          echo "make: $((secs / 60)) min $((secs % 60)) s" | tee -a "$GITHUB_STEP_SUMMARY"
+          ccache --show-stats | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Install
+        run: |
+          set -euo pipefail
+          make -C build install DESTDIR="$PWD/stage" prefix=/opt/wine-11.0 > install.log 2>&1 || { tail -n 40 install.log; exit 1; }
+          ls stage/opt/wine-11.0 stage/opt/wine-11.0/lib/wine
+          du -sh stage/opt/wine-11.0
+
+      - name: Pack wine-pe-x86_64
+        run: |
+          set -euo pipefail
+          mkdir -p dist pe/lib/wine pe/tests
+          src=stage/opt/wine-11.0/lib/wine/x86_64-windows
+          cp -a "$src" pe/lib/wine/
+          # Import libraries (.a) are not modules.
+          find pe/lib/wine/x86_64-windows -name '*.a' -delete
+          for t in kernel32 ntdll; do
+            f=$(find build/dlls/$t/tests -name "${t}_test.exe" | head -n 1)
+            [ -n "$f" ] || { echo "::error::${t}_test.exe was not built"; exit 1; }
+            cp "$f" "pe/tests/${t}_test.exe"
+          done
+          # --strip-debug only: the COFF symbol tables stay (abi.md, "Module shape").
+          find pe -type f | while read -r f; do
+            [ "$(head -c 2 "$f")" = MZ ] && x86_64-w64-mingw32-strip --strip-debug "$f"
+          done || true
+          echo "COFF symbols kept in kernelbase.dll: $(x86_64-w64-mingw32-nm pe/lib/wine/x86_64-windows/kernelbase.dll | wc -l)"
+          tar -C pe -I 'zstd -T0 -10' -cf dist/wine-pe-x86_64.tar.zst lib tests
+          # The test executables, plain, for the Windows job.
+          mkdir -p wine-tests
+          cp pe/tests/*.exe wine-tests/
+          cp wine-11.0/dlls/apisetschema/apisetschema.spec dist/apisetschema.spec
+          ls -l dist wine-tests
+          (cd stage/opt/wine-11.0 && ls share/wine/nls/*.nls share/wine/wine.inf) > dist/data-files.txt
+          wc -l dist/data-files.txt
+
+      - name: Pack wine-native
+        run: |
+          tar -C stage -I 'zstd -T0 -10' -cf dist/wine-native.tar.zst opt/wine-11.0
+          ls -l dist
+
+      # The prefix is made by the installed build at its final path (the .reg files contain it).
+      - name: Create the prefix
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /opt && sudo cp -a stage/opt/wine-11.0 /opt/wine-11.0
+          export WINEPREFIX="$HOME/wine-prefix" WINEDEBUG=-all
+          unset DISPLAY
+          /opt/wine-11.0/bin/wine --version
+          /opt/wine-11.0/bin/wine wineboot --init
+          /opt/wine-11.0/bin/wineserver -w
+          ls "$WINEPREFIX"
+          ls "$WINEPREFIX"/*.reg
+          (cd "$HOME" && echo "$WINEPREFIX" > wine-prefix.path &&
+            tar -I 'zstd -T0 -10' -cf "$GITHUB_WORKSPACE/dist/wine-prefix.tar.zst" wine-prefix.path wine-prefix)
+          ls -l dist/wine-prefix.tar.zst
+
+      - name: build-info.json
+        run: tests/targets/wine-build-info.sh dist/build-info.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wine-build
+          path: dist
+          retention-days: 3
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wine-tests
+          path: wine-tests
+          retention-days: 3
+          if-no-files-found: error
+
+  baseline-windows:
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@v8
+        with:
+          name: wine-tests
+          path: wine-tests
+      - name: Units, one process each (120 s limit)
+        run: |
+          mkdir -p out
+          for exe in kernel32_test ntdll_test; do
+            node tests/conformance/run-baseline.mjs --exe "wine-tests/$exe.exe" --platform windows-2025 \
+              --wine "wine-${SHA:0:7}" --commit "$SHA" --run "$RUN_URL" --timeout 120 \
+              --out "out/baseline-windows-$exe.json" | tail -n 5
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: baseline-windows
+          path: out
+          retention-days: 3
+          if-no-files-found: error
+
+  baseline-wine:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install MinGW-w64 and zstd
+        timeout-minutes: 30
+        run: scripts/apt-install.sh gcc-mingw-w64-x86-64 zstd
+      - uses: actions/download-artifact@v8
+        with:
+          name: wine-build
+          path: wine-build
+      - uses: actions/download-artifact@v8
+        with:
+          name: wine-tests
+          path: wine-tests
+
+      - name: Unpack the native build and the prefix
+        run: |
+          set -euo pipefail
+          sudo tar -C / -I zstd -xf wine-build/wine-native.tar.zst
+          tar -C "$HOME" -I zstd -xf wine-build/wine-prefix.tar.zst
+          echo "prefix made at: $(cat "$HOME/wine-prefix.path"); here: $HOME/wine-prefix"
+          /opt/wine-11.0/bin/wine --version
+
+      - name: Build the roots and fetch coremark.exe and 7zz.exe
+        run: |
+          set -euo pipefail
+          tests/pe/build.sh
+          tests/native/build.sh
+          scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
+          scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets
+          mkdir -p roots
+          cp target/pe/basic.exe target/native/{hello,l2_int,l2_crt,l2_float}.exe target/targets/{coremark,7zz}.exe roots/
+          ls -l roots
+
+      - name: Units, one process each under the native build (120 s limit)
+        run: |
+          set -euo pipefail
+          export WINEPREFIX="$HOME/wine-prefix"
+          mkdir -p out traces
+          for exe in kernel32_test ntdll_test; do
+            node tests/conformance/run-baseline.mjs --exe "wine-tests/$exe.exe" --platform wine-11.0-native \
+              --launcher /opt/wine-11.0/bin/wine --wine "wine-${SHA:0:7}" --commit "$SHA" --run "$RUN_URL" \
+              --timeout 120 --env WINETEST_PLATFORM=wine --env WINEDEBUG=+loaddll --env "WINEPREFIX=$WINEPREFIX" \
+              --trace-dir traces --out "out/baseline-wine-$exe.json" | tail -n 5
+          done
+
+      # The closure roots that are programs, with their usual arguments.
+      - name: Roots under native Wine with +loaddll
+        run: |
+          set -uo pipefail
+          export WINEPREFIX="$HOME/wine-prefix" WINEDEBUG=+loaddll
+          wine=/opt/wine-11.0/bin/wine
+          roots=$PWD/roots traces=$PWD/traces
+          work=$(mktemp -d); cd "$work"
+          run() { # exe label args...
+            local exe=$1 label=$2; shift 2
+            timeout 300 "$wine" "$roots/$exe" "$@" > "$label.out" 2> "$traces/${exe}__$label.log"
+            echo "$exe $label: exit $?, $(grep -c 'trace:loaddll' "$traces/${exe}__$label.log") loaddll lines"
+          }
+          for p in basic hello l2_int l2_crt l2_float; do run "$p.exe" run; done
+          run coremark.exe run 0x0 0x0 0x66 200
+          run 7zz.exe i i
+          mkdir -p tree/sub; printf 'hello\nworld\n' > tree/hello.txt; seq 1 20000 > tree/numbers.txt
+          head -c 70000 /dev/urandom > tree/random.bin; printf 'nested\n' > tree/sub/nested.txt
+          run 7zz.exe a a -mmt1 -bsp0 t.7z tree
+          run 7zz.exe x x -bsp0 -y -oout t.7z
+          diff -r tree out/tree && echo "7zz round trip ok"
+          # basic.exe and the others exit with their documented codes; the traces are what counts.
+          true
+
+      - name: Pack the traces
+        run: |
+          ls traces | wc -l
+          tar -C traces -I 'zstd -T0 -10' -cf loaddll-traces.tar.zst .
+          ls -l loaddll-traces.tar.zst
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: baseline-wine
+          path: |
+            out
+            loaddll-traces.tar.zst
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: roots
+          path: roots
+          retention-days: 3
+          if-no-files-found: error
+
+  closure:
+    needs: [build, baseline-wine]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Install zstd
+        run: scripts/apt-install.sh zstd
+      - uses: actions/download-artifact@v8
+        with:
+          name: wine-build
+          path: wine-build
+      - uses: actions/download-artifact@v8
+        with:
+          name: baseline-wine
+          path: baseline-wine
+      - uses: actions/download-artifact@v8
+        with:
+          name: roots
+          path: roots
+      - name: closure.json
+        run: |
+          set -euo pipefail
+          mkdir -p tree traces
+          tar -C tree -I zstd -xf wine-build/wine-pe-x86_64.tar.zst
+          tar -C traces -I zstd -xf baseline-wine/loaddll-traces.tar.zst
+          args=()
+          for f in tree/tests/kernel32_test.exe tree/tests/ntdll_test.exe roots/*.exe; do args+=(--root "$f"); done
+          while read -r f; do args+=(--data-file "$f"); done < wine-build/data-files.txt
+          cargo run -q -p testkit --release -- closure --tree tree --apiset wine-build/apisetschema.spec \
+            --traces traces --wine "wine-${SHA:0:7}" "${args[@]}" \
+            --note "Listed from the install tree (share/wine/nls/*.nls, share/wine/wine.inf), not read from a +file trace." \
+            --out closure.json
+          jq '{modules: (.modules|length), overlaps: (.overlaps|length), root_overlaps: (.root_overlaps|length), highest_end, memory_bytes, unresolved: (.unresolved|length), trace_files}' closure.json | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -r '.unresolved[] | "\(.name) <- \(.from|join(","))"' closure.json | head -n 40
+      - uses: actions/upload-artifact@v7
+        with:
+          name: closure
+          path: closure.json
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    needs: [build, baseline-windows, baseline-wine, closure]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - uses: actions/download-artifact@v8
+        with:
+          path: art
+      - name: Publish release wine-<sha7>
+        run: |
+          set -euo pipefail
+          tag="wine-${SHA:0:7}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p dist
+          cp art/wine-build/{wine-pe-x86_64,wine-native,wine-prefix}.tar.zst art/wine-build/build-info.json dist/
+          cp art/baseline-wine/loaddll-traces.tar.zst art/closure/closure.json dist/
+          # One file per platform: schema-1 result objects, one per test executable.
+          for p in windows wine; do
+            jq -s '{schema: 1, platform: .[0].platform, wine: .[0].wine, commit: .[0].commit, run: .[0].run, results: .}' \
+              $(find art/baseline-$p -name "baseline-$p-*.json" | sort) > dist/baseline-$p.json
+          done
+          cd dist
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+          ls -l
+          cd ..
+          rates() { jq -r '.results[] | .exe as $e | (.units|length) as $n | ([.units[]|select(.status=="ok")]|length) as $ok | "\($e): \($ok)/\($n) units ok, " + ([.units[].status]|group_by(.)|map("\(.[0])=\(length)")|join(" "))' "$1"; }
+          { echo "## Conformance"; echo '```'; echo windows; rates dist/baseline-windows.json; echo wine; rates dist/baseline-wine.json; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          notes="Wine 11.0 built from the pristine tarball by workflow run $RUN_URL at commit $SHA: PE modules (COFF symbols kept), the native install tree, the prefix, the DLL closure, conformance baselines on windows-2025 and native Wine, the +loaddll traces and build-info.json (docs/design/wine-build.md)."
+          gh release create "$tag" dist/* --target "$SHA" --prerelease --title "$tag" --notes "$notes"
+          echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"
