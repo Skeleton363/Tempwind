@@ -1,3 +1,4 @@
 {"commit":"7fc6c27","date":"2026-10-30T22:09:36.641Z","node":"v24.22.0","cpu":"AMD EPYC 9V45 96-Core Processor","runs":3,"translated_ips":12053.725867,"native_ips":42734.978815,"ratio":0.2821}
 {"commit":"1b19008","date":"2026-11-04T18:34:19.170Z","node":"v24.22.0","cpu":"AMD EPYC 9V74 80-Core Processor","runs":3,"translated_ips":8622.089731,"native_ips":31127.011826,"ratio":0.277}
 {"commit":"04f44fe","date":"2026-11-04T18:49:13.655Z","node":"v24.22.0","cpu":"Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz","runs":3,"translated_ips":7074.763463,"native_ips":26704.506953,"ratio":0.2649}
+{"commit":"e85ab2b","date":"2026-11-06T19:51:40.933Z","node":"v24.22.0","cpu":"AMD EPYC 7763 64-Core Processor","runs":3,"translated_ips":10445.210926,"native_ips":26272.772993,"ratio":0.3976}
