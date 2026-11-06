@@ -16,8 +16,9 @@ const RT = `${root}target/wasm32-unknown-unknown/release/x64wasm_rt.wasm`;
 const FP = `${root}target/wasm32-unknown-unknown/release/x64wasm_fp.wasm`;
 const need = (path, how) => assert.ok(existsSync(path), `${path} is missing. Create it with: ${how}`);
 
-// `-checks`: translated with --null-check --store-check (translator.md, "Memory checks"), which must raise nothing.
-for (const [name, dir] of ['hello', 'l2_int', 'l2_crt', 'l2_float'].flatMap((n) => [[n, n], [n, `${n}-checks`]])) {
+// `-checks`: translated with --null-check --store-check (translator.md, "Memory checks"), which must raise nothing;
+// `-reference`: translated with --sync-all --no-structured, which must give the same output.
+for (const [name, dir] of ['hello', 'l2_int', 'l2_crt', 'l2_float'].flatMap((n) => [[n, n], [n, `${n}-checks`], [n, `${n}-reference`]])) {
   test(`${dir}.exe translated: raw stdout (text mode) and exit code match the native run`, () => {
     const exe = `${root}target/native/${name}.exe`;
     const aot = `${root}target/native/${dir}/${name}.wasm`;
