@@ -96,13 +96,15 @@ fn known_addresses_are_not_translated_again() {
 /// `translate_regions` makes with them.
 #[test]
 fn flags_name_the_options() {
-    for flags in 0..8u32 {
+    for flags in 0..32u32 {
         let req = Req { flags, ..request() };
         let wasm = handle(&memory(&req, &[]), REQ_PTR).unwrap();
         let opts = x64wasm::Options {
             null_check: flags & abi::RT_FLAG_NULL_CHECK != 0,
             store_check: flags & abi::RT_FLAG_STORE_CHECK != 0,
             counters: flags & abi::RT_FLAG_COUNTERS != 0,
+            sync_all: flags & abi::RT_FLAG_SYNC_ALL != 0,
+            structured: flags & abi::RT_FLAG_REFERENCE_LAYOUT == 0,
             ..x64wasm::Options::default()
         };
         let region = x64wasm::CodeRegion {
@@ -117,6 +119,8 @@ fn flags_name_the_options() {
     assert!(w(0) != w(abi::RT_FLAG_NULL_CHECK));
     assert!(w(0) != w(abi::RT_FLAG_STORE_CHECK));
     assert!(w(0) != w(abi::RT_FLAG_COUNTERS));
+    assert!(w(0) != w(abi::RT_FLAG_SYNC_ALL));
+    assert!(w(0) != w(abi::RT_FLAG_REFERENCE_LAYOUT));
 }
 
 fn error(req: &Req, known: &[u64], req_ptr: u32) -> String {

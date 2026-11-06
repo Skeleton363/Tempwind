@@ -265,6 +265,10 @@ pub const RT_FLAG_NULL_CHECK: u32 = 1 << 0;
 pub const RT_FLAG_STORE_CHECK: u32 = 1 << 1;
 /// Request flag: translate with `Options::counters`.
 pub const RT_FLAG_COUNTERS: u32 = 1 << 2;
+/// Request flag: translate with `Options::sync_all` (the reference sync).
+pub const RT_FLAG_SYNC_ALL: u32 = 1 << 3;
+/// Request flag: translate with `Options::structured` false (the reference layout).
+pub const RT_FLAG_REFERENCE_LAYOUT: u32 = 1 << 4;
 /// Size of a run-time translator result.
 pub const RT_RESULT_SIZE: usize = 20;
 /// Result field: 0 ok, 1 error (u32).

@@ -85,11 +85,19 @@ pub struct LoadPlan {
 
 /// A load plan's `options`: passed as the run-time translator's request
 /// flags (`abi.md`, "Request").
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanOptions {
     pub null_check: bool,
     pub store_check: bool,
     pub counters: bool,
+    pub sync_all: bool,
+    pub structured: bool,
+}
+
+impl Default for PlanOptions {
+    fn default() -> PlanOptions {
+        PlanOptions::from(&Options::default())
+    }
 }
 
 impl From<&Options> for PlanOptions {
@@ -98,6 +106,8 @@ impl From<&Options> for PlanOptions {
             null_check: o.null_check,
             store_check: o.store_check,
             counters: o.counters,
+            sync_all: o.sync_all,
+            structured: o.structured,
         }
     }
 }
@@ -244,11 +254,13 @@ impl LoadPlan {
             null_check,
             store_check,
             counters,
+            sync_all,
+            structured,
         } = self.options;
         writeln!(
             o,
             "  \"options\": {{ \"nullCheck\": {null_check}, \"storeCheck\": {store_check}, \
-             \"counters\": {counters} }}"
+             \"counters\": {counters}, \"syncAll\": {sync_all}, \"structured\": {structured} }}"
         )?;
         writeln!(o, "}}")
     }

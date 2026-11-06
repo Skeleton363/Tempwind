@@ -108,12 +108,17 @@ fn plan_records_the_options() {
     std::fs::create_dir_all(&dir).unwrap();
     let exe = dir.join("tiny.exe");
     std::fs::write(&exe, minimal_image()).unwrap();
-    let cases: [(&[&str], [bool; 3]); 3] = [
-        (&[], [false, false, false]),
-        (&["--null-check", "--counters"], [true, false, true]),
-        (&["--store-check"], [false, true, false]),
+    let cases: [(&[&str], [bool; 5]); 5] = [
+        (&[], [false, false, false, false, true]),
+        (
+            &["--null-check", "--counters"],
+            [true, false, true, false, true],
+        ),
+        (&["--store-check"], [false, true, false, false, true]),
+        (&["--sync-all"], [false, false, false, true, true]),
+        (&["--no-structured"], [false, false, false, false, false]),
     ];
-    for (flags, [null_check, store, counters]) in cases {
+    for (flags, [null_check, store, counters, sync_all, structured]) in cases {
         let out_dir = dir.join(format!("out{}", flags.join("")));
         let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
             .arg("translate-pe")
@@ -133,7 +138,13 @@ fn plan_records_the_options() {
                 .unwrap();
         assert_eq!(
             plan["options"],
-            serde_json::json!({ "nullCheck": null_check, "storeCheck": store, "counters": counters }),
+            serde_json::json!({
+                "nullCheck": null_check,
+                "storeCheck": store,
+                "counters": counters,
+                "syncAll": sync_all,
+                "structured": structured,
+            }),
             "{flags:?}"
         );
     }
