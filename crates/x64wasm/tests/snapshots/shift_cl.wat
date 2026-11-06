@@ -477,126 +477,124 @@
     i64.load offset=168 align=1
     local.set $cc_r
     block ;; label = @1
-      loop ;; label = @2
+      block ;; label = @2
         block ;; label = @3
-          block ;; label = @4
-            local.get $entry
-            br_table 1 (;@3;) 0 (;@4;)
-          end
-          unreachable
+          local.get $entry
+          br_table 1 (;@2;) 0 (;@3;)
         end
-        local.get $rcx
-        i64.const 255
-        i64.and
-        i64.const 63
-        i64.and
-        local.set $t1
-        local.get $rax
-        local.get $t1
-        i64.shl
-        local.set $t2
-        local.get $t1
-        i64.const 0
-        i64.ne
-        if ;; label = @3
-          i32.const 32
-          local.set $cc_op
-          local.get $rax
-          local.set $cc_a
-          local.get $t1
-          local.set $cc_b
-          local.get $t2
-          local.set $cc_r
-        end
-        local.get $t2
-        local.set $rax
-        local.get $rdx
-        i64.const 4294967295
-        i64.and
-        local.set $t0
-        local.get $cc_op
-        local.get $cc_a
-        local.get $cc_b
-        local.get $cc_r
-        call $flags
-        local.set $scratch
-        local.get $scratch
-        i64.const 1
-        i64.and
-        i64.const 0
-        i64.ne
-        i64.extend_i32_u
-        i64.const 32
-        i64.shl
-        local.get $t0
-        i64.or
-        local.set $t3
-        local.get $t3
-        i64.const 1
-        i64.shl
-        local.set $t4
-        local.get $t3
-        i64.const 32
-        i64.shr_u
-        local.set $t5
-        local.get $t4
-        local.get $t5
-        i64.or
-        i64.const 8589934591
-        i64.and
-        local.set $t7
-        local.get $t7
-        i64.const 32
-        i64.shr_u
-        local.set $t8
-        local.get $t7
-        i64.const 4294967295
-        i64.and
-        local.set $t9
-        local.get $t9
-        i64.const 31
-        i64.shr_u
-        i64.const 1
-        i64.and
-        local.get $t8
-        i64.xor
-        i64.const 11
-        i64.shl
-        local.set $t13
-        local.get $t8
-        local.get $t13
-        i64.or
-        local.set $t14
-        local.get $cc_op
-        local.get $cc_a
-        local.get $cc_b
-        local.get $cc_r
-        call $flags
-        i64.const -2050
-        i64.and
-        local.get $t14
-        i64.or
-        local.set $cc_a
-        i32.const 0
-        local.set $cc_op
-        local.get $t9
-        local.set $rdx
-        local.get $rsp
-        i64.load align=1
-        local.set $t0
-        local.get $rsp
-        i64.const 8
-        i64.add
-        local.set $rsp
-        local.get $t0
-        local.tee $rip
-        local.get $ret
-        i64.ne
-        local.set $status
-        i32.const 65557
-        local.set $mask
-        br 1 (;@1;)
+        unreachable
       end
+      local.get $rcx
+      i64.const 255
+      i64.and
+      i64.const 63
+      i64.and
+      local.set $t1
+      local.get $rax
+      local.get $t1
+      i64.shl
+      local.set $t2
+      local.get $t1
+      i64.const 0
+      i64.ne
+      if ;; label = @2
+        i32.const 32
+        local.set $cc_op
+        local.get $rax
+        local.set $cc_a
+        local.get $t1
+        local.set $cc_b
+        local.get $t2
+        local.set $cc_r
+      end
+      local.get $t2
+      local.set $rax
+      local.get $rdx
+      i64.const 4294967295
+      i64.and
+      local.set $t0
+      local.get $cc_op
+      local.get $cc_a
+      local.get $cc_b
+      local.get $cc_r
+      call $flags
+      local.set $scratch
+      local.get $scratch
+      i64.const 1
+      i64.and
+      i64.const 0
+      i64.ne
+      i64.extend_i32_u
+      i64.const 32
+      i64.shl
+      local.get $t0
+      i64.or
+      local.set $t3
+      local.get $t3
+      i64.const 1
+      i64.shl
+      local.set $t4
+      local.get $t3
+      i64.const 32
+      i64.shr_u
+      local.set $t5
+      local.get $t4
+      local.get $t5
+      i64.or
+      i64.const 8589934591
+      i64.and
+      local.set $t7
+      local.get $t7
+      i64.const 32
+      i64.shr_u
+      local.set $t8
+      local.get $t7
+      i64.const 4294967295
+      i64.and
+      local.set $t9
+      local.get $t9
+      i64.const 31
+      i64.shr_u
+      i64.const 1
+      i64.and
+      local.get $t8
+      i64.xor
+      i64.const 11
+      i64.shl
+      local.set $t13
+      local.get $t8
+      local.get $t13
+      i64.or
+      local.set $t14
+      local.get $cc_op
+      local.get $cc_a
+      local.get $cc_b
+      local.get $cc_r
+      call $flags
+      i64.const -2050
+      i64.and
+      local.get $t14
+      i64.or
+      local.set $cc_a
+      i32.const 0
+      local.set $cc_op
+      local.get $t9
+      local.set $rdx
+      local.get $rsp
+      i64.load align=1
+      local.set $t0
+      local.get $rsp
+      i64.const 8
+      i64.add
+      local.set $rsp
+      local.get $t0
+      local.tee $rip
+      local.get $ret
+      i64.ne
+      local.set $status
+      i32.const 65557
+      local.set $mask
+      br 0 (;@1;)
       unreachable
     end
     local.get $state

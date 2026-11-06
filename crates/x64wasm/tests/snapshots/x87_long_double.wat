@@ -476,21 +476,74 @@
     i64.load offset=64 align=1
     local.set $r8
     block ;; label = @1
-      loop ;; label = @2
+      block ;; label = @2
         block ;; label = @3
-          block ;; label = @4
-            local.get $entry
-            br_table 1 (;@3;) 0 (;@4;)
-          end
-          unreachable
+          local.get $entry
+          br_table 1 (;@2;) 0 (;@3;)
         end
-        local.get $rcx
-        local.set $x87_addr
+        unreachable
+      end
+      local.get $rcx
+      local.set $x87_addr
+      local.get $state
+      i32.load16_u offset=518 align=1
+      local.tee $x87_fsw
+      i32.const 128
+      i32.and
+      if ;; label = @2
         local.get $state
-        i32.load16_u offset=518 align=1
-        local.tee $x87_fsw
-        i32.const 128
+        i32.const 2
+        i32.store offset=144 align=1
+        i64.const 4096
+        local.set $rip
+        i32.const 2
+        local.set $status
+        i32.const 0
+        local.set $mask
+        br 1 (;@1;)
+      end
+      local.get $x87_fsw
+      i32.const 11
+      i32.shr_u
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      i32.load16_u offset=520 align=1
+      local.set $x87_ftw
+      local.get $state
+      i32.load16_u offset=516 align=1
+      local.set $x87_fcw
+      local.get $x87_addr
+      i64.load align=1
+      local.set $x87_bm
+      local.get $x87_addr
+      i32.load16_u offset=8 align=1
+      local.set $x87_bse
+      local.get $x87_top
+      i32.const -1
+      i32.add
+      i32.const 7
+      i32.and
+      local.set $x87_p
+      local.get $x87_ftw
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shr_u
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      i32.eqz
+      local.tee $x87_rse
+      if ;; label = @2
+        local.get $x87_rse
+        local.set $x87_ase
+        local.get $x87_fcw
+        i32.const 1
         i32.and
+        i32.eqz
         if ;; label = @3
           local.get $state
           i32.const 2
@@ -503,155 +556,186 @@
           local.set $mask
           br 2 (;@1;)
         end
-        local.get $x87_fsw
-        i32.const 11
-        i32.shr_u
-        i32.const 7
-        i32.and
-        local.set $x87_top
-        local.get $state
-        i32.load16_u offset=520 align=1
-        local.set $x87_ftw
-        local.get $state
-        i32.load16_u offset=516 align=1
-        local.set $x87_fcw
-        local.get $x87_addr
-        i64.load align=1
-        local.set $x87_bm
-        local.get $x87_addr
-        i32.load16_u offset=8 align=1
-        local.set $x87_bse
-        local.get $x87_top
-        i32.const -1
-        i32.add
-        i32.const 7
-        i32.and
-        local.set $x87_p
-        local.get $x87_ftw
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shr_u
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        i32.eqz
-        local.tee $x87_rse
-        if ;; label = @3
-          local.get $x87_rse
-          local.set $x87_ase
-          local.get $x87_fcw
-          i32.const 1
-          i32.and
-          i32.eqz
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4096
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          i64.const -4611686018427387904
-          local.set $x87_rm
-          i32.const 65535
-          local.set $x87_rse
-          i32.const 65
-          local.set $x87_st
-          local.get $x87_st
-          local.get $x87_ase
-          i32.const 9
-          i32.shl
-          i32.or
-          local.set $x87_st
-        else
-          local.get $x87_bm
-          local.set $x87_rm
-          local.get $x87_bse
-          local.set $x87_rse
-          i32.const 0
-          local.set $x87_st
-        end
-        local.get $state
-        local.get $x87_p
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        local.get $x87_rm
-        i64.store offset=528 align=1
-        local.get $state
-        local.get $x87_p
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        local.get $x87_rse
-        i32.store16 offset=536 align=1
-        local.get $x87_ftw
-        i32.const 3
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.const -1
-        i32.xor
-        i32.and
-        i32.const 2
-        i32.const 2
-        local.get $x87_rm
-        i64.eqz
-        i32.sub
-        local.get $x87_rm
-        i64.const 0
-        i64.ge_s
-        i32.const 1
-        i32.shl
-        local.get $x87_rse
-        i32.const 32767
-        i32.and
-        i32.eqz
-        select
-        local.get $x87_rse
-        i32.const 32767
-        i32.and
-        i32.const 32767
-        i32.eq
-        select
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.or
-        local.set $x87_ftw
-        local.get $x87_p
-        local.set $x87_top
-        local.get $state
-        local.get $x87_fsw
-        i32.const -14849
-        i32.and
+        i64.const -4611686018427387904
+        local.set $x87_rm
+        i32.const 65535
+        local.set $x87_rse
+        i32.const 65
+        local.set $x87_st
         local.get $x87_st
-        i32.const 639
-        i32.and
-        i32.or
-        local.get $x87_top
-        i32.const 11
+        local.get $x87_ase
+        i32.const 9
         i32.shl
         i32.or
-        i32.store16 offset=518 align=1
+        local.set $x87_st
+      else
+        local.get $x87_bm
+        local.set $x87_rm
+        local.get $x87_bse
+        local.set $x87_rse
+        i32.const 0
+        local.set $x87_st
+      end
+      local.get $state
+      local.get $x87_p
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      local.get $x87_rm
+      i64.store offset=528 align=1
+      local.get $state
+      local.get $x87_p
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      local.get $x87_rse
+      i32.store16 offset=536 align=1
+      local.get $x87_ftw
+      i32.const 3
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.const -1
+      i32.xor
+      i32.and
+      i32.const 2
+      i32.const 2
+      local.get $x87_rm
+      i64.eqz
+      i32.sub
+      local.get $x87_rm
+      i64.const 0
+      i64.ge_s
+      i32.const 1
+      i32.shl
+      local.get $x87_rse
+      i32.const 32767
+      i32.and
+      i32.eqz
+      select
+      local.get $x87_rse
+      i32.const 32767
+      i32.and
+      i32.const 32767
+      i32.eq
+      select
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.or
+      local.set $x87_ftw
+      local.get $x87_p
+      local.set $x87_top
+      local.get $state
+      local.get $x87_fsw
+      i32.const -14849
+      i32.and
+      local.get $x87_st
+      i32.const 639
+      i32.and
+      i32.or
+      local.get $x87_top
+      i32.const 11
+      i32.shl
+      i32.or
+      i32.store16 offset=518 align=1
+      local.get $state
+      local.get $x87_ftw
+      i32.store16 offset=520 align=1
+      local.get $rdx
+      local.set $x87_addr
+      local.get $state
+      i32.load16_u offset=518 align=1
+      local.tee $x87_fsw
+      i32.const 128
+      i32.and
+      if ;; label = @2
         local.get $state
-        local.get $x87_ftw
-        i32.store16 offset=520 align=1
-        local.get $rdx
-        local.set $x87_addr
-        local.get $state
-        i32.load16_u offset=518 align=1
-        local.tee $x87_fsw
+        i32.const 2
+        i32.store offset=144 align=1
+        i64.const 4098
+        local.set $rip
+        i32.const 2
+        local.set $status
+        i32.const 0
+        local.set $mask
+        br 1 (;@1;)
+      end
+      local.get $x87_fsw
+      i32.const 11
+      i32.shr_u
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      i32.load16_u offset=520 align=1
+      local.set $x87_ftw
+      local.get $state
+      i32.load16_u offset=516 align=1
+      local.set $x87_fcw
+      local.get $x87_addr
+      i64.load32_s align=1
+      local.set $x87_bm
+      local.get $x87_top
+      i32.const -1
+      i32.add
+      i32.const 7
+      i32.and
+      local.set $x87_p
+      local.get $x87_ftw
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shr_u
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      i32.eqz
+      local.tee $x87_rse
+      if ;; label = @2
+        local.get $x87_rse
+        local.set $x87_ase
+        local.get $x87_fcw
+        i32.const 1
+        i32.and
+        i32.eqz
+        if ;; label = @3
+          local.get $state
+          i32.const 2
+          i32.store offset=144 align=1
+          i64.const 4098
+          local.set $rip
+          i32.const 2
+          local.set $status
+          i32.const 0
+          local.set $mask
+          br 2 (;@1;)
+        end
+        i64.const -4611686018427387904
+        local.set $x87_rm
+        i32.const 65535
+        local.set $x87_rse
+        i32.const 65
+        local.set $x87_st
+        local.get $x87_st
+        local.get $x87_ase
+        i32.const 9
+        i32.shl
+        i32.or
+        local.set $x87_st
+      else
+        local.get $x87_bm
+        i32.const 4
+        local.get $x87_fcw
+        call $fp.f80_load
+        local.set $x87_rm
+        call $fp.status
+        local.tee $x87_st
         i32.const 128
         i32.and
         if ;; label = @3
@@ -666,169 +750,203 @@
           local.set $mask
           br 2 (;@1;)
         end
-        local.get $x87_fsw
-        i32.const 11
-        i32.shr_u
-        i32.const 7
-        i32.and
-        local.set $x87_top
-        local.get $state
-        i32.load16_u offset=520 align=1
-        local.set $x87_ftw
-        local.get $state
-        i32.load16_u offset=516 align=1
-        local.set $x87_fcw
-        local.get $x87_addr
-        i64.load32_s align=1
-        local.set $x87_bm
-        local.get $x87_top
-        i32.const -1
-        i32.add
-        i32.const 7
-        i32.and
-        local.set $x87_p
-        local.get $x87_ftw
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shr_u
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        i32.eqz
-        local.tee $x87_rse
-        if ;; label = @3
-          local.get $x87_rse
-          local.set $x87_ase
-          local.get $x87_fcw
-          i32.const 1
-          i32.and
-          i32.eqz
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4098
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          i64.const -4611686018427387904
-          local.set $x87_rm
-          i32.const 65535
-          local.set $x87_rse
-          i32.const 65
-          local.set $x87_st
-          local.get $x87_st
-          local.get $x87_ase
-          i32.const 9
-          i32.shl
-          i32.or
-          local.set $x87_st
-        else
-          local.get $x87_bm
-          i32.const 4
-          local.get $x87_fcw
-          call $fp.f80_load
-          local.set $x87_rm
-          call $fp.status
-          local.tee $x87_st
-          i32.const 128
-          i32.and
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4098
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          local.get $x87_st
-          i32.const 16
-          i32.shr_u
-          local.set $x87_rse
-        end
-        local.get $state
-        local.get $x87_p
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        local.get $x87_rm
-        i64.store offset=528 align=1
-        local.get $state
-        local.get $x87_p
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        local.get $x87_rse
-        i32.store16 offset=536 align=1
-        local.get $x87_ftw
-        i32.const 3
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.const -1
-        i32.xor
-        i32.and
-        i32.const 2
-        i32.const 2
-        local.get $x87_rm
-        i64.eqz
-        i32.sub
-        local.get $x87_rm
-        i64.const 0
-        i64.ge_s
-        i32.const 1
-        i32.shl
-        local.get $x87_rse
-        i32.const 32767
-        i32.and
-        i32.eqz
-        select
-        local.get $x87_rse
-        i32.const 32767
-        i32.and
-        i32.const 32767
-        i32.eq
-        select
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.or
-        local.set $x87_ftw
-        local.get $x87_p
-        local.set $x87_top
-        local.get $state
-        local.get $x87_fsw
-        i32.const -14849
-        i32.and
         local.get $x87_st
-        i32.const 639
+        i32.const 16
+        i32.shr_u
+        local.set $x87_rse
+      end
+      local.get $state
+      local.get $x87_p
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      local.get $x87_rm
+      i64.store offset=528 align=1
+      local.get $state
+      local.get $x87_p
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      local.get $x87_rse
+      i32.store16 offset=536 align=1
+      local.get $x87_ftw
+      i32.const 3
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.const -1
+      i32.xor
+      i32.and
+      i32.const 2
+      i32.const 2
+      local.get $x87_rm
+      i64.eqz
+      i32.sub
+      local.get $x87_rm
+      i64.const 0
+      i64.ge_s
+      i32.const 1
+      i32.shl
+      local.get $x87_rse
+      i32.const 32767
+      i32.and
+      i32.eqz
+      select
+      local.get $x87_rse
+      i32.const 32767
+      i32.and
+      i32.const 32767
+      i32.eq
+      select
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.or
+      local.set $x87_ftw
+      local.get $x87_p
+      local.set $x87_top
+      local.get $state
+      local.get $x87_fsw
+      i32.const -14849
+      i32.and
+      local.get $x87_st
+      i32.const 639
+      i32.and
+      i32.or
+      local.get $x87_top
+      i32.const 11
+      i32.shl
+      i32.or
+      i32.store16 offset=518 align=1
+      local.get $state
+      local.get $x87_ftw
+      i32.store16 offset=520 align=1
+      local.get $state
+      i32.load16_u offset=518 align=1
+      local.tee $x87_fsw
+      i32.const 128
+      i32.and
+      if ;; label = @2
+        local.get $state
+        i32.const 2
+        i32.store offset=144 align=1
+        i64.const 4100
+        local.set $rip
+        i32.const 2
+        local.set $status
+        i32.const 0
+        local.set $mask
+        br 1 (;@1;)
+      end
+      local.get $x87_fsw
+      i32.const 11
+      i32.shr_u
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      i32.load16_u offset=520 align=1
+      local.set $x87_ftw
+      local.get $state
+      i32.load16_u offset=516 align=1
+      local.set $x87_fcw
+      local.get $x87_top
+      i32.const 1
+      i32.add
+      i32.const 7
+      i32.and
+      local.set $x87_p
+      local.get $x87_top
+      local.set $x87_q
+      local.get $state
+      local.get $x87_q
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      i64.load offset=528 align=1
+      local.set $x87_bm
+      local.get $state
+      local.get $x87_q
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      i32.load16_u offset=536 align=1
+      local.set $x87_bse
+      local.get $x87_ftw
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shr_u
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      local.get $x87_ftw
+      local.get $x87_q
+      i32.const 1
+      i32.shl
+      i32.shr_u
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      i32.or
+      if ;; label = @2
+        local.get $x87_fcw
+        i32.const 1
         i32.and
-        i32.or
-        local.get $x87_top
-        i32.const 11
-        i32.shl
-        i32.or
-        i32.store16 offset=518 align=1
+        i32.eqz
+        if ;; label = @3
+          local.get $state
+          i32.const 2
+          i32.store offset=144 align=1
+          i64.const 4100
+          local.set $rip
+          i32.const 2
+          local.set $status
+          i32.const 0
+          local.set $mask
+          br 2 (;@1;)
+        end
+        i64.const -4611686018427387904
+        local.set $x87_rm
+        i32.const 65535
+        local.set $x87_rse
+        i32.const 65
+        local.set $x87_st
+      else
         local.get $state
-        local.get $x87_ftw
-        i32.store16 offset=520 align=1
+        local.get $x87_p
+        i64.extend_i32_u
+        i64.const 4
+        i64.shl
+        i64.add
+        i64.load offset=528 align=1
+        local.set $x87_am
         local.get $state
-        i32.load16_u offset=518 align=1
-        local.tee $x87_fsw
+        local.get $x87_p
+        i64.extend_i32_u
+        i64.const 4
+        i64.shl
+        i64.add
+        i32.load16_u offset=536 align=1
+        local.set $x87_ase
+        local.get $x87_am
+        local.get $x87_ase
+        local.get $x87_bm
+        local.get $x87_bse
+        i32.const 0
+        local.get $x87_fcw
+        call $fp.f80_add
+        local.set $x87_rm
+        call $fp.status
+        local.tee $x87_st
         i32.const 128
         i32.and
         if ;; label = @3
@@ -843,225 +961,154 @@
           local.set $mask
           br 2 (;@1;)
         end
-        local.get $x87_fsw
-        i32.const 11
+        local.get $x87_st
+        i32.const 16
         i32.shr_u
-        i32.const 7
-        i32.and
-        local.set $x87_top
+        local.set $x87_rse
+      end
+      local.get $state
+      local.get $x87_p
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      local.get $x87_rm
+      i64.store offset=528 align=1
+      local.get $state
+      local.get $x87_p
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      local.get $x87_rse
+      i32.store16 offset=536 align=1
+      local.get $x87_ftw
+      i32.const 3
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.const -1
+      i32.xor
+      i32.and
+      i32.const 2
+      i32.const 2
+      local.get $x87_rm
+      i64.eqz
+      i32.sub
+      local.get $x87_rm
+      i64.const 0
+      i64.ge_s
+      i32.const 1
+      i32.shl
+      local.get $x87_rse
+      i32.const 32767
+      i32.and
+      i32.eqz
+      select
+      local.get $x87_rse
+      i32.const 32767
+      i32.and
+      i32.const 32767
+      i32.eq
+      select
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.or
+      local.set $x87_ftw
+      local.get $x87_ftw
+      i32.const 3
+      local.get $x87_top
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.const -1
+      i32.xor
+      i32.and
+      i32.const 3
+      local.get $x87_top
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.or
+      local.set $x87_ftw
+      local.get $x87_top
+      i32.const 1
+      i32.add
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      local.get $x87_fsw
+      i32.const -14849
+      i32.and
+      local.get $x87_st
+      i32.const 639
+      i32.and
+      i32.or
+      local.get $x87_top
+      i32.const 11
+      i32.shl
+      i32.or
+      i32.store16 offset=518 align=1
+      local.get $state
+      local.get $x87_ftw
+      i32.store16 offset=520 align=1
+      local.get $state
+      i32.load16_u offset=518 align=1
+      local.tee $x87_fsw
+      i32.const 128
+      i32.and
+      if ;; label = @2
         local.get $state
-        i32.load16_u offset=520 align=1
-        local.set $x87_ftw
-        local.get $state
-        i32.load16_u offset=516 align=1
-        local.set $x87_fcw
-        local.get $x87_top
-        i32.const 1
-        i32.add
-        i32.const 7
-        i32.and
-        local.set $x87_p
-        local.get $x87_top
-        local.set $x87_q
-        local.get $state
-        local.get $x87_q
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        i64.load offset=528 align=1
-        local.set $x87_bm
-        local.get $state
-        local.get $x87_q
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        i32.load16_u offset=536 align=1
-        local.set $x87_bse
-        local.get $x87_ftw
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shr_u
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        local.get $x87_ftw
-        local.get $x87_q
-        i32.const 1
-        i32.shl
-        i32.shr_u
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        i32.or
-        if ;; label = @3
-          local.get $x87_fcw
-          i32.const 1
-          i32.and
-          i32.eqz
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4100
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          i64.const -4611686018427387904
-          local.set $x87_rm
-          i32.const 65535
-          local.set $x87_rse
-          i32.const 65
-          local.set $x87_st
-        else
-          local.get $state
-          local.get $x87_p
-          i64.extend_i32_u
-          i64.const 4
-          i64.shl
-          i64.add
-          i64.load offset=528 align=1
-          local.set $x87_am
-          local.get $state
-          local.get $x87_p
-          i64.extend_i32_u
-          i64.const 4
-          i64.shl
-          i64.add
-          i32.load16_u offset=536 align=1
-          local.set $x87_ase
-          local.get $x87_am
-          local.get $x87_ase
-          local.get $x87_bm
-          local.get $x87_bse
-          i32.const 0
-          local.get $x87_fcw
-          call $fp.f80_add
-          local.set $x87_rm
-          call $fp.status
-          local.tee $x87_st
-          i32.const 128
-          i32.and
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4100
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          local.get $x87_st
-          i32.const 16
-          i32.shr_u
-          local.set $x87_rse
-        end
-        local.get $state
-        local.get $x87_p
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        local.get $x87_rm
-        i64.store offset=528 align=1
-        local.get $state
-        local.get $x87_p
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        local.get $x87_rse
-        i32.store16 offset=536 align=1
-        local.get $x87_ftw
-        i32.const 3
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.const -1
-        i32.xor
-        i32.and
         i32.const 2
+        i32.store offset=144 align=1
+        i64.const 4102
+        local.set $rip
         i32.const 2
-        local.get $x87_rm
-        i64.eqz
-        i32.sub
-        local.get $x87_rm
-        i64.const 0
-        i64.ge_s
-        i32.const 1
-        i32.shl
+        local.set $status
+        i32.const 0
+        local.set $mask
+        br 1 (;@1;)
+      end
+      local.get $x87_fsw
+      i32.const 11
+      i32.shr_u
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      i32.load16_u offset=520 align=1
+      local.set $x87_ftw
+      local.get $state
+      i32.load16_u offset=516 align=1
+      local.set $x87_fcw
+      local.get $x87_top
+      i32.const -1
+      i32.add
+      i32.const 7
+      i32.and
+      local.set $x87_p
+      local.get $x87_ftw
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shr_u
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      i32.eqz
+      local.tee $x87_rse
+      if ;; label = @2
         local.get $x87_rse
-        i32.const 32767
+        local.set $x87_ase
+        local.get $x87_fcw
+        i32.const 1
         i32.and
         i32.eqz
-        select
-        local.get $x87_rse
-        i32.const 32767
-        i32.and
-        i32.const 32767
-        i32.eq
-        select
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.or
-        local.set $x87_ftw
-        local.get $x87_ftw
-        i32.const 3
-        local.get $x87_top
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.const -1
-        i32.xor
-        i32.and
-        i32.const 3
-        local.get $x87_top
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.or
-        local.set $x87_ftw
-        local.get $x87_top
-        i32.const 1
-        i32.add
-        i32.const 7
-        i32.and
-        local.set $x87_top
-        local.get $state
-        local.get $x87_fsw
-        i32.const -14849
-        i32.and
-        local.get $x87_st
-        i32.const 639
-        i32.and
-        i32.or
-        local.get $x87_top
-        i32.const 11
-        i32.shl
-        i32.or
-        i32.store16 offset=518 align=1
-        local.get $state
-        local.get $x87_ftw
-        i32.store16 offset=520 align=1
-        local.get $state
-        i32.load16_u offset=518 align=1
-        local.tee $x87_fsw
-        i32.const 128
-        i32.and
         if ;; label = @3
           local.get $state
           i32.const 2
@@ -1074,147 +1121,217 @@
           local.set $mask
           br 2 (;@1;)
         end
-        local.get $x87_fsw
-        i32.const 11
-        i32.shr_u
-        i32.const 7
-        i32.and
-        local.set $x87_top
-        local.get $state
-        i32.load16_u offset=520 align=1
-        local.set $x87_ftw
-        local.get $state
-        i32.load16_u offset=516 align=1
-        local.set $x87_fcw
-        local.get $x87_top
-        i32.const -1
-        i32.add
-        i32.const 7
-        i32.and
-        local.set $x87_p
-        local.get $x87_ftw
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shr_u
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        i32.eqz
-        local.tee $x87_rse
-        if ;; label = @3
-          local.get $x87_rse
-          local.set $x87_ase
-          local.get $x87_fcw
-          i32.const 1
-          i32.and
-          i32.eqz
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4102
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          i64.const -4611686018427387904
-          local.set $x87_rm
-          i32.const 65535
-          local.set $x87_rse
-          i32.const 65
-          local.set $x87_st
-          local.get $x87_st
-          local.get $x87_ase
-          i32.const 9
-          i32.shl
-          i32.or
-          local.set $x87_st
-        else
-          i64.const 0
-          local.set $x87_rm
-          i32.const 0
-          local.set $x87_rse
-          i32.const 0
-          local.set $x87_st
-        end
-        local.get $state
-        local.get $x87_p
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        local.get $x87_rm
-        i64.store offset=528 align=1
-        local.get $state
-        local.get $x87_p
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        local.get $x87_rse
-        i32.store16 offset=536 align=1
-        local.get $x87_ftw
-        i32.const 3
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.const -1
-        i32.xor
-        i32.and
-        i32.const 2
-        i32.const 2
-        local.get $x87_rm
-        i64.eqz
-        i32.sub
-        local.get $x87_rm
-        i64.const 0
-        i64.ge_s
-        i32.const 1
-        i32.shl
-        local.get $x87_rse
-        i32.const 32767
-        i32.and
-        i32.eqz
-        select
-        local.get $x87_rse
-        i32.const 32767
-        i32.and
-        i32.const 32767
-        i32.eq
-        select
-        local.get $x87_p
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.or
-        local.set $x87_ftw
-        local.get $x87_p
-        local.set $x87_top
-        local.get $state
-        local.get $x87_fsw
-        i32.const -14849
-        i32.and
+        i64.const -4611686018427387904
+        local.set $x87_rm
+        i32.const 65535
+        local.set $x87_rse
+        i32.const 65
+        local.set $x87_st
         local.get $x87_st
-        i32.const 639
-        i32.and
-        i32.or
-        local.get $x87_top
-        i32.const 11
+        local.get $x87_ase
+        i32.const 9
         i32.shl
         i32.or
-        i32.store16 offset=518 align=1
+        local.set $x87_st
+      else
+        i64.const 0
+        local.set $x87_rm
+        i32.const 0
+        local.set $x87_rse
+        i32.const 0
+        local.set $x87_st
+      end
+      local.get $state
+      local.get $x87_p
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      local.get $x87_rm
+      i64.store offset=528 align=1
+      local.get $state
+      local.get $x87_p
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      local.get $x87_rse
+      i32.store16 offset=536 align=1
+      local.get $x87_ftw
+      i32.const 3
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.const -1
+      i32.xor
+      i32.and
+      i32.const 2
+      i32.const 2
+      local.get $x87_rm
+      i64.eqz
+      i32.sub
+      local.get $x87_rm
+      i64.const 0
+      i64.ge_s
+      i32.const 1
+      i32.shl
+      local.get $x87_rse
+      i32.const 32767
+      i32.and
+      i32.eqz
+      select
+      local.get $x87_rse
+      i32.const 32767
+      i32.and
+      i32.const 32767
+      i32.eq
+      select
+      local.get $x87_p
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.or
+      local.set $x87_ftw
+      local.get $x87_p
+      local.set $x87_top
+      local.get $state
+      local.get $x87_fsw
+      i32.const -14849
+      i32.and
+      local.get $x87_st
+      i32.const 639
+      i32.and
+      i32.or
+      local.get $x87_top
+      i32.const 11
+      i32.shl
+      i32.or
+      i32.store16 offset=518 align=1
+      local.get $state
+      local.get $x87_ftw
+      i32.store16 offset=520 align=1
+      local.get $state
+      i32.load16_u offset=518 align=1
+      local.tee $x87_fsw
+      i32.const 128
+      i32.and
+      if ;; label = @2
         local.get $state
-        local.get $x87_ftw
-        i32.store16 offset=520 align=1
+        i32.const 2
+        i32.store offset=144 align=1
+        i64.const 4104
+        local.set $rip
+        i32.const 2
+        local.set $status
+        i32.const 0
+        local.set $mask
+        br 1 (;@1;)
+      end
+      local.get $x87_fsw
+      i32.const 11
+      i32.shr_u
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      i32.load16_u offset=520 align=1
+      local.set $x87_ftw
+      local.get $state
+      i32.load16_u offset=516 align=1
+      local.set $x87_fcw
+      local.get $x87_top
+      i32.const 1
+      i32.add
+      i32.const 7
+      i32.and
+      local.set $x87_q
+      local.get $state
+      local.get $x87_q
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      i64.load offset=528 align=1
+      local.set $x87_bm
+      local.get $state
+      local.get $x87_q
+      i64.extend_i32_u
+      i64.const 4
+      i64.shl
+      i64.add
+      i32.load16_u offset=536 align=1
+      local.set $x87_bse
+      local.get $x87_ftw
+      local.get $x87_top
+      i32.const 1
+      i32.shl
+      i32.shr_u
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      local.get $x87_ftw
+      local.get $x87_q
+      i32.const 1
+      i32.shl
+      i32.shr_u
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      i32.or
+      if ;; label = @2
+        local.get $x87_fcw
+        i32.const 1
+        i32.and
+        i32.eqz
+        if ;; label = @3
+          local.get $state
+          i32.const 2
+          i32.store offset=144 align=1
+          i64.const 4104
+          local.set $rip
+          i32.const 2
+          local.set $status
+          i32.const 0
+          local.set $mask
+          br 2 (;@1;)
+        end
+        i64.const -4611686018427387904
+        local.set $x87_rm
+        i32.const 65535
+        local.set $x87_rse
+        i32.const 17729
+        local.set $x87_st
+      else
         local.get $state
-        i32.load16_u offset=518 align=1
-        local.tee $x87_fsw
+        local.get $x87_top
+        i64.extend_i32_u
+        i64.const 4
+        i64.shl
+        i64.add
+        i64.load offset=528 align=1
+        local.set $x87_am
+        local.get $state
+        local.get $x87_top
+        i64.extend_i32_u
+        i64.const 4
+        i64.shl
+        i64.add
+        i32.load16_u offset=536 align=1
+        local.set $x87_ase
+        local.get $x87_am
+        local.get $x87_ase
+        local.get $x87_bm
+        local.get $x87_bse
+        i32.const 0
+        i32.const 1
+        local.get $x87_fcw
+        call $fp.f80_cmp
+        drop
+        call $fp.status
+        local.tee $x87_st
         i32.const 128
         i32.and
         if ;; label = @3
@@ -1229,187 +1346,107 @@
           local.set $mask
           br 2 (;@1;)
         end
-        local.get $x87_fsw
-        i32.const 11
-        i32.shr_u
-        i32.const 7
-        i32.and
-        local.set $x87_top
-        local.get $state
-        i32.load16_u offset=520 align=1
-        local.set $x87_ftw
-        local.get $state
-        i32.load16_u offset=516 align=1
-        local.set $x87_fcw
-        local.get $x87_top
-        i32.const 1
-        i32.add
-        i32.const 7
-        i32.and
-        local.set $x87_q
-        local.get $state
-        local.get $x87_q
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        i64.load offset=528 align=1
-        local.set $x87_bm
-        local.get $state
-        local.get $x87_q
-        i64.extend_i32_u
-        i64.const 4
-        i64.shl
-        i64.add
-        i32.load16_u offset=536 align=1
-        local.set $x87_bse
-        local.get $x87_ftw
-        local.get $x87_top
-        i32.const 1
-        i32.shl
-        i32.shr_u
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        local.get $x87_ftw
-        local.get $x87_q
-        i32.const 1
-        i32.shl
-        i32.shr_u
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        i32.or
-        if ;; label = @3
-          local.get $x87_fcw
-          i32.const 1
-          i32.and
-          i32.eqz
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4104
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          i64.const -4611686018427387904
-          local.set $x87_rm
-          i32.const 65535
-          local.set $x87_rse
-          i32.const 17729
-          local.set $x87_st
-        else
-          local.get $state
-          local.get $x87_top
-          i64.extend_i32_u
-          i64.const 4
-          i64.shl
-          i64.add
-          i64.load offset=528 align=1
-          local.set $x87_am
-          local.get $state
-          local.get $x87_top
-          i64.extend_i32_u
-          i64.const 4
-          i64.shl
-          i64.add
-          i32.load16_u offset=536 align=1
-          local.set $x87_ase
-          local.get $x87_am
-          local.get $x87_ase
-          local.get $x87_bm
-          local.get $x87_bse
-          i32.const 0
-          i32.const 1
-          local.get $x87_fcw
-          call $fp.f80_cmp
-          drop
-          call $fp.status
-          local.tee $x87_st
-          i32.const 128
-          i32.and
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4104
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          local.get $x87_st
-          local.get $x87_fsw
-          i32.const 512
-          i32.and
-          i32.or
-          local.set $x87_st
-        end
-        local.get $x87_ftw
-        i32.const 3
-        local.get $x87_top
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.const -1
-        i32.xor
-        i32.and
-        i32.const 3
-        local.get $x87_top
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.or
-        local.set $x87_ftw
-        local.get $x87_top
-        i32.const 1
-        i32.add
-        i32.const 7
-        i32.and
-        local.set $x87_top
-        local.get $state
-        local.get $x87_fsw
-        i32.const -14849
-        i32.and
         local.get $x87_st
-        i32.const 639
+        local.get $x87_fsw
+        i32.const 512
         i32.and
         i32.or
-        local.get $x87_top
-        i32.const 11
-        i32.shl
-        i32.or
-        i32.store16 offset=518 align=1
+        local.set $x87_st
+      end
+      local.get $x87_ftw
+      i32.const 3
+      local.get $x87_top
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.const -1
+      i32.xor
+      i32.and
+      i32.const 3
+      local.get $x87_top
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.or
+      local.set $x87_ftw
+      local.get $x87_top
+      i32.const 1
+      i32.add
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      local.get $x87_fsw
+      i32.const -14849
+      i32.and
+      local.get $x87_st
+      i32.const 639
+      i32.and
+      i32.or
+      local.get $x87_top
+      i32.const 11
+      i32.shl
+      i32.or
+      i32.store16 offset=518 align=1
+      local.get $state
+      local.get $x87_ftw
+      i32.store16 offset=520 align=1
+      local.get $x87_st
+      i32.const 8
+      i32.shr_u
+      i32.const 69
+      i32.and
+      i64.extend_i32_u
+      local.set $t0
+      local.get $t0
+      local.set $cc_a
+      i32.const 0
+      local.set $cc_op
+      local.get $r8
+      local.set $x87_addr
+      local.get $state
+      i32.load16_u offset=518 align=1
+      local.tee $x87_fsw
+      i32.const 128
+      i32.and
+      if ;; label = @2
         local.get $state
-        local.get $x87_ftw
-        i32.store16 offset=520 align=1
-        local.get $x87_st
-        i32.const 8
-        i32.shr_u
-        i32.const 69
+        i32.const 2
+        i32.store offset=144 align=1
+        i64.const 4106
+        local.set $rip
+        i32.const 2
+        local.set $status
+        i32.const 65536
+        local.set $mask
+        br 1 (;@1;)
+      end
+      local.get $x87_fsw
+      i32.const 11
+      i32.shr_u
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      i32.load16_u offset=520 align=1
+      local.set $x87_ftw
+      local.get $state
+      i32.load16_u offset=516 align=1
+      local.set $x87_fcw
+      local.get $x87_ftw
+      local.get $x87_top
+      i32.const 1
+      i32.shl
+      i32.shr_u
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      if ;; label = @2
+        local.get $x87_fcw
+        i32.const 1
         i32.and
-        i64.extend_i32_u
-        local.set $t0
-        local.get $t0
-        local.set $cc_a
-        i32.const 0
-        local.set $cc_op
-        local.get $r8
-        local.set $x87_addr
-        local.get $state
-        i32.load16_u offset=518 align=1
-        local.tee $x87_fsw
-        i32.const 128
-        i32.and
+        i32.eqz
         if ;; label = @3
           local.get $state
           i32.const 2
@@ -1422,150 +1459,111 @@
           local.set $mask
           br 2 (;@1;)
         end
-        local.get $x87_fsw
-        i32.const 11
-        i32.shr_u
-        i32.const 7
-        i32.and
-        local.set $x87_top
+        i64.const -4611686018427387904
+        local.set $x87_rm
+        i32.const 65535
+        local.set $x87_rse
+        i32.const 65
+        local.set $x87_st
+      else
         local.get $state
-        i32.load16_u offset=520 align=1
-        local.set $x87_ftw
-        local.get $state
-        i32.load16_u offset=516 align=1
-        local.set $x87_fcw
-        local.get $x87_ftw
         local.get $x87_top
-        i32.const 1
-        i32.shl
-        i32.shr_u
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        if ;; label = @3
-          local.get $x87_fcw
-          i32.const 1
-          i32.and
-          i32.eqz
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4106
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 65536
-            local.set $mask
-            br 3 (;@1;)
-          end
-          i64.const -4611686018427387904
-          local.set $x87_rm
-          i32.const 65535
-          local.set $x87_rse
-          i32.const 65
-          local.set $x87_st
-        else
-          local.get $state
-          local.get $x87_top
-          i64.extend_i32_u
-          i64.const 4
-          i64.shl
-          i64.add
-          i64.load offset=528 align=1
-          local.set $x87_am
-          local.get $state
-          local.get $x87_top
-          i64.extend_i32_u
-          i64.const 4
-          i64.shl
-          i64.add
-          i32.load16_u offset=536 align=1
-          local.set $x87_ase
-          local.get $x87_am
-          local.set $x87_rm
-          local.get $x87_ase
-          local.set $x87_rse
-          i32.const 0
-          local.set $x87_st
-        end
-        local.get $x87_addr
-        local.get $x87_rm
-        i64.store align=1
-        local.get $x87_addr
-        local.get $x87_rse
-        i32.store16 offset=8 align=1
-        local.get $x87_ftw
-        i32.const 3
-        local.get $x87_top
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.const -1
-        i32.xor
-        i32.and
-        i32.const 3
-        local.get $x87_top
-        i32.const 1
-        i32.shl
-        i32.shl
-        i32.or
-        local.set $x87_ftw
-        local.get $x87_top
-        i32.const 1
-        i32.add
-        i32.const 7
-        i32.and
-        local.set $x87_top
-        local.get $state
-        local.get $x87_fsw
-        i32.const -14849
-        i32.and
-        local.get $x87_st
-        i32.const 639
-        i32.and
-        i32.or
-        local.get $x87_top
-        i32.const 11
-        i32.shl
-        i32.or
-        i32.store16 offset=518 align=1
-        local.get $state
-        local.get $x87_ftw
-        i32.store16 offset=520 align=1
-        local.get $cc_a
-        local.set $scratch
-        local.get $scratch
-        i64.const 65
-        i64.and
-        i64.const 0
-        i64.ne
-        i32.eqz
         i64.extend_i32_u
-        local.set $t0
-        local.get $rax
-        i64.const -256
-        i64.and
-        local.get $t0
-        i64.or
-        local.set $rax
-        local.get $rsp
-        i64.load align=1
-        local.set $t0
-        local.get $rsp
-        i64.const 8
+        i64.const 4
+        i64.shl
         i64.add
-        local.set $rsp
-        local.get $t0
-        local.tee $rip
-        local.get $ret
-        i64.ne
-        local.set $status
-        i32.const 65553
-        local.set $mask
-        br 1 (;@1;)
+        i64.load offset=528 align=1
+        local.set $x87_am
+        local.get $state
+        local.get $x87_top
+        i64.extend_i32_u
+        i64.const 4
+        i64.shl
+        i64.add
+        i32.load16_u offset=536 align=1
+        local.set $x87_ase
+        local.get $x87_am
+        local.set $x87_rm
+        local.get $x87_ase
+        local.set $x87_rse
+        i32.const 0
+        local.set $x87_st
       end
+      local.get $x87_addr
+      local.get $x87_rm
+      i64.store align=1
+      local.get $x87_addr
+      local.get $x87_rse
+      i32.store16 offset=8 align=1
+      local.get $x87_ftw
+      i32.const 3
+      local.get $x87_top
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.const -1
+      i32.xor
+      i32.and
+      i32.const 3
+      local.get $x87_top
+      i32.const 1
+      i32.shl
+      i32.shl
+      i32.or
+      local.set $x87_ftw
+      local.get $x87_top
+      i32.const 1
+      i32.add
+      i32.const 7
+      i32.and
+      local.set $x87_top
+      local.get $state
+      local.get $x87_fsw
+      i32.const -14849
+      i32.and
+      local.get $x87_st
+      i32.const 639
+      i32.and
+      i32.or
+      local.get $x87_top
+      i32.const 11
+      i32.shl
+      i32.or
+      i32.store16 offset=518 align=1
+      local.get $state
+      local.get $x87_ftw
+      i32.store16 offset=520 align=1
+      local.get $cc_a
+      local.set $scratch
+      local.get $scratch
+      i64.const 65
+      i64.and
+      i64.const 0
+      i64.ne
+      i32.eqz
+      i64.extend_i32_u
+      local.set $t0
+      local.get $rax
+      i64.const -256
+      i64.and
+      local.get $t0
+      i64.or
+      local.set $rax
+      local.get $rsp
+      i64.load align=1
+      local.set $t0
+      local.get $rsp
+      i64.const 8
+      i64.add
+      local.set $rsp
+      local.get $t0
+      local.tee $rip
+      local.get $ret
+      i64.ne
+      local.set $status
+      i32.const 65553
+      local.set $mask
+      br 0 (;@1;)
       unreachable
     end
     local.get $mask

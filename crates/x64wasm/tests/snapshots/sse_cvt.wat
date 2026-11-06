@@ -464,239 +464,237 @@
     i64.load offset=32 align=1
     local.set $rsp
     block ;; label = @1
-      loop ;; label = @2
+      block ;; label = @2
         block ;; label = @3
-          block ;; label = @4
-            local.get $entry
-            br_table 1 (;@3;) 0 (;@4;)
-          end
-          unreachable
+          local.get $entry
+          br_table 1 (;@2;) 0 (;@3;)
         end
-        local.get $state
-        v128.load64_zero offset=256 align=1
-        local.set $v0
-        local.get $v0
-        f64x2.trunc
-        local.set $fpv
-        local.get $state
-        i32.load offset=512 align=1
-        local.set $mxcsr
-        local.get $fpv
-        v128.const i32x4 0x00000000 0xc1e00000 0x00000000 0xc1e00000
-        f64x2.ge
-        local.get $fpv
-        v128.const i32x4 0x00000000 0x41e00000 0x00000000 0x41e00000
-        f64x2.lt
-        v128.and
-        i64x2.bitmask
-        i32.const 1
-        i32.and
-        i32.const 1
-        i32.eq
-        local.get $fpv
-        local.get $v0
-        f64x2.eq
-        i64x2.bitmask
-        i32.const 1
-        i32.and
-        i32.const 1
-        i32.eq
-        local.get $mxcsr
-        i32.const 4128
-        i32.and
-        i32.const 4128
-        i32.eq
-        i32.or
-        i32.and
-        if ;; label = @3
-          local.get $fpv
-          f64x2.extract_lane 0
-          i32.trunc_f64_s
-          i64.extend_i32_u
-          local.set $t0
-        else
-          local.get $v0
-          i64x2.extract_lane 0
-          local.get $mxcsr
-          i32.const 1
-          call $fp.f64_to_i32
-          i64.extend_i32_u
-          local.set $t0
-          call $fp.status
-          local.tee $mxcsr
-          i32.const 0
-          i32.lt_s
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4096
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 0
-            local.set $mask
-            br 3 (;@1;)
-          end
-          local.get $state
-          local.get $mxcsr
-          i32.store offset=512 align=1
-        end
-        local.get $t0
-        local.set $rax
-        local.get $state
-        v128.load offset=272 align=1
-        local.set $v0
-        local.get $rax
-        i64.const 9007199254740992
-        i64.add
-        i64.const 18014398509481984
-        i64.le_u
-        local.get $state
-        i32.load offset=512 align=1
-        local.set $mxcsr
-        local.get $mxcsr
-        i32.const 32672
-        i32.and
-        i32.const 8096
-        i32.eq
-        i32.or
-        if ;; label = @3
-          local.get $v0
-          local.get $rax
-          f64.convert_i64_s
-          f64x2.replace_lane 0
-          local.set $v1
-        else
-          local.get $v0
-          local.get $rax
-          local.get $mxcsr
-          call $fp.i64_to_f64
-          i64x2.replace_lane 0
-          local.set $v1
-          call $fp.status
-          local.tee $mxcsr
-          i32.const 0
-          i32.lt_s
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4100
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 1
-            local.set $mask
-            br 3 (;@1;)
-          end
-          local.get $state
-          local.get $mxcsr
-          i32.store offset=512 align=1
-        end
-        local.get $state
-        local.get $v1
-        v128.store offset=272 align=1
-        local.get $state
-        v128.load64_zero offset=304 align=1
-        local.set $v0
-        local.get $state
-        v128.load offset=288 align=1
-        local.set $v1
-        local.get $v0
-        f64x2.promote_low_f32x4
-        local.set $fpv
-        local.get $v0
-        f32x4.abs
-        v128.const i32x4 0x00800000 0x00800000 0x00800000 0x00800000
-        f32x4.ge
-        local.get $v0
-        v128.const i32x4 0x00000000 0x00000000 0x00000000 0x00000000
-        f32x4.eq
-        v128.or
-        i32x4.bitmask
-        i32.const 3
-        i32.and
-        i32.const 3
-        i32.eq
-        if ;; label = @3
-          local.get $fpv
-          local.set $v2
-        else
-          local.get $state
-          i32.load offset=512 align=1
-          local.set $mxcsr
-          local.get $v0
-          local.set $v2
-          local.get $v2
-          local.get $v0
-          i32x4.extract_lane 0
-          local.get $mxcsr
-          call $fp.f32_to_f64
-          i64x2.replace_lane 0
-          local.set $v2
-          call $fp.status
-          local.tee $mxcsr
-          i32.const 0
-          i32.lt_s
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4105
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 1
-            local.set $mask
-            br 3 (;@1;)
-          end
-          local.get $v2
-          local.get $v0
-          i32x4.extract_lane 1
-          local.get $mxcsr
-          call $fp.f32_to_f64
-          i64x2.replace_lane 1
-          local.set $v2
-          call $fp.status
-          local.tee $mxcsr
-          i32.const 0
-          i32.lt_s
-          if ;; label = @4
-            local.get $state
-            i32.const 2
-            i32.store offset=144 align=1
-            i64.const 4105
-            local.set $rip
-            i32.const 2
-            local.set $status
-            i32.const 1
-            local.set $mask
-            br 3 (;@1;)
-          end
-          local.get $state
-          local.get $mxcsr
-          i32.store offset=512 align=1
-        end
-        local.get $state
-        local.get $v2
-        v128.store offset=288 align=1
-        local.get $rsp
-        i64.load align=1
-        local.set $t0
-        local.get $rsp
-        i64.const 8
-        i64.add
-        local.set $rsp
-        local.get $t0
-        local.tee $rip
-        local.get $ret
-        i64.ne
-        local.set $status
-        i32.const 17
-        local.set $mask
-        br 1 (;@1;)
+        unreachable
       end
+      local.get $state
+      v128.load64_zero offset=256 align=1
+      local.set $v0
+      local.get $v0
+      f64x2.trunc
+      local.set $fpv
+      local.get $state
+      i32.load offset=512 align=1
+      local.set $mxcsr
+      local.get $fpv
+      v128.const i32x4 0x00000000 0xc1e00000 0x00000000 0xc1e00000
+      f64x2.ge
+      local.get $fpv
+      v128.const i32x4 0x00000000 0x41e00000 0x00000000 0x41e00000
+      f64x2.lt
+      v128.and
+      i64x2.bitmask
+      i32.const 1
+      i32.and
+      i32.const 1
+      i32.eq
+      local.get $fpv
+      local.get $v0
+      f64x2.eq
+      i64x2.bitmask
+      i32.const 1
+      i32.and
+      i32.const 1
+      i32.eq
+      local.get $mxcsr
+      i32.const 4128
+      i32.and
+      i32.const 4128
+      i32.eq
+      i32.or
+      i32.and
+      if ;; label = @2
+        local.get $fpv
+        f64x2.extract_lane 0
+        i32.trunc_f64_s
+        i64.extend_i32_u
+        local.set $t0
+      else
+        local.get $v0
+        i64x2.extract_lane 0
+        local.get $mxcsr
+        i32.const 1
+        call $fp.f64_to_i32
+        i64.extend_i32_u
+        local.set $t0
+        call $fp.status
+        local.tee $mxcsr
+        i32.const 0
+        i32.lt_s
+        if ;; label = @3
+          local.get $state
+          i32.const 2
+          i32.store offset=144 align=1
+          i64.const 4096
+          local.set $rip
+          i32.const 2
+          local.set $status
+          i32.const 0
+          local.set $mask
+          br 2 (;@1;)
+        end
+        local.get $state
+        local.get $mxcsr
+        i32.store offset=512 align=1
+      end
+      local.get $t0
+      local.set $rax
+      local.get $state
+      v128.load offset=272 align=1
+      local.set $v0
+      local.get $rax
+      i64.const 9007199254740992
+      i64.add
+      i64.const 18014398509481984
+      i64.le_u
+      local.get $state
+      i32.load offset=512 align=1
+      local.set $mxcsr
+      local.get $mxcsr
+      i32.const 32672
+      i32.and
+      i32.const 8096
+      i32.eq
+      i32.or
+      if ;; label = @2
+        local.get $v0
+        local.get $rax
+        f64.convert_i64_s
+        f64x2.replace_lane 0
+        local.set $v1
+      else
+        local.get $v0
+        local.get $rax
+        local.get $mxcsr
+        call $fp.i64_to_f64
+        i64x2.replace_lane 0
+        local.set $v1
+        call $fp.status
+        local.tee $mxcsr
+        i32.const 0
+        i32.lt_s
+        if ;; label = @3
+          local.get $state
+          i32.const 2
+          i32.store offset=144 align=1
+          i64.const 4100
+          local.set $rip
+          i32.const 2
+          local.set $status
+          i32.const 1
+          local.set $mask
+          br 2 (;@1;)
+        end
+        local.get $state
+        local.get $mxcsr
+        i32.store offset=512 align=1
+      end
+      local.get $state
+      local.get $v1
+      v128.store offset=272 align=1
+      local.get $state
+      v128.load64_zero offset=304 align=1
+      local.set $v0
+      local.get $state
+      v128.load offset=288 align=1
+      local.set $v1
+      local.get $v0
+      f64x2.promote_low_f32x4
+      local.set $fpv
+      local.get $v0
+      f32x4.abs
+      v128.const i32x4 0x00800000 0x00800000 0x00800000 0x00800000
+      f32x4.ge
+      local.get $v0
+      v128.const i32x4 0x00000000 0x00000000 0x00000000 0x00000000
+      f32x4.eq
+      v128.or
+      i32x4.bitmask
+      i32.const 3
+      i32.and
+      i32.const 3
+      i32.eq
+      if ;; label = @2
+        local.get $fpv
+        local.set $v2
+      else
+        local.get $state
+        i32.load offset=512 align=1
+        local.set $mxcsr
+        local.get $v0
+        local.set $v2
+        local.get $v2
+        local.get $v0
+        i32x4.extract_lane 0
+        local.get $mxcsr
+        call $fp.f32_to_f64
+        i64x2.replace_lane 0
+        local.set $v2
+        call $fp.status
+        local.tee $mxcsr
+        i32.const 0
+        i32.lt_s
+        if ;; label = @3
+          local.get $state
+          i32.const 2
+          i32.store offset=144 align=1
+          i64.const 4105
+          local.set $rip
+          i32.const 2
+          local.set $status
+          i32.const 1
+          local.set $mask
+          br 2 (;@1;)
+        end
+        local.get $v2
+        local.get $v0
+        i32x4.extract_lane 1
+        local.get $mxcsr
+        call $fp.f32_to_f64
+        i64x2.replace_lane 1
+        local.set $v2
+        call $fp.status
+        local.tee $mxcsr
+        i32.const 0
+        i32.lt_s
+        if ;; label = @3
+          local.get $state
+          i32.const 2
+          i32.store offset=144 align=1
+          i64.const 4105
+          local.set $rip
+          i32.const 2
+          local.set $status
+          i32.const 1
+          local.set $mask
+          br 2 (;@1;)
+        end
+        local.get $state
+        local.get $mxcsr
+        i32.store offset=512 align=1
+      end
+      local.get $state
+      local.get $v2
+      v128.store offset=288 align=1
+      local.get $rsp
+      i64.load align=1
+      local.set $t0
+      local.get $rsp
+      i64.const 8
+      i64.add
+      local.set $rsp
+      local.get $t0
+      local.tee $rip
+      local.get $ret
+      i64.ne
+      local.set $status
+      i32.const 17
+      local.set $mask
+      br 0 (;@1;)
       unreachable
     end
     local.get $mask

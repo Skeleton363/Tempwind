@@ -77,7 +77,8 @@ test('basic.exe built with --counters: TEMPWIND_TRACE=counts reports the block a
   // rec(1000) and fib(20) (21,891 calls) are direct calls inside the module.
   assert.equal(lines['count calls_direct'], 22927);
   assert.ok(lines['count entries_fast'] > 0 && lines['count entries_generic'] > 0);
-  assert.ok(lines['count dispatches'] > 0 && lines['count unwinds'] > 0);
+  // Since WP3 the structured layout takes loops without `$dispatch`, so dispatches may be 0; the slot is still reported.
+  assert.ok(Number.isInteger(lines['count dispatches']) && lines['count unwinds'] > 0);
   // Since M6 (translator.md, "Registers and flags") a boundary moves only what it must: fewer values than a
   // full sync of all 20 at every entry, store and reload, but never none.
   const calls = lines['count calls_direct'] + lines['count calls_probed'];

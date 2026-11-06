@@ -462,99 +462,97 @@
     i64.load offset=32 align=1
     local.set $rsp
     block ;; label = @1
-      loop ;; label = @2
+      block ;; label = @2
         block ;; label = @3
-          block ;; label = @4
-            local.get $entry
-            br_table 1 (;@3;) 0 (;@4;)
-          end
-          unreachable
+          local.get $entry
+          br_table 1 (;@2;) 0 (;@3;)
         end
-        local.get $rcx
-        i64.load8_u
-        i64.extend8_s
-        i64.const 4294967295
-        i64.and
-        local.set $rax
-        local.get $rax
-        i64.const 4294967295
-        i64.and
-        local.set $t0
-        local.get $rdx
-        i64.const 4294967295
-        i64.and
-        local.set $t1
-        local.get $t0
-        local.get $t1
-        i64.sub
-        i64.const 4294967295
-        i64.and
-        local.set $t3
-        i32.const 7
-        local.set $cc_op
-        local.get $t0
-        local.set $cc_a
-        local.get $t1
-        local.set $cc_b
-        local.get $t3
-        local.set $cc_r
-        local.get $rdx
-        i64.const 4294967295
-        i64.and
-        local.set $t0
-        local.get $rax
-        i64.const 4294967295
-        i64.and
-        local.set $t1
-        local.get $cc_a
-        i64.extend32_s
-        local.get $cc_b
-        i64.extend32_s
-        i64.lt_s
-        i64.extend_i32_u
-        local.set $t2
-        local.get $t0
-        local.get $t1
-        local.get $t2
-        i64.const 0
-        i64.ne
-        select
-        local.set $rax
-        local.get $cc_a
-        i64.extend32_s
-        local.get $cc_b
-        i64.extend32_s
-        i64.le_s
-        i32.eqz
-        i64.extend_i32_u
-        local.set $t0
-        local.get $rcx
-        i64.const -256
-        i64.and
-        local.get $t0
-        i64.or
-        local.set $rcx
-        local.get $rax
-        i64.const 4294967295
-        i64.and
-        i64.extend32_s
-        local.set $rax
-        local.get $rsp
-        i64.load align=1
-        local.set $t0
-        local.get $rsp
-        i64.const 8
-        i64.add
-        local.set $rsp
-        local.get $t0
-        local.tee $rip
-        local.get $ret
-        i64.ne
-        local.set $status
-        i32.const 65555
-        local.set $mask
-        br 1 (;@1;)
+        unreachable
       end
+      local.get $rcx
+      i64.load8_u
+      i64.extend8_s
+      i64.const 4294967295
+      i64.and
+      local.set $rax
+      local.get $rax
+      i64.const 4294967295
+      i64.and
+      local.set $t0
+      local.get $rdx
+      i64.const 4294967295
+      i64.and
+      local.set $t1
+      local.get $t0
+      local.get $t1
+      i64.sub
+      i64.const 4294967295
+      i64.and
+      local.set $t3
+      i32.const 7
+      local.set $cc_op
+      local.get $t0
+      local.set $cc_a
+      local.get $t1
+      local.set $cc_b
+      local.get $t3
+      local.set $cc_r
+      local.get $rdx
+      i64.const 4294967295
+      i64.and
+      local.set $t0
+      local.get $rax
+      i64.const 4294967295
+      i64.and
+      local.set $t1
+      local.get $cc_a
+      i64.extend32_s
+      local.get $cc_b
+      i64.extend32_s
+      i64.lt_s
+      i64.extend_i32_u
+      local.set $t2
+      local.get $t0
+      local.get $t1
+      local.get $t2
+      i64.const 0
+      i64.ne
+      select
+      local.set $rax
+      local.get $cc_a
+      i64.extend32_s
+      local.get $cc_b
+      i64.extend32_s
+      i64.le_s
+      i32.eqz
+      i64.extend_i32_u
+      local.set $t0
+      local.get $rcx
+      i64.const -256
+      i64.and
+      local.get $t0
+      i64.or
+      local.set $rcx
+      local.get $rax
+      i64.const 4294967295
+      i64.and
+      i64.extend32_s
+      local.set $rax
+      local.get $rsp
+      i64.load align=1
+      local.set $t0
+      local.get $rsp
+      i64.const 8
+      i64.add
+      local.set $rsp
+      local.get $t0
+      local.tee $rip
+      local.get $ret
+      i64.ne
+      local.set $status
+      i32.const 65555
+      local.set $mask
+      br 0 (;@1;)
       unreachable
     end
     local.get $state

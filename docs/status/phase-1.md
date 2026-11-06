@@ -265,6 +265,15 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
   - `$dispatch` only where something needs it.
 
   `structured: false` keeps today's behaviour. It is built in a new `emit/structure.rs` (WP3a, in parallel with WP2), then integrated into `emit.rs` (WP3b).
+- **WP3b as built** (`emit.rs`, with `emit/structure.rs` from WP3a):
+  - with `structured` (the default) the chunk body walks `Plan::items`. The layout's labels go on the emitter's label stack above `$leave`, and their positions are kept in `plan_labels`, so a `Transfer`'s depth becomes a wasm depth however many `if`s and route blocks sit above it;
+  - a `Fall` edge inside an `if` (a branch whose two targets are one block) becomes a `br` out of the innermost layout `block`, which is where falling through goes;
+  - dispatches (the root one on `entry`, a loop's on the selector) are a `br_table`. Transfers that change the selector go through a stub each (`sel = v; br d`), shared by equal transfers;
+  - the selector local holds layout position + 1, so `NONE` is 0: no initialisation, and a loop's check is `local.get sel; if`. It exists only in chunks with a loop that has an interior;
+  - `dispatches` also counts an edge that enters a loop's interior through the selector, so it stays comparable across the two layouts (`abi.md`'s row still says only "a branch through `$dispatch`": a one-line doc fix is pending);
+  - `structured: false` gives byte-identical modules to `4c02685` (checked on 7zz.exe and coremark.exe, with and without counters);
+  - **jump-table targets stay outside the loop forest** (WP3a's open point 1): adding them as edges would not remove `$dispatch`, because the indirect jump still goes through `lookup`, `entry` and the root dispatch. It would also make case blocks interior entries, which costs a selector stub each. `local_indirect` is 5 (CoreMark) and 0 (7z b), so it is not worth doing;
+  - every loop with more than one block keeps its selector check (open point 3), since every block is an entry. The contract asks for exactly this.
 - **Memory checks (WP4, deep-worker, after WP2):**
   - `null_check` (addr < 0x10000 → `EXIT_FAULT`) and `store_check` (a page byte for code and write-watch → `EXIT_UNSUPPORTED` until invalidation exists), inserted in the lifter's central load and store builders before any side effect;
   - measured last on CoreMark and `7z b` in four variants. The numbers feed `guest-memory.md`'s decision and Phase 2's defaults.
@@ -614,6 +623,48 @@ Entries stay fast: generic entries are 45 (CoreMark) and 700 (7z), as before.
 Reading:
 - **Values moved per call drop from 80 to about 35.** Loads fall more than stores. Most of what is still stored is the flag record (four locals, dirty after almost every instruction) and callee-saved registers restored with `pop`, which the analysis counts as writes.
 - **CoreMark gains 8.8 %; 7z b stays within noise** (three runs of three on each side, alternating; +1 % at most). 7z spends its time in loops (1.8 G dispatches against 143 M calls), and two calls in three are probed, so MOD there is "all". That points at WP3 (loop structuring) for 7z.
+- Neither timing was repeated at other guest base addresses.
+
+### WP3 (M6, loop structuring)
+
+The same commands as WP2. "Before" is `structured: false`, whose modules are byte-identical to `4c02685` (WP2). Both sides ran on the same machine in the same session (Xeon @ 2.10 GHz, Node 24.22.0). This machine ran faster than in the WP2 session: native CoreMark was 27,110 against 24,682. CoreMark's counted runs use a fixed 3,000 iterations (`0x0 0x0 0x66 3000`), so both sides make the same calls. The before runs of 7z b and CoreMark used the current `x64wasm_rt.wasm`, which translates only the few blocks found at run time.
+
+**Counters** (every other slot is equal on both sides):
+
+| Slot | CoreMark before | CoreMark after | 7z b before | 7z b after |
+|---|---|---|---|---|
+| `dispatches` | 63,633,614 | 1,224,000 | 1,795,449,283 | 4,260,355 |
+| `local_indirect` | 5 | 5 | 0 | 0 |
+| `entries_generic` | 41 | 41 | 700 | 700 |
+| calls (direct + probed) | 5,455,886 | 5,455,886 | 142,994,573 | 142,994,573 |
+| dispatches per call | 11.7 | 0.22 | 12.6 | 0.030 |
+
+After the change, `dispatches` counts only entries into a loop's interior through the selector. CoreMark's calls are those of its 3,000 iterations; 7z b's calls match WP1.
+
+**Timings** (medians of 3; native under `wine64`):
+
+| | before | after | native | ratio before | ratio after |
+|---|---|---|---|---|---|
+| CoreMark (iterations/s) | 9,583 | 12,595 | 27,110 | 0.354 | 0.465 |
+| `7z b 2 -mmt1 -md18` (MIPS, "Tot:") | 2,075 | 2,388 | 5,477 | 0.379 | 0.436 |
+
+**Translation** (`translate-pe`, `--entries all`):
+
+| | before | after |
+|---|---|---|
+| 7zz.exe module | 20,615,016 bytes | 21,467,033 bytes (+4.1 %) |
+| 7zz.exe with `--counters` | 26,546,143 bytes | 27,082,602 bytes |
+| coremark.exe module | 366,247 bytes | 376,369 bytes (+2.8 %) |
+| 7zz.exe translate time (in-process, one run) | 1,571 ms | 1,723 ms (+10 %: the plans) |
+| V8 compile, 7zz.exe, eager TurboFan (`--no-liftoff --no-wasm-lazy-compilation`, 1 run) | 10.4 s | 6.4 s |
+| V8 compile, 7zz.exe, default (lazy: validation) | 15 ms | 17 ms |
+
+Reading:
+- **Dispatches drop 50× (CoreMark) and 400× (7z b).** What is left is entries into loop middles: irreducible edges and branches into a loop's body from outside it.
+- **CoreMark gains 31 % and 7z b 15 %** in this session's runs. The ratios rise from 0.35 to 0.47 and from 0.38 to 0.44.
+- **Optimized compiles are faster:** with no function-wide loop, TurboFan no longer has to keep every local live across the whole chunk. The eager compile of 7zz.exe falls from 10.4 s to 6.4 s. This is one run each; a second run could not be done because the disk filled up.
+- Modules grow by 3-4 %, from the route stubs and the `block` nesting.
+- `tests/bench/translator/images.mjs` fails on images with `fp` imports: its child process loads no floating-point helper module. So the compile times above come from a direct `new WebAssembly.Module`.
 - Neither timing was repeated at other guest base addresses.
 
 ## Known issues and risks

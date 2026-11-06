@@ -34,7 +34,6 @@
 //! Label depths in a [`Transfer`] count only the labels of [`Plan::items`]
 //! open at that point (outermost first); the emitter adds its own (`$leave`
 //! outside, `if`s inside a block's code).
-#![allow(dead_code)]
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};

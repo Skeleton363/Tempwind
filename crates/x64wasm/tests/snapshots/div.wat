@@ -469,153 +469,151 @@
     i64.load offset=32 align=1
     local.set $rsp
     block ;; label = @1
-      loop ;; label = @2
+      block ;; label = @2
         block ;; label = @3
-          block ;; label = @4
-            local.get $entry
-            br_table 1 (;@3;) 0 (;@4;)
-          end
-          unreachable
+          local.get $entry
+          br_table 1 (;@2;) 0 (;@3;)
         end
-        local.get $rdx
-        local.get $rax
-        local.get $rcx
-        i32.const 0
-        call $div128
-        i64.extend_i32_u
-        local.set $t2
-        local.set $t1
-        local.set $t0
-        local.get $t2
+        unreachable
+      end
+      local.get $rdx
+      local.get $rax
+      local.get $rcx
+      i32.const 0
+      call $div128
+      i64.extend_i32_u
+      local.set $t2
+      local.set $t1
+      local.set $t0
+      local.get $t2
+      i64.const 0
+      i64.ne
+      if ;; label = @2
+        local.get $state
+        i32.const 4
+        i32.store offset=200 align=1
+        local.get $state
         i64.const 0
-        i64.ne
-        if ;; label = @3
-          local.get $state
-          i32.const 4
-          i32.store offset=200 align=1
-          local.get $state
-          i64.const 0
-          i64.store offset=192 align=1
-          local.get $state
-          i32.const 3
-          i32.store offset=144 align=1
-          i64.const 4096
-          local.set $rip
-          i32.const 2
-          local.set $status
-          i32.const 0
-          local.set $mask
-          br 2 (;@1;)
-        end
-        local.get $t0
-        local.set $rax
-        local.get $t1
-        local.set $rdx
-        local.get $rbx
-        i64.const 255
-        i64.and
-        local.set $t0
-        local.get $rax
-        i64.const 65535
-        i64.and
-        i64.extend16_s
-        local.set $t2
-        local.get $t0
-        i64.extend8_s
-        local.set $t3
-        local.get $t3
-        i64.const 0
-        i64.eq
-        i64.extend_i32_u
-        i64.const 0
-        i64.ne
-        if ;; label = @3
-          local.get $state
-          i32.const 4
-          i32.store offset=200 align=1
-          local.get $state
-          i64.const 0
-          i64.store offset=192 align=1
-          local.get $state
-          i32.const 3
-          i32.store offset=144 align=1
-          i64.const 4099
-          local.set $rip
-          i32.const 2
-          local.set $status
-          i32.const 5
-          local.set $mask
-          br 2 (;@1;)
-        end
-        local.get $t2
-        local.get $t3
-        i64.div_s
-        local.set $t5
-        local.get $t5
-        i64.extend8_s
-        local.set $t6
-        local.get $t5
-        local.get $t6
-        i64.ne
-        i64.extend_i32_u
-        i64.const 0
-        i64.ne
-        if ;; label = @3
-          local.get $state
-          i32.const 4
-          i32.store offset=200 align=1
-          local.get $state
-          i64.const 0
-          i64.store offset=192 align=1
-          local.get $state
-          i32.const 3
-          i32.store offset=144 align=1
-          i64.const 4099
-          local.set $rip
-          i32.const 2
-          local.set $status
-          i32.const 5
-          local.set $mask
-          br 2 (;@1;)
-        end
-        local.get $t2
-        local.get $t3
-        i64.rem_s
-        local.set $t8
-        local.get $t5
-        i64.const 255
-        i64.and
-        local.set $t9
-        local.get $t8
-        i64.const 255
-        i64.and
-        i64.const 8
-        i64.shl
-        local.get $t9
-        i64.or
-        local.set $t12
-        local.get $rax
-        i64.const -65536
-        i64.and
-        local.get $t12
-        i64.or
-        local.set $rax
-        local.get $rsp
-        i64.load align=1
-        local.set $t0
-        local.get $rsp
-        i64.const 8
-        i64.add
-        local.set $rsp
-        local.get $t0
-        local.tee $rip
-        local.get $ret
-        i64.ne
+        i64.store offset=192 align=1
+        local.get $state
+        i32.const 3
+        i32.store offset=144 align=1
+        i64.const 4096
+        local.set $rip
+        i32.const 2
         local.set $status
-        i32.const 21
+        i32.const 0
         local.set $mask
         br 1 (;@1;)
       end
+      local.get $t0
+      local.set $rax
+      local.get $t1
+      local.set $rdx
+      local.get $rbx
+      i64.const 255
+      i64.and
+      local.set $t0
+      local.get $rax
+      i64.const 65535
+      i64.and
+      i64.extend16_s
+      local.set $t2
+      local.get $t0
+      i64.extend8_s
+      local.set $t3
+      local.get $t3
+      i64.const 0
+      i64.eq
+      i64.extend_i32_u
+      i64.const 0
+      i64.ne
+      if ;; label = @2
+        local.get $state
+        i32.const 4
+        i32.store offset=200 align=1
+        local.get $state
+        i64.const 0
+        i64.store offset=192 align=1
+        local.get $state
+        i32.const 3
+        i32.store offset=144 align=1
+        i64.const 4099
+        local.set $rip
+        i32.const 2
+        local.set $status
+        i32.const 5
+        local.set $mask
+        br 1 (;@1;)
+      end
+      local.get $t2
+      local.get $t3
+      i64.div_s
+      local.set $t5
+      local.get $t5
+      i64.extend8_s
+      local.set $t6
+      local.get $t5
+      local.get $t6
+      i64.ne
+      i64.extend_i32_u
+      i64.const 0
+      i64.ne
+      if ;; label = @2
+        local.get $state
+        i32.const 4
+        i32.store offset=200 align=1
+        local.get $state
+        i64.const 0
+        i64.store offset=192 align=1
+        local.get $state
+        i32.const 3
+        i32.store offset=144 align=1
+        i64.const 4099
+        local.set $rip
+        i32.const 2
+        local.set $status
+        i32.const 5
+        local.set $mask
+        br 1 (;@1;)
+      end
+      local.get $t2
+      local.get $t3
+      i64.rem_s
+      local.set $t8
+      local.get $t5
+      i64.const 255
+      i64.and
+      local.set $t9
+      local.get $t8
+      i64.const 255
+      i64.and
+      i64.const 8
+      i64.shl
+      local.get $t9
+      i64.or
+      local.set $t12
+      local.get $rax
+      i64.const -65536
+      i64.and
+      local.get $t12
+      i64.or
+      local.set $rax
+      local.get $rsp
+      i64.load align=1
+      local.set $t0
+      local.get $rsp
+      i64.const 8
+      i64.add
+      local.set $rsp
+      local.get $t0
+      local.tee $rip
+      local.get $ret
+      i64.ne
+      local.set $status
+      i32.const 21
+      local.set $mask
+      br 0 (;@1;)
       unreachable
     end
     local.get $mask
