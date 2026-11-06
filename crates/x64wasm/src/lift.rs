@@ -265,6 +265,7 @@ impl<'a> Lifter<'a> {
             ea: None,
             seg_ea: None,
             checks: self.checks,
+            effect_temps: None,
         };
         match lower.lower() {
             Ok(flow) => Some(Decoded {

@@ -105,6 +105,8 @@ impl Case {
         for (addr, bytes) in self.all_init_mem() {
             machine.write(addr, &bytes)?;
         }
+        // The code's pages, for `Options::store_check`.
+        machine.set_page_flags(self.code_base, self.code.len() as u64, abi::PAGE_CODE)?;
         let out = machine.run_state(&module, self.state_addr, &self.init_state())?;
         Ok((out, machine))
     }

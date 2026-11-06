@@ -48,7 +48,143 @@ fn option_sweep() -> Vec<Options> {
             sync_all: true,
             ..o(1, 1, Some(0))
         },
+        // The memory checks raise nothing in a correct program.
+        Options {
+            null_check: true,
+            store_check: true,
+            ..Options::default()
+        },
+        Options {
+            null_check: true,
+            store_check: true,
+            ..o(1, 1, Some(0))
+        },
     ]
+}
+
+/// Translates `code` at 0x10000 (one function, `ret` to the sentinel) with
+/// `opts` and runs it with `regs` in a 1 MiB machine whose code page is
+/// PAGE_CODE. Returns the final state and the fault kind and address.
+fn run_checked(code: &[u8], regs: &[(&str, u64)], opts: &Options) -> (abi::CpuState, u32, u64) {
+    const BASE: u64 = 0x1_0000;
+    const STATE: u64 = 0x8_0000;
+    const STACK: u64 = 0xf_0000;
+    let t = x64wasm::translate(
+        x64wasm::CodeRegion {
+            base: BASE,
+            bytes: code,
+        },
+        &[BASE],
+        opts,
+    )
+    .unwrap();
+    let host = Host::new().unwrap();
+    let module = host.compile(&t.wasm).unwrap();
+    let mut m = host.machine(0x10_0000).unwrap();
+    m.write(BASE, code).unwrap();
+    m.set_page_flags(BASE, code.len() as u64, abi::PAGE_CODE)
+        .unwrap();
+    m.write(STACK, &abi::SENTINEL_RET.to_le_bytes()).unwrap();
+    let mut state = abi::CpuState {
+        rip: BASE,
+        ..abi::CpuState::default()
+    };
+    state.gpr[4] = STACK;
+    for &(r, v) in regs {
+        state.gpr[spike::reg(r)] = v;
+    }
+    let out = m.run_state(&module, STATE, &state).unwrap();
+    let kind = u32::from_le_bytes(
+        m.read(STATE + abi::STATE_FAULT_KIND, 4)
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+    let addr = u64::from_le_bytes(
+        m.read(STATE + abi::STATE_FAULT_ADDR, 8)
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+    (out, kind, addr)
+}
+
+fn both_checks() -> Options {
+    Options {
+        null_check: true,
+        store_check: true,
+        ..Options::default()
+    }
+}
+
+/// `translator.md`, "Memory checks": a NULL read or write faults with its
+/// kind and address, the state from before the instruction; a store into a
+/// code page exits EXIT_UNSUPPORTED at the store.
+#[test]
+fn memory_checks_fault() {
+    // mov rax, 7; mov rcx, [rbx + 8]; ret
+    let read = hex("48c7c007000000 488b4b08 c3");
+    let (out, kind, addr) = run_checked(&read, &[("rbx", 0x100)], &both_checks());
+    assert_eq!(out.exit, abi::EXIT_FAULT);
+    assert_eq!((kind, addr), (abi::FAULT_READ, 0x108));
+    assert_eq!(out.rip, 0x1_0007, "at the load");
+    assert_eq!(out.gpr[0], 7, "the instructions before it ran");
+    // add [rbx], rcx (a read-modify-write: reported as the read) and
+    // mov [rbx], rcx
+    for (code, want) in [
+        ("48010b c3", abi::FAULT_READ),
+        ("48890b c3", abi::FAULT_WRITE),
+    ] {
+        let (out, kind, addr) = run_checked(&hex(code), &[("rbx", 0xfff8)], &both_checks());
+        assert_eq!(
+            (out.exit, kind, addr),
+            (abi::EXIT_FAULT, want, 0xfff8),
+            "{code}"
+        );
+        assert_eq!(out.rip, 0x1_0000);
+    }
+    // rep stosb downwards into the NULL page: its last byte.
+    // std; rep stosb; cld; ret
+    let (out, kind, addr) = run_checked(
+        &hex("fd f3aa fc c3"),
+        &[("rdi", 0x1_1100), ("rcx", 0x1200)],
+        &both_checks(),
+    );
+    assert_eq!(
+        (out.exit, kind, addr),
+        (abi::EXIT_FAULT, abi::FAULT_WRITE, 0xff01)
+    );
+    assert_eq!((out.rip, out.gpr[1]), (0x1_0001, 0x1200), "nothing stored");
+    // rep stosb with RCX = 0 touches nothing.
+    let (out, _, _) = run_checked(&hex("f3aa c3"), &[("rdi", 0)], &both_checks());
+    assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
+    // A store into the code page: mov [rbx], ecx, and one that ends there.
+    for rbx in [0x1_0010, 0xfffe] {
+        let opts = Options {
+            store_check: true,
+            ..Options::default()
+        };
+        let (out, _, _) = run_checked(&hex("890b c3"), &[("rbx", rbx)], &opts);
+        assert_eq!(
+            (out.exit, out.rip),
+            (abi::EXIT_UNSUPPORTED, 0x1_0000),
+            "{rbx:#x}"
+        );
+    }
+    // A load from the code page is fine, and without the checks NULL is
+    // ordinary memory.
+    let (out, _, _) = run_checked(&hex("8b0b c3"), &[("rbx", 0x1_0000)], &both_checks());
+    assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
+    let (out, _, _) = run_checked(&read, &[("rbx", 0x100)], &Options::default());
+    assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
+}
+
+fn hex(s: &str) -> Vec<u8> {
+    let d: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    (0..d.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&d[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 #[test]

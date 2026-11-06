@@ -242,13 +242,17 @@ impl Host {
     }
 
     /// Creates a guest machine with `memory_bytes` of zeroed guest memory,
-    /// followed by the pages that hold the lookup table.
+    /// followed by the page-state table of that memory (`abi.md`,
+    /// "Page-state table"; all zero) and the pages that hold the lookup
+    /// table.
     pub fn machine(&self, memory_bytes: u64) -> Result<Machine> {
         let mut store = Store::new(&self.engine, HostState::default());
         let fp = fp_funcs(&mut store);
         let pages = memory_bytes.div_ceil(PAGE).max(1);
-        let lookup = pages * PAGE;
-        let memory = Memory::new(&mut store, MemoryType::new64(pages + 1, None))?;
+        let page_flags = pages * PAGE;
+        let flag_pages = (pages * PAGE >> abi::PAGE_FLAGS_SHIFT).div_ceil(PAGE);
+        let lookup = (pages + flag_pages) * PAGE;
+        let memory = Memory::new(&mut store, MemoryType::new64(pages + flag_pages + 1, None))?;
         let table = Table::new(
             &mut store,
             TableType::new(RefType::FUNCREF, 0, None),
@@ -269,6 +273,11 @@ impl Host {
             GlobalType::new(ValType::I64, Mutability::Const),
             Val::I64((lookup + COUNTERS_OFFSET) as i64),
         )?;
+        let page_flags_global = Global::new(
+            &mut store,
+            GlobalType::new(ValType::I64, Mutability::Const),
+            Val::I64(page_flags as i64),
+        )?;
         let mut machine = Machine {
             engine: self.engine.clone(),
             store,
@@ -277,6 +286,9 @@ impl Host {
             lookup_global,
             depth,
             counters_global,
+            page_flags_global,
+            page_flags,
+            guest_bytes: pages * PAGE,
             lookup,
             fp,
             next_alloc: lookup + SLOTS_OFFSET,
@@ -304,6 +316,11 @@ pub struct Machine {
     lookup_global: Global,
     depth: Global,
     counters_global: Global,
+    page_flags_global: Global,
+    /// Address of the page-state table (`Options::store_check`).
+    page_flags: u64,
+    /// Bytes of guest memory the page-state table covers.
+    guest_bytes: u64,
     /// Guest address of the lookup header.
     lookup: u64,
     /// The `fp` namespace (v4).
@@ -363,6 +380,18 @@ impl Machine {
             *c = self.read_u64(self.lookup + COUNTERS_OFFSET + 8 * i as u64)?;
         }
         Ok(out)
+    }
+
+    /// Sets the page-state byte (`abi::PAGE_CODE`, `abi::PAGE_WATCH`) of
+    /// every 4 KiB page that `[addr, addr + len)` touches.
+    pub fn set_page_flags(&mut self, addr: u64, len: u64, flags: u8) -> Result<()> {
+        let (first, end) = (addr, addr + len.max(1));
+        if end > self.guest_bytes {
+            bail!("page flags for {first:#x}..{end:#x}: outside guest memory");
+        }
+        let shift = abi::PAGE_FLAGS_SHIFT;
+        let n = ((end - 1) >> shift) - (first >> shift) + 1;
+        self.write(self.page_flags + (first >> shift), &vec![flags; n as usize])
     }
 
     pub fn lookup_slots(&self) -> usize {
@@ -481,6 +510,12 @@ impl Machine {
         linker.define(&self.store, env, abi::LOOKUP_NAME, self.lookup_global)?;
         linker.define(&self.store, env, abi::DEPTH_NAME, self.depth)?;
         linker.define(&self.store, env, abi::COUNTERS_NAME, self.counters_global)?;
+        linker.define(
+            &self.store,
+            env,
+            abi::PAGE_FLAGS_NAME,
+            self.page_flags_global,
+        )?;
         for &(name, func) in &self.fp {
             linker.define(&self.store, abi::FP_MODULE, name, func)?;
         }

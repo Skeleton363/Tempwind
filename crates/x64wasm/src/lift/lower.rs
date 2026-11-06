@@ -19,6 +19,9 @@ pub(super) struct Lower<'i> {
     pub(super) seg_ea: Option<Value>,
     /// The memory checks to insert (`translator.md`, "Memory checks").
     pub(super) checks: Checks,
+    /// Temporaries allocated before the first side effect (once there is
+    /// one): the values a check placed before it may use.
+    pub(super) effect_temps: Option<u32>,
 }
 
 impl Lower<'_> {
@@ -35,6 +38,9 @@ impl Lower<'_> {
     }
 
     pub(super) fn push_op(&mut self, op: Op) {
+        if self.effect_temps.is_none() && op.has_side_effect() {
+            self.effect_temps = Some(self.temps);
+        }
         self.ops.push(op);
     }
 
@@ -158,9 +164,14 @@ impl Lower<'_> {
     }
 
     /// The memory checks of an access of `len` bytes at `addr` (only if
-    /// `when != 0`, with `when`). Must come before the instruction's first
-    /// side effect; an instruction with several accesses after one checks
-    /// them first ([`Lower::mem_check`]) and uses the unchecked builders.
+    /// `when != 0`, with `when`). They go before the instruction's first
+    /// side effect: an access after one (the store of a read-modify-write
+    /// after its flag record) is checked there, and merges into the check of
+    /// the same bytes when there is one, which then also tests the page
+    /// byte. Its address must be computed before that side effect; an
+    /// instruction whose later accesses use addresses computed after it
+    /// checks them first ([`Lower::mem_check`]) and uses the unchecked
+    /// builders.
     pub(super) fn mem_check_when(
         &mut self,
         addr: Value,
@@ -173,18 +184,50 @@ impl Lower<'_> {
         if !null && !code {
             return;
         }
-        debug_assert!(
-            !self.ops.iter().any(Op::has_side_effect),
-            "memory check after a side effect"
-        );
-        self.push_op(Op::MemCheck {
+        let at = self
+            .ops
+            .iter()
+            .position(Op::has_side_effect)
+            .unwrap_or(self.ops.len());
+        let same = self.ops[..at].iter_mut().find_map(|op| match op {
+            Op::MemCheck {
+                addr: a,
+                len: l,
+                when: w,
+                code,
+                ..
+            } if (*a, *l, *w) == (addr, len, when) => Some(code),
+            _ => None,
+        });
+        if let Some(c) = same {
+            *c |= code;
+            return;
+        }
+        let check = Op::MemCheck {
             addr,
             len,
             write,
             null,
             code,
             when,
-        });
+        };
+        if at < self.ops.len() {
+            // The values must be the same before the side effect.
+            let written: crate::sync::Set = self.ops[at..]
+                .iter()
+                .map(|op| crate::sync::op_effect(op).writes)
+                .fold(0, |a, b| a | b);
+            let before = |v: Value| match v {
+                Value::Reg(r) => written & (1 << r) == 0,
+                Value::Temp(t) => self.effect_temps.is_some_and(|n| t.0 < n),
+                Value::Imm(_) => true,
+            };
+            assert!(
+                before(addr) && when.is_none_or(before),
+                "memory check of an address computed after a side effect"
+            );
+        }
+        self.ops.insert(at, check);
     }
 
     pub(super) fn mem_check(&mut self, addr: Value, len: u32, write: bool) {
