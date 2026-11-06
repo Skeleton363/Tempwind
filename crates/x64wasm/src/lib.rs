@@ -198,7 +198,12 @@ pub fn translate_regions(
     if entries.is_empty() {
         return Err(Error::NoEntries);
     }
-    let prog = lift::lift_regions(regions, known, entries, false)?;
+    let src = lift::Source {
+        code: regions,
+        data: regions,
+        known,
+    };
+    let prog = lift::lift_with(&src, entries, false, lift::Checks::of(opts))?;
     Ok(finish(prog, entries, opts, false))
 }
 
@@ -212,15 +217,40 @@ pub fn translate_source(
     if entries.is_empty() {
         return Err(Error::NoEntries);
     }
-    let prog = lift::lift_source(src, entries, false)?;
+    let prog = lift::lift_with(src, entries, false, lift::Checks::of(opts))?;
     Ok(finish(prog, entries, opts, false))
 }
 
 /// Decodes and lowers into the IR, with flag liveness applied.
 pub fn lift(region: CodeRegion<'_>, entries: &[u64]) -> Result<ir::Program, Error> {
-    let mut prog = lift::lift(region, entries, true)?;
+    lift_checked(region, entries, &Options::default())
+}
+
+/// Like [`lift`], with the memory checks of `opts` (`null_check`,
+/// `store_check`).
+pub fn lift_checked(
+    region: CodeRegion<'_>,
+    entries: &[u64],
+    opts: &Options,
+) -> Result<ir::Program, Error> {
+    let mut prog = lift_one(region, entries, true, opts)?;
     prog.analyze_flags();
     Ok(prog)
+}
+
+fn lift_one(
+    region: CodeRegion<'_>,
+    entries: &[u64],
+    want_text: bool,
+    opts: &Options,
+) -> Result<ir::Program, Error> {
+    let code = [region];
+    let src = lift::Source {
+        code: &code,
+        data: &code,
+        known: &[],
+    };
+    lift::lift_with(&src, entries, want_text, lift::Checks::of(opts))
 }
 
 fn translate_impl(
@@ -232,7 +262,7 @@ fn translate_impl(
     if entries.is_empty() {
         return Err(Error::NoEntries);
     }
-    let prog = lift::lift(region, entries, dump)?;
+    let prog = lift_one(region, entries, dump, opts)?;
     Ok(finish(prog, entries, opts, dump))
 }
 

@@ -61,6 +61,16 @@ for (const variant of ['all', 'entry']) {
   });
 }
 
+test('basic.exe built with --null-check --store-check: the same output (no false positives)', () => {
+  const { aot, plan } = inputs('checks');
+  const r = spawnSync(process.execPath, [CLI, '--exe', EXE, '--aot', aot, '--plan', plan, '--rt', RT], {
+    env: { ...process.env, TEMPWIND_TRACE: '' },
+  });
+  assert.equal(r.stderr.toString(), '');
+  assert.ok(r.stdout.equals(expected), 'stdout matches byte for byte');
+  assert.equal(r.status, EXIT_CODE);
+});
+
 test('basic.exe built with --counters: TEMPWIND_TRACE=counts reports the block and host calls', () => {
   const { aot, plan } = inputs('counters');
   const r = spawnSync(process.execPath, [CLI, '--exe', EXE, '--aot', aot, '--plan', plan, '--rt', RT], {

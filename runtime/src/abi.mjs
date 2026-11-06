@@ -71,6 +71,13 @@ export const COUNTERS_NAME = 'counters';
 export const COUNTER_SLOTS = ['entries_fast', 'entries_generic', 'dispatches', 'local_indirect', 'calls_direct', 'calls_probed',
   'tail_transfers', 'unwinds', 'values_stored', 'values_loaded', 'mem_loads', 'mem_stores'];
 export const COUNTERS_SIZE = 8 * COUNTER_SLOTS.length;
+// Optional (Options::store_check): address of the page-state table, an
+// immutable i64. One byte per 4 KiB page of the largest guest memory.
+export const PAGE_FLAGS_NAME = 'page_flags';
+export const PAGE_CODE = 1;
+export const PAGE_WATCH = 2;
+export const PAGE_FLAGS_SHIFT = 12n;
+export const PAGE_FLAGS_SIZE = MAX_MEMORY_PAGES * (PAGE_SIZE / 4096);
 
 // Lookup table: header at `env.lookup`, 16-byte slots (key u64, func u32, entry u32).
 export const LOOKUP_SLOTS = 0;

@@ -3,7 +3,7 @@
 
 use iced_x86::{Instruction, Mnemonic, OpKind};
 
-use super::{Flow, Lowered, Unsupported};
+use super::{Checks, Flow, Lowered, Unsupported};
 use crate::ir::{BinOp, Cond, FlagOp, Gpr, Op, RSP, Temp, UnOp, VTemp, Value, Width};
 
 /// Lowering state for one instruction.
@@ -17,6 +17,11 @@ pub(super) struct Lower<'i> {
     pub(super) ea: Option<Value>,
     /// The memory operand's guest address (with the FS/GS base), once computed.
     pub(super) seg_ea: Option<Value>,
+    /// The memory checks to insert (`translator.md`, "Memory checks").
+    pub(super) checks: Checks,
+    /// Temporaries allocated before the first side effect (once there is
+    /// one): the values a check placed before it may use.
+    pub(super) effect_temps: Option<u32>,
 }
 
 impl Lower<'_> {
@@ -33,6 +38,9 @@ impl Lower<'_> {
     }
 
     pub(super) fn push_op(&mut self, op: Op) {
+        if self.effect_temps.is_none() && op.has_side_effect() {
+            self.effect_temps = Some(self.temps);
+        }
         self.ops.push(op);
     }
 
@@ -155,13 +163,96 @@ impl Lower<'_> {
         }
     }
 
+    /// The memory checks of an access of `len` bytes at `addr` (only if
+    /// `when != 0`, with `when`). They go before the instruction's first
+    /// side effect: an access after one (the store of a read-modify-write
+    /// after its flag record) is checked there, and merges into the check of
+    /// the same bytes when there is one, which then also tests the page
+    /// byte. Its address must be computed before that side effect; an
+    /// instruction whose later accesses use addresses computed after it
+    /// checks them first ([`Lower::mem_check`]) and uses the unchecked
+    /// builders.
+    pub(super) fn mem_check_when(
+        &mut self,
+        addr: Value,
+        len: u32,
+        write: bool,
+        when: Option<Value>,
+    ) {
+        let null = self.checks.null;
+        let code = write && self.checks.store;
+        if !null && !code {
+            return;
+        }
+        let at = self
+            .ops
+            .iter()
+            .position(Op::has_side_effect)
+            .unwrap_or(self.ops.len());
+        let same = self.ops[..at].iter_mut().find_map(|op| match op {
+            Op::MemCheck {
+                addr: a,
+                len: l,
+                when: w,
+                code,
+                ..
+            } if (*a, *l, *w) == (addr, len, when) => Some(code),
+            _ => None,
+        });
+        if let Some(c) = same {
+            *c |= code;
+            return;
+        }
+        let check = Op::MemCheck {
+            addr,
+            len,
+            write,
+            null,
+            code,
+            when,
+        };
+        if at < self.ops.len() {
+            // The values must be the same before the side effect.
+            let written: crate::sync::Set = self.ops[at..]
+                .iter()
+                .map(|op| crate::sync::op_effect(op).writes)
+                .fold(0, |a, b| a | b);
+            let before = |v: Value| match v {
+                Value::Reg(r) => written & (1 << r) == 0,
+                Value::Temp(t) => self.effect_temps.is_some_and(|n| t.0 < n),
+                Value::Imm(_) => true,
+            };
+            assert!(
+                before(addr) && when.is_none_or(before),
+                "memory check of an address computed after a side effect"
+            );
+        }
+        self.ops.insert(at, check);
+    }
+
+    pub(super) fn mem_check(&mut self, addr: Value, len: u32, write: bool) {
+        self.mem_check_when(addr, len, write, None);
+    }
+
     pub(super) fn load(&mut self, width: Width, addr: Value) -> Value {
+        self.mem_check(addr, width.bits() / 8, false);
+        self.load_unchecked(width, addr)
+    }
+
+    /// A load whose memory checks are already in place.
+    pub(super) fn load_unchecked(&mut self, width: Width, addr: Value) -> Value {
         let dst = self.temp();
         self.push_op(Op::Load { dst, width, addr });
         Value::Temp(dst)
     }
 
     pub(super) fn store(&mut self, width: Width, addr: Value, value: Value) {
+        self.mem_check(addr, width.bits() / 8, true);
+        self.store_unchecked(width, addr, value);
+    }
+
+    /// A store whose memory checks are already in place.
+    pub(super) fn store_unchecked(&mut self, width: Width, addr: Value, value: Value) {
         self.push_op(Op::Store { width, addr, value });
     }
 

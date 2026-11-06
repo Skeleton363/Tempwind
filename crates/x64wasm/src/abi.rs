@@ -31,6 +31,17 @@ pub const LOOKUP_NAME: &str = "lookup";
 pub const DEPTH_NAME: &str = "depth";
 /// Optional (`Options::counters`): address of the counter block, immutable i64.
 pub const COUNTERS_NAME: &str = "counters";
+/// Optional (`Options::store_check`): address of the page-state table,
+/// immutable i64.
+pub const PAGE_FLAGS_NAME: &str = "page_flags";
+/// Page-state table bit: the page holds translated code.
+pub const PAGE_CODE: u8 = 1;
+/// Page-state table bit: the page is write-watched.
+pub const PAGE_WATCH: u8 = 2;
+/// log2 of the page size the page-state table counts in (4 KiB).
+pub const PAGE_FLAGS_SHIFT: u32 = 12;
+/// Guest accesses below this address fault under `Options::null_check`.
+pub const NULL_LIMIT: u64 = 0x1_0000;
 
 /// Maximum memory64 size browsers allow, in 64 KiB pages (16 GiB).
 pub const MAX_MEMORY_PAGES: u64 = 262_144;

@@ -10,3 +10,4 @@ cargo run -q -p x64wasm-cli --release -- translate-pe "$exe" --out-dir target/pe
 cargo run -q -p x64wasm-cli --release -- translate-pe "$exe" --out-dir target/pe/entry --entries entry
 cargo build -q -p x64wasm-rt --release --target wasm32-unknown-unknown
 cargo run -q -p x64wasm-cli --release -- translate-pe "$exe" --out-dir target/pe/counters --entries all --counters
+cargo run -q -p x64wasm-cli --release -- translate-pe "$exe" --out-dir target/pe/checks --entries all --null-check --store-check

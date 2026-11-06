@@ -43,4 +43,5 @@ Moved verbatim from `CLAUDE.md`, "Network and builds".
   - Translate with `x64wasm-cli translate-pe --counters ...`.
   - Run with `TEMPWIND_TRACE=counts`. At exit, the run prints the counter block (`abi.md`, "Counter block") and the host calls per import.
   - Never time a run that has counters on.
+- **Memory checks:** `x64wasm-cli translate-pe` and `translate` take `--null-check` (accesses below 0x10000 → `EXIT_FAULT`) and `--store-check` (stores into PAGE_CODE/PAGE_WATCH pages → `EXIT_UNSUPPORTED`; the module imports `env.page_flags`, which the runtime supplies). `tests/sevenzip/matrix.mjs --mode translated --aot-dir DIR --skip-translate` runs a module translated with them.
 - **Agent usage:** `node scripts/agent-stats.mjs [--milestone M6]` summarizes `docs/dev/agent-runs.jsonl` (`docs/dev/agent-runs.md`).
