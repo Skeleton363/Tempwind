@@ -1,4 +1,4 @@
-# Instruction scope for Phase 1
+# Instruction scope (Phase 1, extended in Phase 2)
 
 Status: **rule decided (Phase 1 plan); census numbers from M1.** Phase 1's done-when says "all instruction fixtures pass". This note says which instructions that covers, and how CI enforces it.
 
@@ -9,6 +9,13 @@ The scope comes from the real programs Phase 1 must run, built with MinGW-w64 (G
 - `7zz.exe`: 7-Zip's standalone console (Alone2 bundle), the Phase 1 7-Zip CLI;
 - `coremark.exe`: CoreMark with our Win64 port;
 - the L2 test programs in `tests/native/` (MinGW CRT startup included).
+
+**Phase 2 (M1) adds Wine's DLL closure** (`docs/design/wine-build.md`, "The DLL closure"). That is every PE module of the pinned Wine 11 build that a Phase 2 run may load, together with `kernel32_test.exe` and `ntdll_test.exe`.
+- **The same rule applies:** every form in the closure's census within the CPUID profile has recorded fixtures, replay is 100 %, and `census --check` gates it in CI.
+- **Exclusions:**
+  - Code outside the profile, such as a CPUID-gated AVX path in `ucrtbase.dll`, is listed by function name under "Outside the CPUID profile". It stays out of scope, since our `cpuid` never selects it.
+  - Instructions that only privileged or fault-testing code runs, such as `hlt`, `cli`, `in`/`out` and `int 2d` in the ntdll exception tests, are excluded by name with their reason. At run time they stop loudly, or from M5 they raise the exception the CPU would.
+- **The census grows with the closure.** The Phase 1 numbers below stay as they were, and the Wine closure's census gets its own section when M1 records it.
 
 ## CPUID profile
 
