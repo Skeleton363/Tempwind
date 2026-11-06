@@ -29,6 +29,7 @@ Core verification; the full reference is `docs/dev/commands.md` (add each comman
 - Commits: author and committer `Skeleton363 <46569584+Skeleton363@users.noreply.github.com>`, unsigned. The SessionStart hook sets this in cloud sessions; check `git config user.email` before the first commit. Commit messages and PR descriptions carry no `Co-Authored-By`, `Claude-Session` or "Generated with Claude Code" lines. Post PR comments only where required.
 - Done = all CI checks green, the test summary in your final message, and docs/status/phase-N.md updated (what works, measurements, decisions, known issues, next step).
 - Sessions don't share memory: record every decision in docs/status/.
+- Judge what we do by our own evidence. A change, to code or to the workflow, starts from a problem we saw or a measured opportunity. It names how we'll know it worked, and that evidence decides whether it is kept, reshaped or reverted. A source recommending something is a lead, not a reason. Workflow trials: `docs/dev/agent-runs.md`.
 - Commit and push work in progress at least every 30 minutes; the cloud sandbox can reset.
 - If something you need is missing (a tool, a domain, a secret, a decision), say exactly what and stop. Don't mock it, work around it or guess.
 - Never weaken, skip or delete a test to get CI green; never hand-edit recorded fixtures.

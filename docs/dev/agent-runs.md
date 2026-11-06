@@ -23,6 +23,28 @@ We judge workflow decisions (effort levels, caps, agent rules) by data, at almos
 
 `node scripts/agent-stats.mjs [--milestone M6]` prints, per agent and effort, the runs, median tokens, tokens per tool use, rework and findings, then the main session's usage between snapshots.
 
+## How we judge a change
+- **Every workflow change is a trial.** It records:
+  - the problem we saw, with its evidence;
+  - the change;
+  - the measure;
+  - when it is decided, normally the next milestone close, in its retro;
+  - the result: kept, reshaped or reverted.
+- **An outside recommendation is a lead** (docs, a skill library, the digest). It becomes a trial only when it addresses a problem we have.
+- **The quality guard:** a change that saves tokens but raises rework, review findings, CI failures or escalations is reverted.
+
+## Planned trials (applied on resume, from the 2026-11-06 review of mattpocock/skills, `research.md`)
+
+| Change | The problem we saw | Measure | Decided at |
+|---|---|---|---|
+| 1. Prune the always-loaded files (`CLAUDE.md`, rules, agent definitions) by `writing-for-agents`' rules: pointers over content, positive targets, nothing a command or a deny rule already shows | They load into every turn of every agent. Many lines restate deny rules or commands. | Words in the always-loaded files; ledger tokens per tool use; rework and findings must not rise | M6 close |
+| 2. A retro as the last step of `milestone-close`: improvements by severity, a mechanical mistake getting an automated check and a judgement call getting a reviewer rule | Three avoidable failures in M6: a merge broke `cargo fmt` in CI; a WIP push turned CI red; a test asserted an implementation detail (`% 20`) | Avoidable red CI runs and rework rounds per milestone, against M6 | The second milestone after adoption |
+| 3. A hand-off in `/pause`: a short brief for a fresh session that points to artifacts rather than repeating them | The main session re-reads its whole context at every step (818M cache-read tokens through M5) | Main-session usage per milestone (`main` lines) when a milestone runs in a fresh session | The first milestone in a fresh session |
+| 4. A merge-danger line in PR descriptions: one-way or two-way door, and the blast radius | Weak evidence: the owner decides every merge, but no merge has gone wrong | The owner's verdict at the next merge: useful or noise | M6 merge |
+| 5. Gates in `/diverge`: one command that already goes red on the bug, a minimised reproduction, ranked falsifiable hypotheses, one change at a time, tagged debug logs | Weak evidence: no recent bug hunt went wrong. Adopted at the owner's request. | Rework and escalations on bug-hunt runs | After three bug hunts |
+
+Items 4 and 5 are cheap. If they show nothing, they are removed.
+
 ## Trials (started 2026-11-05, decided at the M6 close-out)
 
 | Change | Where | Measure | Kept if |

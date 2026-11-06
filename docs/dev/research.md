@@ -98,3 +98,22 @@ The M6 planning pass, with 4 searches. Several hosts are blocked here (github.co
 ### Not adopted
 - **XMM caching in locals:** neither benchmark is floating point. Revisit if profiles show XMM traffic.
 - **USE summaries for callees:** they would only save the caller's stores, and they would need cold-path stores when a callee unwinds.
+
+## 2026-11-06: mattpocock/skills (a Claude Code skill library)
+
+**Source:** github.com/mattpocock/skills (MIT; README and seven SKILL.md files, read as single files through raw.githubusercontent.com). Asked by the owner.
+
+**Leads that match problems we have.** They are trials, judged by `docs/dev/agent-runs.md`:
+- **`writing-for-agents`:** always-loaded lines cost on every turn. Prefer pointers, positive targets and pruning: no duplication, nothing the environment already shows, no instructions the model follows anyway. Trial 1.
+- **`retro`:** improvements by severity after a session. A mechanical mistake gets a deterministic check; a judgement call becomes a reviewer rule, since the reviewer has the least context pressure. Trial 2.
+- **`handoff`:** a hand-off note that references artifacts instead of repeating them. Trial 3.
+- **`pr`:** a merge-danger call (one-way or two-way door, blast radius). Trial 4.
+- **`diagnosing-bugs`:** phases with completion criteria. The first is a tight command that goes red on the bug, before any hypothesis. Trial 5.
+
+**Not adopted:**
+- `grill-me` and `grill-with-docs`: plan mode and the coordinator's questions cover alignment. A glossary may help briefs later, if briefs show terminology drift.
+- `to-spec`, `to-tickets`, `triage` and `wayfinder`: issue-tracker flows, while we plan in `docs/plan.md`.
+- `implement-spec`: maximum concurrency, against our caps.
+- `code-review`: our two-stage review already covers standards and spec; running both at once would save time, not tokens.
+- `research`: we have this log and the digest.
+- `prototype`, `wizard`, `teach`, `to-questionnaire`, `wait-what`, `ask-matt` and the setup skill.
