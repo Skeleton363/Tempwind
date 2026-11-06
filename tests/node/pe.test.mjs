@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { Process } from '../../runtime/src/process.mjs';
 import { RuntimeTranslator } from '../../runtime/src/rt.mjs';
+import { RT_FLAG_SYNC_ALL, RT_FLAG_REFERENCE_LAYOUT } from '../../runtime/src/abi.mjs';
 
 const root = new URL('../../', import.meta.url).pathname;
 const CLI = `${root}runtime/src/run-pe.mjs`;
@@ -74,7 +75,7 @@ test('basic.exe built with --null-check --store-check: the same output (no false
 test('basic.exe with --null-check --store-check: `hidden` is translated at run time with the plan\'s checks', async () => {
   const { aot, plan } = inputs('checks');
   const json = JSON.parse(readFileSync(plan, 'utf8'));
-  assert.deepEqual(json.options, { nullCheck: true, storeCheck: true, counters: false });
+  assert.deepEqual(json.options, { nullCheck: true, storeCheck: true, counters: false, syncAll: false, structured: true });
   const rt = await RuntimeTranslator.load(readFileSync(RT));
   const modules = [];
   const translate = rt.translate.bind(rt);
@@ -87,6 +88,21 @@ test('basic.exe with --null-check --store-check: `hidden` is translated at run t
     const imports = WebAssembly.Module.imports(new WebAssembly.Module(wasm)).map((i) => `${i.module}.${i.name}`);
     assert.ok(imports.includes('env.page_flags'), `the run-time module has the store check: ${imports}`);
   }
+});
+
+test('basic.exe with --sync-all --no-structured: `hidden` is translated at run time in the reference modes', async () => {
+  const { aot, plan } = inputs('reference');
+  const json = JSON.parse(readFileSync(plan, 'utf8'));
+  assert.deepEqual(json.options, { nullCheck: false, storeCheck: false, counters: false, syncAll: true, structured: false });
+  const rt = await RuntimeTranslator.load(readFileSync(RT));
+  const flags = [];
+  const translate = rt.translate.bind(rt);
+  rt.translate = (req) => { flags.push(req.flags); return translate(req); };
+  const p = await Process.load({ exe: new Uint8Array(readFileSync(EXE)), plan: json, aot: readFileSync(aot), rt });
+  assert.equal(await p.start(), EXIT_CODE);
+  assert.deepEqual(Buffer.from(p.captured('stdout')), expected);
+  assert.ok(flags.length >= 1, 'a run-time translation');
+  for (const f of flags) assert.equal(f, RT_FLAG_SYNC_ALL | RT_FLAG_REFERENCE_LAYOUT, `request flags ${f}`);
 });
 
 test('basic.exe built with --counters: TEMPWIND_TRACE=counts reports the block and host calls', () => {

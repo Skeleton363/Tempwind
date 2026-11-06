@@ -18,12 +18,18 @@ export class PlanError extends Error {}
 function options(json) {
   const o = json.options ?? {};
   if (typeof o !== 'object' || o === null || Array.isArray(o)) throw new PlanError(`plan: options must be an object, got ${JSON.stringify(o)}`);
-  const flag = (key) => {
-    const v = o[key] ?? false;
+  const flag = (key, dflt = false) => {
+    const v = o[key] ?? dflt;
     if (typeof v !== 'boolean') throw new PlanError(`plan: options.${key} must be a boolean, got ${JSON.stringify(v)}`);
     return v;
   };
-  return { nullCheck: flag('nullCheck'), storeCheck: flag('storeCheck'), counters: flag('counters') };
+  return {
+    nullCheck: flag('nullCheck'),
+    storeCheck: flag('storeCheck'),
+    counters: flag('counters'),
+    syncAll: flag('syncAll'),
+    structured: flag('structured', true),
+  };
 }
 
 function u64(obj, key, where) {
