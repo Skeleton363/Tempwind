@@ -17,7 +17,7 @@
 ## Phase 1 summary
 
 - **Built:** an x86-64 to WebAssembly (memory64) translator (iced-x86 decoding, our IR, wasm-encoder), whole-image AOT plus a run-time translator built for wasm32, bit-exact soft float for SSE and x87, and a JS runtime with a Win32 shim and cooperative guest threads.
-- **Correctness:** @@REPLAY@@ L1 instruction cases recorded on a real CPU pass. The soft float matched the CPU in 850M cases. 7-Zip 25.01 matches native Windows on all 138 matrix steps.
+- **Correctness:** 59,936 L1 instruction cases recorded on a real CPU pass. The soft float matched the CPU in 850M cases. 7-Zip 25.01 matches native Windows on all 138 matrix steps.
 - **Speed** (V8 in Node, against wine64 on the same machine): CoreMark at 0.42 of native and `7z b` at 0.40. In one run, M6's code is 1.44× and 1.20× faster than the code before it.
 - **What carries into Phase 2:** the translator, the loader, host calls, threads, the oracle and the five test levels. The Win32 shim is scaffolding that Wine replaces.
 
@@ -376,15 +376,15 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
 | **Structured loops** (M6, `emit/structure.rs`): loop forests, one wasm `loop` per loop, a selector for interior entries | Dispatches fall 50× on CoreMark and 400× on `7z b`. The `irreducible_loop` spike case, and the spike sweep in both layouts. |
 | **Memory checks** (M6, off by default):<br>• the NULL page and stores to code pages, checked before the first side effect<br>• one shared exit per chunk<br>• run-time translation with the image's options | `lowering.rs` order tests with the checks on. Node tests for NULL reads and writes, code-page stores and run-time translation. The 7-Zip matrix gives 138/138 with both checks on. |
 | **Counters and profiling** (M6): `translate-pe --counters`, `TEMPWIND_TRACE=counts`, `tests/bench/profile.mjs` with COFF symbol names | `pe.test.mjs` and the spike counter tests. |
-| **The reference modes, end to end:** `--sync-all` and `--no-structured`, kept in the load plan and passed to the run-time translator | CLI and request tests. In them, the L2 programs and the 7-Zip matrix (138/138) give the native results, and L1 replay passes @@REPLAY@@ cases. |
+| **The reference modes, end to end:** `--sync-all` and `--no-structured`, kept in the load plan and passed to the run-time translator | CLI and request tests. In them, the L2 programs and the 7-Zip matrix (138/138) give the native results, and L1 replay passes 59,936 of 59,936 cases. |
 
 ### Test summary (local, M6, Node 24.22.0)
 
-- **Rust:** `cargo fmt --all --check`, workspace clippy and the wasm32 clippy of `x64wasm-fp` are clean. `cargo test --workspace`: @@RUST@@ passed, 0 failed.
+- **Rust:** `cargo fmt --all --check`, workspace clippy and the wasm32 clippy of `x64wasm-fp` are clean. `cargo test --workspace`: 221 passed, 0 failed.
 - `record --check`: "75 fixture files match a fresh recording".
 - `census --check` on 7zz.exe and coremark.exe: 487 of 487 in-scope forms have fixtures.
-- L1 replay in the reference modes (`replay --sync-all --no-structured`): @@REPLAY@@ cases pass.
-- `npm run test:node`: @@NODE@@. `npm run test:browser`: 4/4.
+- L1 replay in the reference modes (`replay --sync-all --no-structured`): 59,936 of 59,936 cases pass.
+- `npm run test:node`: 249/249. `npm run test:browser`: 4/4.
 - **The translated 7-Zip matrix** gives 138/138 steps identical to `expected/` in three builds:
   - the default build, at the close;
   - `--sync-all --no-structured` and `--null-check --store-check`, both in WP5.
