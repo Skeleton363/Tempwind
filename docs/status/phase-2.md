@@ -146,11 +146,16 @@
 
 ## What works
 
-Nothing yet in Phase 2.
+| Item | Evidence |
+|---|---|
+| **The Wine boundary** (M1 WP3, `native/spike/boundary/`, `abi.md` "Wine boundary").<br>An Emscripten wasm64 module (imported shared memory64, `GLOBAL_BASE` 2 GiB, wasm EH, no pthreads, no `-sJSPI`):<br>• owns the run loop over translated code<br>• is entered through raw exports in `env.table`<br>• runs two green threads that suspend through `green_block` and get their save set back<br>• makes a nested guest call<br>• grows memory while JS, its glue and translated code all see the growth | `tests/node/wine-boundary.test.mjs` and `tests/browser/wine-boundary.spec.mjs` (a Chromium Worker) pass locally and in CI (run 42306776103 at `0182d2f`). A build without the save-set restores fails the checks. A JS frame between `promising` and `Suspending` throws `SuspendError: trying to suspend JS frames`: Node 24.22 first runs the import and drops its Promise, while Chromium 153 refuses before calling it. |
 
 ## Measurements
 
-None yet.
+- **The boundary spike** (this container, Node 24.22 and Chromium 153 headless):
+  - creating the shared memory64 of 2 GiB + 64 MiB takes 0.3-1.4 ms, since the pages are reserved, not committed;
+  - compiling and instantiating the Unix side through Emscripten's glue takes 2.4-4 ms;
+  - a `green_block` suspend and resume round trip takes 1.2 µs in Node and 0.2 µs in Chromium (10,000 rounds).
 
 ## Known issues and risks
 - **The Unix-side port is the bulk:** about 100k lines in M2-M3, and 106k more with win32u in M4. The hard parts are the machine layer, the virtual backend and the server transport (Phase 0's risks 2, 4 and 6 in `native/README.md`).
@@ -160,6 +165,9 @@ None yet.
 - **Session disk:** the Wine source (hundreds of MB) plus build outputs go under `target/`.
 - **Boot cost per program run:** the matrix runs 138 processes. Measure in M3.
 - **Out of reach until Phase 4:** test units that need child processes, explorer or services. They are tracked, not fixed.
+- **Found by the spike, for M2** (`abi.md`, "Wine boundary"):
+  - Emscripten's `sbrk` grows the memory too (`emscripten_resize_heap`), which conflicts with "one owner of `memory.grow`";
+  - `run` resets `env.depth` on entry, so a nested loop loses the outer call depth.
 - **Carried from Phase 1** (`phase-1.md`, "Known issues"):
   - the two store-check gaps, which close in M3;
   - Firefox is untested (Phase 3);
