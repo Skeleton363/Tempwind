@@ -40,7 +40,12 @@ How CI builds Wine 11 from the dl.winehq.org tarball, what it publishes, and the
 
 - `tests/targets/wine.lock` names the release that sessions and later jobs use, as `targets.lock` does.
 - To fetch: `scripts/fetch-artifact.sh "$(cat tests/targets/wine.lock)" wine-pe-x86_64.tar.zst`.
-- Releases are immutable: a new build is a new tag.
+- **Publishing order:**
+  - `publish-build` creates the release as soon as the build passes: the PE modules, the native tree, the prefix and `build-info.json`.
+  - The same run's `publish-results` then adds the baselines, the traces and `closure.json`. It runs even when one of those jobs failed, so whatever exists is published, and a missing asset is a warning in the run.
+  - **Why:** workflow artifacts can't be downloaded in a session (their storage host is outside the session's network allowlist), so a release is the only way a session gets the build. Run 42306869519 built Wine, but its late `baseline-wine` failure left nothing published.
+- **Assets are never replaced.** An asset already on a tag stays as it is, and a new build is a new tag.
+- **Without traces,** `closure` runs on the static edges alone and says so in `closure.json`'s `note`.
 
 ## The DLL closure
 The set of PE modules that a Phase 2 run may load. It is the scope of the census (`instruction-scope.md`) and of AOT translation.

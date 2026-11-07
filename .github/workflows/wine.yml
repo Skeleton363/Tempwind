@@ -354,12 +354,14 @@ jobs:
           true
 
       - name: Pack the traces
+        if: ${{ !cancelled() }}
         run: |
           ls traces | wc -l
           tar -C traces -I 'zstd -T0 -10' -cf loaddll-traces.tar.zst .
           ls -l loaddll-traces.tar.zst
 
       - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
         with:
           name: baseline-wine
           path: |
@@ -368,6 +370,7 @@ jobs:
           retention-days: 3
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
         with:
           name: roots
           path: roots
@@ -376,6 +379,9 @@ jobs:
 
   closure:
     needs: [build, baseline-wine]
+    # Runs whenever the build passed: without baseline-wine's traces it lists the
+    # static edges only, and says so in closure.json's note.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -392,10 +398,12 @@ jobs:
           name: wine-build
           path: wine-build
       - uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
           name: baseline-wine
           path: baseline-wine
       - uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
           name: roots
           path: roots
@@ -404,14 +412,22 @@ jobs:
           set -euo pipefail
           mkdir -p tree traces
           tar -C tree -I zstd -xf wine-build/wine-pe-x86_64.tar.zst
-          tar -C traces -I zstd -xf baseline-wine/loaddll-traces.tar.zst
+          note="Data files listed from the install tree (share/wine/nls/*.nls, share/wine/wine.inf), not read from a +file trace."
+          trace_args=()
+          if [ -f baseline-wine/loaddll-traces.tar.zst ]; then
+            tar -C traces -I zstd -xf baseline-wine/loaddll-traces.tar.zst
+            trace_args=(--traces traces)
+          else
+            note="$note Static edges only: baseline-wine left no +loaddll traces."
+            echo "::warning::closure.json has static edges only (no +loaddll traces)"
+          fi
           args=()
-          for f in tree/tests/kernel32_test.exe tree/tests/ntdll_test.exe roots/*.exe; do args+=(--root "$f"); done
+          for f in tree/tests/kernel32_test.exe tree/tests/ntdll_test.exe roots/*.exe; do
+            if [ -f "$f" ]; then args+=(--root "$f"); fi
+          done
           while read -r f; do args+=(--data-file "$f"); done < wine-build/data-files.txt
           cargo run -q -p testkit --release -- closure --tree tree --apiset wine-build/apisetschema.spec \
-            --traces traces --wine "wine-${SHA:0:7}" "${args[@]}" \
-            --note "Listed from the install tree (share/wine/nls/*.nls, share/wine/wine.inf), not read from a +file trace." \
-            --out closure.json
+            "${trace_args[@]}" --wine "wine-${SHA:0:7}" "${args[@]}" --note "$note" --out closure.json
           jq '{modules: (.modules|length), overlaps: (.overlaps|length), root_overlaps: (.root_overlaps|length), highest_end, memory_bytes, unresolved: (.unresolved|length), trace_files}' closure.json | tee -a "$GITHUB_STEP_SUMMARY"
           jq -r '.unresolved[] | "\(.name) <- \(.from|join(","))"' closure.json | head -n 40
       - uses: actions/upload-artifact@v7
@@ -421,8 +437,42 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
-  publish:
-    needs: [build, baseline-windows, baseline-wine, closure]
+  # The release starts as soon as the build passes, so a later job's failure never
+  # leaves sessions without the PE modules (docs/design/wine-build.md, "Release").
+  # Workflow artifacts can't be downloaded in a session: their storage host is
+  # outside the session's network allowlist.
+  publish-build:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wine-build
+          path: wine-build
+      - name: Create release wine-<sha7> with the build's assets
+        run: |
+          set -euo pipefail
+          tag="wine-${SHA:0:7}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; its assets stay as they are." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p dist
+          cp wine-build/{wine-pe-x86_64,wine-native,wine-prefix}.tar.zst wine-build/build-info.json dist/
+          (cd dist && for f in *; do sha256sum "$f" > "$f.sha256"; done && ls -l)
+          notes="Wine 11.0 built from the pristine tarball by workflow run $RUN_URL at commit $SHA: PE modules (COFF symbols kept), the native install tree, the prefix and build-info.json. The same run adds the conformance baselines (windows-2025, native Wine), the +loaddll traces and the DLL closure as their jobs finish (docs/design/wine-build.md)."
+          gh release create "$tag" dist/* --target "$SHA" --prerelease --title "$tag" --notes "$notes"
+          echo "Published $tag with the build's assets" >> "$GITHUB_STEP_SUMMARY"
+
+  # Adds what the later jobs produced. It runs even when one of them failed, so
+  # whatever exists is published; a missing asset is reported as a warning.
+  publish-results:
+    needs: [publish-build, baseline-windows, baseline-wine, closure]
+    if: ${{ !cancelled() && needs.publish-build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -432,28 +482,46 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: art
-      - name: Publish release wine-<sha7>
+      - name: Add the baselines, the traces and the closure to wine-<sha7>
         run: |
           set -euo pipefail
           tag="wine-${SHA:0:7}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           mkdir -p dist
-          cp art/wine-build/{wine-pe-x86_64,wine-native,wine-prefix}.tar.zst art/wine-build/build-info.json dist/
-          cp art/baseline-wine/loaddll-traces.tar.zst art/closure/closure.json dist/
+          if [ -f art/baseline-wine/loaddll-traces.tar.zst ]; then cp art/baseline-wine/loaddll-traces.tar.zst dist/; fi
+          if [ -f art/closure/closure.json ]; then cp art/closure/closure.json dist/; fi
           # One file per platform: schema-1 result objects, one per test executable.
           for p in windows wine; do
+            # A job that failed early uploaded nothing: no directory, no results file.
+            if [ ! -d "art/baseline-$p" ]; then continue; fi
+            files=$(find "art/baseline-$p" -name "baseline-$p-*.json" | sort)
+            if [ -z "$files" ]; then continue; fi
+            # shellcheck disable=SC2086 # one argument per file
             jq -s '{schema: 1, platform: .[0].platform, wine: .[0].wine, commit: .[0].commit, run: .[0].run, results: .}' \
-              $(find art/baseline-$p -name "baseline-$p-*.json" | sort) > dist/baseline-$p.json
+              $files > "dist/baseline-$p.json"
           done
-          cd dist
-          for f in *; do sha256sum "$f" > "$f.sha256"; done
-          ls -l
-          cd ..
           rates() { jq -r '.results[] | .exe as $e | (.units|length) as $n | ([.units[]|select(.status=="ok")]|length) as $ok | "\($e): \($ok)/\($n) units ok, " + ([.units[].status]|group_by(.)|map("\(.[0])=\(length)")|join(" "))' "$1"; }
-          { echo "## Conformance"; echo '```'; echo windows; rates dist/baseline-windows.json; echo wine; rates dist/baseline-wine.json; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
-          notes="Wine 11.0 built from the pristine tarball by workflow run $RUN_URL at commit $SHA: PE modules (COFF symbols kept), the native install tree, the prefix, the DLL closure, conformance baselines on windows-2025 and native Wine, the +loaddll traces and build-info.json (docs/design/wine-build.md)."
-          gh release create "$tag" dist/* --target "$SHA" --prerelease --title "$tag" --notes "$notes"
-          echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Conformance"; echo '```'
+            for p in windows wine; do
+              if [ -f "dist/baseline-$p.json" ]; then echo "$p"; rates "dist/baseline-$p.json"; fi
+            done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          missing=()
+          for want in baseline-windows.json baseline-wine.json loaddll-traces.tar.zst closure.json; do
+            if [ ! -f "dist/$want" ]; then missing+=("$want"); fi
+          done
+          have=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          upload=()
+          for f in dist/*; do
+            [ -e "$f" ] || continue
+            n=$(basename "$f")
+            if grep -qx "$n" <<<"$have"; then echo "$n is already on $tag; kept"; continue; fi
+            sha256sum "$f" | sed "s| dist/| |" > "$f.sha256"
+            upload+=("$f" "$f.sha256")
+          done
+          if [ ${#upload[@]} -gt 0 ]; then gh release upload "$tag" "${upload[@]}"; fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::warning::$tag lacks ${missing[*]}: their jobs did not pass"
+            echo "Missing: ${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+          fi
