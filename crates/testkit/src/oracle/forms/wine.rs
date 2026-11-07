@@ -12,7 +12,10 @@ pub(super) enum Spec {
     Popfq,
     /// mov r/m16, Sreg (`Mov_r32m16_Sreg` with memory, `Mov_rm16_Sreg`
     /// with a 16-bit register).
-    MovSreg { code: Code, mem: bool },
+    MovSreg {
+        code: Code,
+        mem: bool,
+    },
     Cmpxchg16b,
     Enter,
 }
@@ -40,7 +43,6 @@ pub(super) fn forms(out: &mut Vec<Form>) {
         });
     };
     add("Pushfq/reg", "pushf", STACK_FLAGS_COUNT, Spec::Pushfq);
-    add("Popfq/reg", "pushf", STACK_FLAGS_COUNT, Spec::Popfq);
     add(
         "Mov_r32m16_Sreg/mem",
         "mov_sreg",
@@ -66,6 +68,29 @@ pub(super) fn forms(out: &mut Vec<Form>) {
         Spec::Cmpxchg16b,
     );
     add("Enterq_imm16_imm8/reg", "enter", ENTER_COUNT, Spec::Enter);
+    add("Popfq/reg", "pushf", STACK_FLAGS_COUNT, Spec::Popfq);
+}
+
+/// Encodes, checks the decoding (and the effective address) and builds the
+/// case; a fault leaves RIP at the instruction.
+fn done(
+    form: &Form,
+    b: Builder,
+    instr: Instruction,
+    fault: Option<FaultKind>,
+    verify_ea: Option<u64>,
+) -> Result<Option<GenCase>> {
+    let case = finish(Finish {
+        form,
+        b,
+        instr,
+        target: fault.map(|_| CODE_ADDR),
+        verify_ea,
+    })?;
+    Ok(case.map(|mut c| {
+        c.expect_fault = fault;
+        c
+    }))
 }
 
 const SREGS: [Register; 6] = [
@@ -85,19 +110,7 @@ pub(super) fn case(
     spec: Spec,
 ) -> Result<Option<GenCase>> {
     let mut b = Builder::new(rng, defaults);
-    let finish_with = |b, instr, fault: Option<FaultKind>, verify_ea| {
-        let case = finish(Finish {
-            form,
-            b,
-            instr,
-            target: fault.map(|_| CODE_ADDR),
-            verify_ea,
-        })?;
-        Ok(case.map(|mut c| {
-            c.expect_fault = fault;
-            c
-        }))
-    };
+    let finish_with = |b, instr, fault, verify_ea| done(form, b, instr, fault, verify_ea);
     match spec {
         Spec::Pushfq => {
             let rsp = setup_stack(rng, &mut b)?;
@@ -181,7 +194,12 @@ pub(super) fn case(
             if idx % 8 == 7 {
                 (want_lo, want_hi) = (rand_val(rng, 64), rand_val(rng, 64));
             }
-            for (r, v) in [(0, want_lo), (2, want_hi), (1, rand_val(rng, 64)), (3, rand_val(rng, 64))] {
+            for (r, v) in [
+                (0, want_lo),
+                (2, want_hi),
+                (1, rand_val(rng, 64)),
+                (3, rand_val(rng, 64)),
+            ] {
                 if !b.touched[r] {
                     b.set_full(r, v);
                 }
@@ -204,14 +222,16 @@ pub(super) fn case(
                 _ if rng.chance(1, 2) => rng.below(5) as u8,
                 _ => rng.below(256) as u8,
             };
+            // The CPU checks a write at the final RSP (SDM, ENTER, #PF), so
+            // it stays in the data window.
             let size: u16 = match idx % 8 {
                 0 => 0,
-                1 => 0xffff,
+                1 => 0xe000,
                 2 => 8,
-                _ => rng.below(0x1_0000) as u16,
+                _ => rng.below(0xe000) as u16,
             };
             let n = u64::from(level % 32);
-            let rsp = DATA_ADDR + 0xc000 + (rng.below(0x1000) & !7);
+            let rsp = DATA_ADDR + 0xf000 + (rng.below(0xc00) & !7);
             b.set_full(RSP_INDEX, rsp);
             b.define(rng, rsp - 8 * (n + 1) - 8, 8 * (n + 1) + 24)?;
             // The frames the copies come from: elsewhere, or overlapping
@@ -223,7 +243,8 @@ pub(super) fn case(
             };
             b.set_full(5, rbp);
             b.define(rng, rbp - 8 * n - 8, 8 * n + 16)?;
-            let instr = Instruction::with2(Code::Enterq_imm16_imm8, u32::from(size), u32::from(level))?;
+            let instr =
+                Instruction::with2(Code::Enterq_imm16_imm8, u32::from(size), u32::from(level))?;
             finish_with(b, instr, None, None)
         }
     }

@@ -27,6 +27,8 @@ pub(super) enum Special {
     Fninit,
     /// The x87 forms of M4 (`x87.rs`).
     X87(super::x87::Spec),
+    /// The forms of Wine's closure (`wine.rs`).
+    Wine(super::wine::Spec),
 }
 
 const DIV_COUNT: usize = 40;
@@ -167,6 +169,8 @@ pub(super) fn after(after: &str, out: &mut Vec<Form>) {
                     Mnemonic::Stc,
                     Mnemonic::Std,
                     Mnemonic::Cld,
+                    Mnemonic::Lahf,
+                    Mnemonic::Sahf,
                 ],
             );
             generic::forms_of(out, "ud2", &[Mnemonic::Ud2]);
@@ -205,7 +209,10 @@ pub(super) fn after(after: &str, out: &mut Vec<Form>) {
                 Special::PushRmReg,
             );
         }
-        "sse_fp_cvt" => super::x87::forms(out),
+        "sse_fp_cvt" => {
+            super::x87::forms(out);
+            super::wine::forms(out);
+        }
         "sse_shuffle" => special(
             out,
             "Fninit/reg".into(),
@@ -241,6 +248,7 @@ pub(super) fn case(
         }
         Special::Fninit => gen_fninit(rng, form, defaults),
         Special::X87(spec) => super::x87::case(rng, form, idx, defaults, spec),
+        Special::Wine(spec) => super::wine::case(rng, form, idx, defaults, spec),
     }
 }
 
