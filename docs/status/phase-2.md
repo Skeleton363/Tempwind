@@ -1,6 +1,6 @@
 # Phase 2 status: Wine underneath
 
-**Phase 2 is planned (2026-11-06). M1 is in progress (resumed 2026-11-07):**
+**Phase 2 is planned (2026-11-06). M1 is in progress, paused 2026-11-07 (the resume path: "M1 progress (paused 2026-11-07)"):**
 - WP1 (the Wine CI build) and WP3 (the boundary spike) are done;
 - WP2 (census, fixtures, translating the closure) is running.
 
@@ -189,6 +189,41 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - **popfq is changed:** NT and ID stay in RFLAGS, and an image with TF or AC set exits `EXIT_UNSUPPORTED` instead of being silently dropped. Single-step and alignment checks aren't modelled (the follow-up);
   - `closure.json`'s root paths become tree-relative, as the schema says (the follow-up).
 
+## M1 progress (paused 2026-11-07)
+
+The owner paused at 09:55 UTC. The PR branch `claude/gifted-bardeen-a0hot6` is at `4e0b8ac` plus this note's commit, and no pull request is open yet.
+
+### Committed
+- WP3 (the boundary spike) and WP1 (the Wine CI build, `wine.lock` = `wine-ccff087`) are done; see above.
+- **WP2's census gate** is in `d32c713..a1beaa6`, green in CI (dispatch run 42360530592):
+  - the contracts (`translator.md` "Wine closure forms", `fixtures.md`, `instruction-scope.md` "Wine closure census");
+  - the fixtures, the lowering, `census --closure`, CI's closure census;
+  - `translate-pe --list-unsupported`;
+  - `images.mjs` taking DLLs.
+
+### In progress: WP2's review follow-up (deep-worker, stopped by the pause)
+- **The brief** is the "Decisions at review" above:
+  1. `popfq` keeps NT and ID in RFLAGS, and an image with TF or AC set exits `EXIT_UNSUPPORTED` with precise state (RIP at the `popfq`; RSP and RFLAGS unchanged).
+     - Record NT and ID fixture cases if the recorder can follow them. Otherwise, a lowering test asserts the contract (an NT/ID round trip through `popfq` then `pushfq`; TF or AC → `EXIT_UNSUPPORTED`).
+     - Update `translator.md`, "RFLAGS images".
+  2. `testkit closure` (`crates/testkit/src/closure.rs`) writes tree-relative root paths (`tests/kernel32_test.exe`), with a unit test.
+     - `closure.rs` is in `wine.yml`'s path filter, so the push publishes a new release. Move `wine.lock` to it once it is complete (`scripts/fetch-artifact.sh TAG closure.json`, then the closure's module list compared with `wine-ccff087`'s).
+- **State:** WP2 had started on the recorder: `crates/testkit/src/oracle/forms/wine.rs` and `oracle/record.rs`, uncommitted and untested.
+  - They are saved on the side branch `m1-census-checkpoint`, at `9ad9057`, whose tree is the PR head plus those two files.
+  - If this container survived, they are still in the working tree.
+- **Done when:** `cargo test --workspace`, `record --check`, fmt and clippy are clean, `npm run test:node` passes, and a `workflow_dispatch` of ci.yml on the PR branch is green.
+
+### How to resume
+- **In this session:** send the stopped WP2 agent a message; its transcript survives. It continues the follow-up with its files in place.
+- **In a fresh session:**
+  1. Restore the files with `git checkout origin/m1-census-checkpoint -- crates/testkit/src/oracle/forms/wine.rs crates/testkit/src/oracle/record.rs`, or start the follow-up from the PR head.
+  2. Give a deep-worker the brief above.
+- **Then close M1:**
+  1. `/milestone-close`: the full verification, the spec review and `/code-review medium`, the status note, the draft PR "[Phase 2] Wine in CI, and the boundary spike", the retro (trial 2 is due at M2), and the hand-off.
+  2. M2 starts in a new session.
+
+Ledger: WP2's line (rework 1) and the main session's at this pause are in `docs/dev/agent-runs.jsonl`.
+
 ## What works
 
 | Item | Evidence |
@@ -252,7 +287,7 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
 
 ## Next step
 
-1. Finish WP2.
-2. Set `wine.lock` to the first complete release.
-3. Close M1 with `/milestone-close`.
-4. Hand off to M2's new session.
+Resume from "M1 progress (paused 2026-11-07)":
+1. WP2's follow-up;
+2. then `/milestone-close` for M1;
+3. then M2 in a new session.
