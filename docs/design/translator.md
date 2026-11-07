@@ -429,6 +429,31 @@ MXCSR is loaded from the state block for each instruction that tests it. (M6 can
 
 `cpuid` lowers to a lookup of EAX in the table of `instruction-scope.md` ("`cpuid` results"), done at run time, since EAX is usually not a constant. It writes EAX, EBX, ECX and EDX as 32-bit registers and leaves the flags alone. The dedicated test checks every row.
 
+## Wine closure forms (Phase 2, M1)
+
+Status: **decided and implemented in Phase 2's M1** (census of Wine's DLL closure, `instruction-scope.md`, "Wine closure census"). Every form below has L1 fixtures (`testkit record`); replay decides.
+
+### RFLAGS images
+- **`Op::ReadFlags { dst }`:** the six status flags of the current flag record, in their RFLAGS positions, every other bit 0. It is a flag reader (liveness and sync count it like `Op::Cond`).
+- **pushfq:** pushes (state RFLAGS & ¬(status | RF | VM)) | `ReadFlags`. DF and the system bits come from the state's RFLAGS, where they live while code runs; RF and VM are 0 in the image, as the SDM says.
+- **popfq:** loads the image, RSP += 8, then an eager record of its status flags (`FlagsUpdate`, clearing all six) and DF into the state's RFLAGS. Every other bit stays: at CPL 3 with IOPL 0 the CPU ignores IF, IOPL, VIP, VIF, VM, RF and the reserved bits. TF, NT, AC and ID are dropped too: translated code has no single-step trap, nested task or alignment check, and leaving ID fixed only matters to 32-bit CPUID probes.
+- **lahf:** AH = SF:ZF:0:AF:0:PF:1:CF from `ReadFlags`. **sahf:** SF, ZF, AF, PF and CF from AH (`FlagsUpdate`); OF stays.
+
+### Segment selectors
+`mov r/m16, Sreg` stores the selector a 64-bit Linux process sees: CS 0x33, SS 0x2B, DS, ES, FS and GS 0. These are what native Wine's PE code reads (RtlCaptureContext stores all six), so contexts match the native-Wine baseline, and the oracle records them on any Linux runner. Windows itself has DS = ES = GS = SS = 0x2B and FS = 0x53; the Unix side (M2+) builds contexts with the values above. A memory destination gets 16 bits; a register gets the low 16 bits with 66h, otherwise the zero-extended selector. Loads of segment registers stay unsupported.
+
+### cmpxchg16b m128
+#GP (`FaultIf`) unless the address is 16-byte aligned, then one memory check of 16 bytes. Equal RDX:RAX: ZF = 1 and m128 = RCX:RBX. Otherwise ZF = 0, RDX:RAX = m128, and m128 is written back with its own value, as the SDM says. The other flags stay (`FlagsUpdate` of ZF). `lock` is accepted (one thread).
+
+### enter imm16, imm8
+Level L = imm8 mod 32. Push RBP; then L − 1 copies of the qwords at RBP − 8, RBP − 16, … (the old RBP), each read before its push; then, if L > 0, the frame pointer (RSP after the first push). RBP = the frame, RSP = RSP after the pushes − imm16. All addresses are computed first, so the memory checks precede the first store. The CPU also checks a write at the final RSP (#PF); translated code doesn't.
+
+### fprem
+`X87::Prem`: the `F80Prem` helper on ST(0) and ST(1) (`x64wasm-fp`, Intel's reduction: a partial step of 32 + (d − 32) mod 32 bits when the exponent difference d is 64 or more, with C2 = 1). ST(0) gets the remainder; C0, C3 and C1 get quotient bits 2, 1 and 0, and C2 is set for a partial reduction. The fixtures mask the result and C0, C1, C3 of a partial reduction, and every condition code when an operand is a NaN, an infinity, unsupported or a zero divisor.
+
+### fxsave m512
+`X87::Save` (no #MF check: fxsave doesn't wait), after a #GP `FaultIf` for an unaligned address and one memory check of 512 bytes. 64-bit layout without REX.W: FCW, FSW, the abridged tag byte (bit p: R[p] not empty), byte 5, FOP, FIP with FCS and FDP with FDS as 0; MXCSR; MXCSR_MASK 0x0000FFFF (DAZ is supported); ST(0)-ST(7) at 32 + 16 × i (the upper 6 bytes of each slot 0); XMM0-XMM15 at 160. Bytes 416-511 are not written. The fixtures mask byte 5, 6-23, MXCSR_MASK, the slot padding and 416-511 (the SDM leaves them reserved or to the CPU).
+
 ### Tests
 
 - **`crates/x64wasm-fp`:** native differential tests against the CPU (inline `asm!`) for every helper. They cover edge pairs (±0, the smallest and largest denormals and normals, ±1, ±∞, QNaN and SNaN with several payloads, rounding ties, and the limits of the integer conversions) and seeded random cases, under every RC, FTZ/DAZ combination and x87 PC. The default count fits `cargo test`; an `#[ignore]` test runs millions. A Node test checks the wasm build against vectors from the native build.

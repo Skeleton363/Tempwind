@@ -117,6 +117,8 @@ The format needs no change for SSE floating point and x87: v2 already carries XM
   - `fldcw` that unmasks a flag already set leaves ES and B (`0x8080`) to the CPU.
   - `fnstenv`: the reserved upper halves of the first three dwords and the pointer, opcode and selector fields (bytes 12-27) are `undefined.mem`.
   - Two x87 NaN operands of the same kind with equal significands and opposite signs: the SDM's rule (the larger significand wins) doesn't decide, so the sign bit of the destination `st` is masked.
+- **Recording artifacts, under `undefined` (Phase 2, M1):** the recorder single-steps, so the CPU's TF is set while the instruction runs, and pushfq stores it (the kernel hides it only in the registers). Bit 8 of the pushed image is `undefined.mem`; guest RFLAGS never has TF.
+- **popfq and the kernel:** Linux leaves TF to a traced popf (`is_setting_trap_flag`, arch/x86/kernel/step.c) and from then on stops hiding the TF it sets for single steps. The recorder starts a fresh child after each popf case. popfq cases change only the status flags, DF and the bits the CPU ignores at CPL 3 (IF, IOPL, VIP, VIF, VM, RF, reserved), since the recorder requires every other output bit to equal the input.
 - **Recorded, not masked:** after `fnstenv` masks every exception, ES and B are clear, as the SDM defines ES (set while an unmasked exception flag is set). The non-waiting forms (`fnstcw`, `fnstsw`, `fnstenv`, `fnclex`) also run with a pending unmasked exception (ES and B set); the waiting forms never do.
 
 ## Recording

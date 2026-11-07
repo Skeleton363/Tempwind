@@ -82,6 +82,13 @@ impl Lower<'_> {
         }
     }
 
+    /// The six status flags of the current flag record, in place.
+    pub(super) fn read_flags(&mut self) -> Value {
+        let dst = self.temp();
+        self.push_op(Op::ReadFlags { dst });
+        Value::Temp(dst)
+    }
+
     /// The condition (0 or 1) of the current flag record.
     pub(super) fn cond(&mut self, cond: Cond) -> Value {
         let dst = self.temp();
@@ -298,6 +305,7 @@ impl Lower<'_> {
                     | M::Btr
                     | M::Bts
                     | M::Cmpxchg
+                    | M::Cmpxchg16b
                     | M::Dec
                     | M::Inc
                     | M::Neg
@@ -334,6 +342,10 @@ impl Lower<'_> {
             M::Xchg => self.xchg(),
             M::Xadd => self.xadd(),
             M::Cmpxchg => self.cmpxchg(),
+            M::Cmpxchg16b => self.cmpxchg16b(),
+            M::Pushfq => self.pushfq(),
+            M::Popfq => self.popfq(),
+            M::Enter => self.enter(),
             M::Movsb
             | M::Movsw
             | M::Movsd

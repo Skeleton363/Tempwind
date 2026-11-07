@@ -672,6 +672,11 @@ pub enum X87 {
     Unary(X87Unary),
     /// fscale: ST(0) scaled by ST(1).
     Scale,
+    /// fprem: ST(0) = the partial remainder of ST(0) / ST(1); C2, and C0,
+    /// C3, C1 = quotient bits 2, 1, 0.
+    Prem,
+    /// fxsave m512 (non-waiting): the x87, MXCSR and XMM state to memory.
+    Save,
     /// fcom, fucom (`quiet`), ficom: C3, C2, C0 from ST(0) and `src`, then
     /// `pops` pops.
     Com {
@@ -710,6 +715,7 @@ impl X87 {
             X87::Unary(X87Unary::Sqrt) => Some(F::F80Sqrt),
             X87::Unary(X87Unary::Round) => Some(F::F80Round),
             X87::Scale => Some(F::F80Scale),
+            X87::Prem => Some(F::F80Prem),
             X87::Com { .. } | X87::Comi { .. } => Some(F::F80Cmp),
             _ => None,
         }
@@ -1546,6 +1552,11 @@ impl fmt::Display for Op {
                     } => write!(f, "x87.{}{} st{dst}, {}", lower(op), p(*pop), src(s)),
                     X87::Unary(u) => write!(f, "x87.{}", lower(u)),
                     X87::Scale => write!(f, "x87.scale"),
+                    X87::Prem => write!(f, "x87.prem"),
+                    X87::Save => match addr {
+                        Some(a) => write!(f, "x87.fxsave [{a}]"),
+                        None => write!(f, "x87.fxsave ?"),
+                    },
                     X87::Com {
                         src: s,
                         quiet,
