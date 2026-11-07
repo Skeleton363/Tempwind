@@ -60,6 +60,9 @@ enum Command {
         /// entry point.
         #[arg(long, value_enum, default_value_t = Entries::All)]
         entries: Entries,
+        /// Print the address of every unsupported site.
+        #[arg(long)]
+        list_unsupported: bool,
         #[command(flatten)]
         extra: Extra,
     },
@@ -200,7 +203,13 @@ fn validate(wasm: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn translate_pe(file: &Path, out_dir: &Path, entries: Entries, extra: &Extra) -> Result<()> {
+fn translate_pe(
+    file: &Path,
+    out_dir: &Path,
+    entries: Entries,
+    list_unsupported: bool,
+    extra: &Extra,
+) -> Result<()> {
     let data = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
     let pe = Pe::parse(&data).with_context(|| format!("parsing {}", file.display()))?;
     let name = file
@@ -242,6 +251,11 @@ fn translate_pe(file: &Path, out_dir: &Path, entries: Entries, extra: &Extra) ->
         t.jump_tables.len(),
         t.unsupported.len()
     );
+    if list_unsupported {
+        for a in &t.unsupported {
+            eprintln!("  unsupported: {a:#x}");
+        }
+    }
     Ok(())
 }
 
@@ -271,8 +285,9 @@ fn main() -> Result<()> {
             file,
             out_dir,
             entries,
+            list_unsupported,
             extra,
-        } => translate_pe(&file, &out_dir, entries, &extra)?,
+        } => translate_pe(&file, &out_dir, entries, list_unsupported, &extra)?,
     }
     Ok(())
 }
