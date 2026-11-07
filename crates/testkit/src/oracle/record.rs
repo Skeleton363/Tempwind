@@ -113,6 +113,16 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
                 image[off..off + block.bytes.len()].copy_from_slice(&block.bytes);
             }
             let step = tracee.step(&c.bytes, &image, &c.input).with_context(at)?;
+            // Linux leaves TF to a traced popf (`is_setting_trap_flag` in
+            // arch/x86/kernel/step.c clears TIF_FORCED_TF), and from then on
+            // stops hiding the TF it sets for PTRACE_SINGLESTEP. A fresh
+            // child starts with clean bookkeeping.
+            let m = iced_x86::Decoder::with_ip(64, &c.bytes, 0, x64wasm::DECODER_OPTIONS)
+                .decode()
+                .mnemonic();
+            if matches!(m, iced_x86::Mnemonic::Popf | iced_x86::Mnemonic::Popfq) {
+                tracee = Tracee::spawn()?;
+            }
             ensure!(
                 step.fault.map(|f| f.kind) == c.expect_fault,
                 "{}: the instruction raised {}, the generator expected {}",

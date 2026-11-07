@@ -69,6 +69,8 @@ pub(super) enum Op {
     Unary,
     /// fscale.
     Scale,
+    /// fprem: ST(0) mod ST(1).
+    Prem,
     /// fadd m32, fmul m64.
     ArithMem(Mf),
     /// The register forms of fadd, fmul, fdiv, ... (st(0), st(i) or
@@ -78,6 +80,10 @@ pub(super) enum Op {
     ComMem(Mf),
     /// fcomi, fucomi, fucomip.
     Comi,
+    /// fcomp st(i).
+    ComSt,
+    /// fxsave m512 (non-waiting; changes no register).
+    Fxsave,
     Fnstcw,
     Fldcw,
     FnstswMem,
@@ -103,7 +109,7 @@ const CONTROL_COUNT: usize = 48;
 pub(super) fn forms(out: &mut Vec<Form>) {
     use Code as C;
     use Mf::*;
-    let families: [(&'static str, &[(Code, Op)]); 5] = [
+    let families: [(&'static str, &[(Code, Op)]); 6] = [
         (
             "x87_load",
             &[
@@ -148,6 +154,13 @@ pub(super) fn forms(out: &mut Vec<Form>) {
                 (C::Fsqrt, Op::Unary),
                 (C::Frndint, Op::Unary),
                 (C::Fscale, Op::Scale),
+                // Wine's closure (Phase 2, M1).
+                (C::Fadd_m64fp, Op::ArithMem(F64)),
+                (C::Fiadd_m32int, Op::ArithMem(I32)),
+                (C::Fsub_m32fp, Op::ArithMem(F32)),
+                (C::Fsubr_m64fp, Op::ArithMem(F64)),
+                (C::Fdivr_m32fp, Op::ArithMem(F32)),
+                (C::Fprem, Op::Prem),
             ],
         ),
         (
@@ -158,6 +171,7 @@ pub(super) fn forms(out: &mut Vec<Form>) {
                 (C::Fcomi_st0_sti, Op::Comi),
                 (C::Fucomi_st0_sti, Op::Comi),
                 (C::Fucomip_st0_sti, Op::Comi),
+                (C::Fcomp_st0_sti, Op::ComSt),
             ],
         ),
         (
@@ -173,11 +187,16 @@ pub(super) fn forms(out: &mut Vec<Form>) {
                 (C::Wait, Op::Fwait),
             ],
         ),
+        ("fxsave", &[(C::Fxsave_m512byte, Op::Fxsave)]),
     ];
     for (family, codes) in families {
         for &(code, op) in codes {
-            let mem = mem_format(op).is_some();
-            let count = if is_control(op) { CONTROL_COUNT } else { COUNT };
+            let mem = mem_format(op).is_some() || op == Op::Fxsave;
+            let count = if is_control(op) || op == Op::Fxsave {
+                CONTROL_COUNT
+            } else {
+                COUNT
+            };
             out.push(Form {
                 id: format!("{code:?}/{}", if mem { "mem" } else { "reg" }),
                 family,
@@ -216,6 +235,7 @@ fn mem_format(op: Op) -> Option<Mf> {
 fn mem_size(op: Op) -> u64 {
     match op {
         Op::Fnstenv | Op::Fldenv => 28,
+        Op::Fxsave => 512,
         _ => mem_format(op).map_or(0, Mf::size),
     }
 }
@@ -548,9 +568,9 @@ pub(super) fn case(
     // Control word and status word.
     let waiting = !matches!(
         op,
-        Op::Fnstcw | Op::FnstswMem | Op::FnstswAx | Op::Fnstenv | Op::Fnclex
+        Op::Fnstcw | Op::FnstswMem | Op::FnstswAx | Op::Fnstenv | Op::Fnclex | Op::Fxsave
     );
-    let fcw = if is_control(op) && op != Op::Fldenv {
+    let fcw = if (is_control(op) && op != Op::Fldenv) || op == Op::Fxsave {
         any_fcw(rng)
     } else {
         masked_fcw(rng)
@@ -569,8 +589,8 @@ pub(super) fn case(
     let reads: Vec<usize> = match op {
         Op::LoadSt => vec![sti],
         Op::Store(_) | Op::StoreSt | Op::Unary | Op::ArithMem(_) | Op::ComMem(_) => vec![0],
-        Op::Xch | Op::Arith | Op::Comi => vec![0, sti],
-        Op::Scale => vec![0, 1],
+        Op::Xch | Op::Arith | Op::Comi | Op::ComSt => vec![0, sti],
+        Op::Scale | Op::Prem => vec![0, 1],
         _ => vec![],
     };
     let push = matches!(op, Op::Load(_) | Op::LoadSt | Op::Ldz);
@@ -634,15 +654,42 @@ pub(super) fn case(
                 _ => second,
             };
         }
+        Op::Prem => {
+            st[0] = a;
+            // Divisors: exponent differences below and above 64 (complete
+            // and partial reductions), equal and nearby values, edges.
+            st[1] = match rng.below(5) {
+                _ if idx < e80.len() => second,
+                0 | 1 => {
+                    let (neg, sig) = (rng.chance(1, 2), rng.next_u64() | J);
+                    let e = ((a >> 64) & 0x7fff) as i64 - 16383;
+                    f80e(neg, e - rng.range_i64(-2, 70), sig)
+                }
+                2 => f80e(rng.chance(1, 2), rng.range_i64(-4, 4), rng.next_u64() | J),
+                3 => related80(rng, a),
+                _ => second,
+            };
+        }
         _ if !reads.is_empty() => {
             st[0] = a;
             if reads.len() > 1 && sti != 0 {
                 st[sti] = second;
+                // Compares: equal operands in some cases.
+                if op == Op::ComSt && idx >= 32 && rng.chance(1, 3) {
+                    st[sti] = a;
+                }
             }
         }
         _ => {}
     }
     b.fp.st = st;
+    if op == Op::Fxsave {
+        // Every XMM register and MXCSR (any valid value) are stored too.
+        for x in &mut b.fp.xmm {
+            *x = u128::from(rng.next_u64()) << 64 | u128::from(rng.next_u64());
+        }
+        b.fp.mxcsr = rng.next_u64() as u32 & 0xffff;
+    }
     let abridged = (0..8)
         .filter(|&i| full[i])
         .fold(0u8, |acc, i| acc | 1 << ((usize::from(top) + i) % 8));
@@ -661,6 +708,13 @@ pub(super) fn case(
         let mut at = lo + rng.below(hi - lo);
         if rng.chance(3, 4) {
             at &= !(size.next_power_of_two().min(16) - 1);
+        }
+        if op == Op::Fxsave {
+            // 16-byte aligned (#GP otherwise), except two cases.
+            at &= !15;
+            if FXSAVE_MISALIGNED.contains(&idx) {
+                at += rng.pick(&[1, 4, 8]);
+            }
         }
         let mode = ALL_MODES[idx % ALL_MODES.len()];
         mem_op = Some(solve_addr(rng, &mut b, mode, at, true));
@@ -729,6 +783,33 @@ pub(super) fn case(
             }
         };
         b.put(at, &bytes)?;
+        if op == Op::Fxsave {
+            // Bits the SDM leaves reserved or to the CPU: byte 5, FOP, the
+            // instruction and data pointers with their selectors (6-23),
+            // MXCSR_MASK (28-31), the upper 6 bytes of each ST slot, and the
+            // reserved and available bytes 416-511.
+            let ff = |n| vec![0xffu8; n];
+            undefined.mem = vec![
+                MemBlock {
+                    addr: at + 5,
+                    bytes: ff(19),
+                },
+                MemBlock {
+                    addr: at + 28,
+                    bytes: ff(4),
+                },
+            ];
+            for i in 0..8 {
+                undefined.mem.push(MemBlock {
+                    addr: at + 32 + 16 * i + 10,
+                    bytes: ff(6),
+                });
+            }
+            undefined.mem.push(MemBlock {
+                addr: at + 416,
+                bytes: ff(96),
+            });
+        }
         if op == Op::Fnstenv {
             // Reserved upper halves of the first three dwords, then the
             // instruction and data pointers, opcode and selectors.
@@ -754,7 +835,7 @@ pub(super) fn case(
     // The instruction.
     let instr = match op {
         Op::LoadSt | Op::StoreSt => Instruction::with1(code, st_reg(sti))?,
-        Op::Xch | Op::Comi => Instruction::with2(code, Register::ST0, st_reg(sti))?,
+        Op::Xch | Op::Comi | Op::ComSt => Instruction::with2(code, Register::ST0, st_reg(sti))?,
         Op::Arith => {
             if format!("{code:?}").ends_with("_st0_sti") {
                 Instruction::with2(code, Register::ST0, st_reg(sti))?
@@ -776,7 +857,7 @@ pub(super) fn case(
     let pop = format!("{code:?}").contains("p_");
     let (x, y, dst) = match op {
         Op::ArithMem(_) => (nan_of(st[0]), mem_operand.flatten(), Some(0)),
-        Op::Scale => (nan_of(st[0]), nan_of(st[1]), Some(0)),
+        Op::Scale | Op::Prem => (nan_of(st[0]), nan_of(st[1]), Some(0)),
         Op::Arith if format!("{code:?}").ends_with("_st0_sti") => {
             (nan_of(st[0]), nan_of(st[sti]), Some(0))
         }
@@ -796,7 +877,8 @@ pub(super) fn case(
 
     // Condition codes the SDM leaves undefined ("FPU Flags Affected").
     undefined.fp.fsw |= match op {
-        Op::ComMem(_) | Op::Comi | Op::Fldenv => 0,
+        Op::ComMem(_) | Op::Comi | Op::ComSt | Op::Fldenv | Op::Fxsave => 0,
+        Op::Prem => prem_undefined(st[0], st[1], full[0] && full[1], &mut undefined),
         o if is_control(o) => 0x4700,
         _ => 0x4500,
     };
@@ -818,7 +900,48 @@ pub(super) fn case(
         form.id
     );
     case.undefined = undefined;
+    if op == Op::Fxsave && FXSAVE_MISALIGNED.contains(&idx) {
+        case.expect_fault = Some(FaultKind::Gp);
+        case.expect_rip = CODE_ADDR;
+        case.undefined = Undefined::NONE;
+    }
     Ok(Some(case))
+}
+
+/// The fxsave cases with a misaligned m512 (#GP).
+const FXSAVE_MISALIGNED: [usize; 2] = [21, 34];
+
+/// The FSW bits of fprem that the SDM leaves to the CPU, for ST(0) = `a` and
+/// ST(1) = `b` (both present if `present`): after a stack fault C0, C2 and
+/// C3; with a NaN, infinity, zero divisor or unsupported operand (no
+/// quotient) all four condition codes; after a partial reduction (exponent
+/// difference 64 or more, SDM "FPREM") the result in ST(0) and the quotient
+/// bits C0, C3 and C1, since the amount reduced is implementation-dependent.
+fn prem_undefined(a: u128, b: u128, present: bool, undefined: &mut Undefined) -> u16 {
+    if !present {
+        return 0x4500;
+    }
+    // (exponent of the normalized value, finite nonzero or zero)
+    let class = |v: u128| -> Option<Option<i64>> {
+        let exp = ((v >> 64) & 0x7fff) as i64;
+        let sig = v as u64;
+        match (exp, sig & J != 0) {
+            (0x7fff, _) => None,
+            (0, false) if sig == 0 => Some(None),
+            (0, false) => Some(Some(1 - i64::from(sig.leading_zeros()))),
+            (0, true) => None,  // pseudo-denormal
+            (_, false) => None, // unnormal
+            (e, true) => Some(Some(e)),
+        }
+    };
+    match (class(a), class(b)) {
+        (Some(Some(ea)), Some(Some(eb))) if ea - eb >= 64 => {
+            undefined.fp.st[0] = (1 << 80) - 1;
+            0x4300
+        }
+        (Some(_), Some(Some(_))) => 0,
+        _ => 0x4700,
+    }
 }
 
 /// (sign, significand) of an 80-bit NaN (J bit set, fraction not 0).
