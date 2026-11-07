@@ -766,6 +766,9 @@ pub enum Op {
     /// `dst` = 1 if `cond` holds for the current flag record, else 0. A
     /// flag reader.
     Cond { dst: Temp, cond: Cond },
+    /// `dst` = the six status flags of the current flag record, in their
+    /// RFLAGS bit positions (every other bit 0). A flag reader (pushfq).
+    ReadFlags { dst: Temp },
     /// Records the status-flag inputs of an operation (lazy flags). `a`, `b`
     /// and `r` are zero-extended to `width`. With `when`, the record is
     /// written only if `when != 0`. `live` is false when no reader can
@@ -1233,7 +1236,7 @@ impl Program {
         // Backward transfer of one op: readers make the record live, full
         // records kill it, partial and conditional ones pass it through.
         let step = |op: &Op, live: bool| match op {
-            Op::Cond { .. } => true,
+            Op::Cond { .. } | Op::ReadFlags { .. } => true,
             op if op.writes_flags() && !op.is_partial_flags() => false,
             _ => live,
         };
@@ -1371,6 +1374,7 @@ impl fmt::Display for Op {
                 value,
             } => write!(f, "store{width} state[{offset:#x}], {value}"),
             Op::Cond { dst, cond } => write!(f, "t{} = cond.{}", dst.0, cond.name()),
+            Op::ReadFlags { dst } => write!(f, "t{} = flags", dst.0),
             Op::Flags {
                 op,
                 width,
