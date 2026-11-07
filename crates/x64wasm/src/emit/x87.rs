@@ -365,6 +365,10 @@ impl ChunkEmitter<'_> {
             self.value(f, a);
             f.local_set(l.addr);
         }
+        if op == X87::Save {
+            self.x87_save(f);
+            return;
+        }
         // A pending unmasked exception: #MF.
         f.local_get(P_STATE);
         f.i32_load16_u(mem(abi::STATE_FSW));
@@ -392,7 +396,7 @@ impl ChunkEmitter<'_> {
         f.i32_load16_u(mem(abi::STATE_FCW));
         f.local_set(l.fcw);
         match op {
-            X87::Wait | X87::LoadEnv => unreachable!(),
+            X87::Wait | X87::LoadEnv | X87::Save => unreachable!(),
             X87::Load(_) | X87::LoadSt(_) | X87::LoadConst(..) => self.x87_push(f, op),
             X87::Store { kind, pop } => self.x87_store(f, kind, pop),
             X87::StoreSt { i, pop } => {
@@ -508,7 +512,7 @@ impl ChunkEmitter<'_> {
                 self.x87_write(f, l.top, l.rm, l.rse);
                 self.x87_finish(f, C1);
             }
-            X87::Scale => {
+            X87::Scale | X87::Prem => {
                 self.x87_src(f, X87Src::St(1));
                 self.x87_empty(f, l.top);
                 self.x87_empty(f, l.q);
@@ -522,13 +526,25 @@ impl ChunkEmitter<'_> {
                 f.local_get(l.bm);
                 f.local_get(l.bse);
                 f.local_get(l.fcw);
-                f.call(self.fp.index(FpFunc::F80Scale));
+                f.call(self.fp.index(if op == X87::Prem {
+                    FpFunc::F80Prem
+                } else {
+                    FpFunc::F80Scale
+                }));
                 f.local_set(l.rm);
                 self.x87_status(f);
                 self.x87_status_se(f);
                 self.close_if(f);
                 self.x87_write(f, l.top, l.rm, l.rse);
-                self.x87_finish(f, C1);
+                // fprem: C2 (incomplete) and the quotient bits C0, C3, C1.
+                self.x87_finish(
+                    f,
+                    if op == X87::Prem {
+                        C3 | C2 | C1 | C0
+                    } else {
+                        C1
+                    },
+                );
             }
             X87::Com { src, quiet, pops } => {
                 self.x87_compare(f, src, quiet, false);
@@ -704,6 +720,86 @@ impl ChunkEmitter<'_> {
 
     /// fldenv m28: FCW, FSW and the tag word from memory; a register the
     /// image marks non-empty gets its tag from its contents.
+    /// fxsave m512 at `addr` (64-bit mode, no REX.W): FCW, FSW, the
+    /// abridged tag byte, FOP, the instruction and data pointers and their
+    /// selectors as 0, MXCSR, MXCSR_MASK 0xFFFF (DAZ), ST(0)-ST(7) in
+    /// 16-byte slots (the upper 6 bytes 0) and XMM0-XMM15. Bytes 416-511
+    /// are not written. Changes no register; checks no pending exception.
+    fn x87_save(&mut self, f: &mut InstructionSink<'_>) {
+        let l = self.x87_locals();
+        f.local_get(P_STATE);
+        f.i32_load16_u(mem(abi::STATE_FSW));
+        f.local_tee(l.fsw);
+        f.i32_const(11);
+        f.i32_shr_u();
+        f.i32_const(7);
+        f.i32_and();
+        f.local_set(l.top);
+        // FCW | FSW << 16 at +0.
+        f.local_get(l.addr);
+        f.local_get(P_STATE);
+        f.i32_load16_u(mem(abi::STATE_FCW));
+        f.local_get(l.fsw);
+        f.i32_const(16);
+        f.i32_shl();
+        f.i32_or();
+        f.i32_store(mem(0));
+        // The abridged tag (bit p: R[p] not empty), byte 5 and FOP 0 at +4.
+        f.local_get(l.addr);
+        f.local_get(P_STATE);
+        f.i32_load16_u(mem(abi::STATE_FTW));
+        f.i32_const(-1);
+        f.i32_xor();
+        f.local_tee(l.ftw);
+        f.local_get(l.ftw);
+        f.i32_const(1);
+        f.i32_shr_u();
+        f.i32_or();
+        f.i32_const(0x5555);
+        f.i32_and();
+        for (shift, keep) in [(1, 0x3333), (2, 0x0f0f), (4, 0x00ff)] {
+            f.local_tee(l.ftw);
+            f.local_get(l.ftw);
+            f.i32_const(shift);
+            f.i32_shr_u();
+            f.i32_or();
+            f.i32_const(keep);
+            f.i32_and();
+        }
+        f.i32_store(mem(4));
+        // The pointers and selectors at +8 and +16.
+        for at in [8, 16] {
+            f.local_get(l.addr);
+            f.i64_const(0);
+            f.i64_store(mem(at));
+        }
+        // MXCSR and MXCSR_MASK at +24.
+        f.local_get(l.addr);
+        f.local_get(P_STATE);
+        f.i64_load32_u(mem(abi::STATE_MXCSR));
+        f.i64_const(0xffff << 32);
+        f.i64_or();
+        f.i64_store(mem(24));
+        // ST(i) = R[(TOP + i) & 7].
+        for i in 0..8u64 {
+            self.x87_phys(f, l.p, i as i32);
+            f.local_get(l.addr);
+            reg_ptr(f, l.p);
+            f.i64_load(mem(abi::STATE_FPR));
+            f.i64_store(mem(32 + 16 * i));
+            f.local_get(l.addr);
+            reg_ptr(f, l.p);
+            f.i64_load16_u(mem(abi::STATE_FPR + 8));
+            f.i64_store(mem(40 + 16 * i));
+        }
+        for j in 0..32u64 {
+            f.local_get(l.addr);
+            f.local_get(P_STATE);
+            f.i64_load(mem(abi::STATE_XMM + 8 * j));
+            f.i64_store(mem(160 + 8 * j));
+        }
+    }
+
     fn x87_load_env(&mut self, f: &mut InstructionSink<'_>) {
         let l = self.x87_locals();
         // The image's tag word.

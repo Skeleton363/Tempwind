@@ -86,7 +86,7 @@ pub fn op_effect(op: &Op) -> Effect {
         },
         Op::LoadState { .. } => Effect::default(),
         Op::StoreState { value: v, .. } => reads(value(v)),
-        Op::Cond { .. } => reads(FLAGS),
+        Op::Cond { .. } | Op::ReadFlags { .. } => reads(FLAGS),
         // Dead records emit nothing.
         Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. } => Effect::default(),
         Op::Flags {

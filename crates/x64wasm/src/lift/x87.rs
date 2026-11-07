@@ -89,6 +89,8 @@ pub(super) fn is_x87(m: Mnemonic) -> bool {
             | M::Fchs
             | M::Fabs
             | M::Fscale
+            | M::Fprem
+            | M::Fxsave
             | M::Fcom
             | M::Fcomp
             | M::Ficom
@@ -263,6 +265,18 @@ impl Lower<'_> {
             M::Fchs => self.x87_op(X87::Unary(X87Unary::Chs), None),
             M::Fabs => self.x87_op(X87::Unary(X87Unary::Abs), None),
             M::Fscale => self.x87_op(X87::Scale, None),
+            M::Fprem => self.x87_op(X87::Prem, None),
+            M::Fxsave => {
+                // #GP unless 16-byte aligned; the check covers all 512 bytes.
+                let a = self.x87_mem()?;
+                let low = self.bin(BinOp::And, a, Value::Imm(15));
+                self.fault_if(low, abi::FAULT_GENERAL_PROTECTION);
+                self.mem_check(a, 512, true);
+                self.push_op(Op::X87 {
+                    op: X87::Save,
+                    addr: Some(a),
+                });
+            }
             M::Fcom | M::Fcomp | M::Ficom | M::Ficomp | M::Fucom | M::Fucomp => {
                 let pops = matches!(m, M::Fcomp | M::Ficomp | M::Fucomp) as u8;
                 let quiet = matches!(m, M::Fucom | M::Fucomp);

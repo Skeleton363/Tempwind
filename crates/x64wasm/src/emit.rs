@@ -451,6 +451,12 @@ impl ChunkEmitter<'_> {
                 f.i64_extend_i32_u();
                 self.set_temp(f, dst);
             }
+            Op::ReadFlags { dst } => {
+                self.current_flags(f);
+                f.i64_const(abi::flags::STATUS as i64);
+                f.i64_and();
+                self.set_temp(f, dst);
+            }
             Op::Flags {
                 op,
                 width,
@@ -1449,6 +1455,7 @@ fn defined(op: &Op) -> Option<Temp> {
         | Op::Load { dst, .. }
         | Op::LoadState { dst, .. }
         | Op::Cond { dst, .. }
+        | Op::ReadFlags { dst }
         | Op::VExtract { dst, .. } => Some(dst),
         _ => None,
     }
@@ -1530,6 +1537,7 @@ fn operands(op: &Op) -> [Option<Value>; 4] {
         | Op::SseToInt { .. }
         | Op::SseComi { .. }
         | Op::Cond { .. }
+        | Op::ReadFlags { .. }
         | Op::VLoad { .. }
         | Op::VStore { .. }
         | Op::VBin { .. }

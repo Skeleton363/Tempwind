@@ -1,11 +1,15 @@
-//! Exchanges: `xchg`, `xadd`, `cmpxchg`. With one thread a `lock`ed
+//! Exchanges: `xchg`, `xadd`, `cmpxchg`, `cmpxchg16b`. With one thread a `lock`ed
 //! read-modify-write is the plain one (`abi.md`).
 
 use iced_x86::OpKind;
 
 use super::lower::Lower;
 use super::{Flow, Lowered, Unsupported};
-use crate::ir::{BinOp, FlagOp, RAX, Value};
+use crate::abi::{FAULT_GENERAL_PROTECTION, flags::ZF};
+use crate::ir::{BinOp, FlagOp, RAX, RCX, RDX, Value, Width};
+
+/// RBX (encoding 3).
+const RBX: u8 = 3;
 
 impl Lower<'_> {
     /// `xchg r/m, r`: both writes zero-extend 32-bit registers (`87 C0`
@@ -80,6 +84,39 @@ impl Lower<'_> {
         let merged = self.merge(RAX, w, t);
         let rax = self.select(eq, Value::Reg(RAX), merged);
         self.set_reg(RAX, rax);
+        Ok(Flow::Next)
+    }
+}
+
+impl Lower<'_> {
+    /// `cmpxchg16b m128`: #GP unless 16-byte aligned; compares RDX:RAX with
+    /// the operand. Equal: ZF = 1 and m128 = RCX:RBX; else ZF = 0 and
+    /// RDX:RAX = m128, which is written back unchanged (as the CPU does).
+    /// The other flags stay.
+    pub(super) fn cmpxchg16b(&mut self) -> Lowered<Flow> {
+        if self.insn.op_count() != 1 || self.insn.op_kind(0) != OpKind::Memory {
+            return Err(Unsupported);
+        }
+        let addr = self.ea()?;
+        let low = self.bin(BinOp::And, addr, Value::Imm(15));
+        self.fault_if(low, FAULT_GENERAL_PROTECTION);
+        self.mem_check(addr, 16, true);
+        let lo = self.load_unchecked(Width::W64, addr);
+        let hi_addr = self.bin(BinOp::Add, addr, Value::Imm(8));
+        let hi = self.load_unchecked(Width::W64, hi_addr);
+        let eq_lo = self.bin(BinOp::Eq, lo, Value::Reg(RAX));
+        let eq_hi = self.bin(BinOp::Eq, hi, Value::Reg(RDX));
+        let eq = self.bin(BinOp::And, eq_lo, eq_hi);
+        let new_lo = self.select(eq, Value::Reg(RBX), lo);
+        let new_hi = self.select(eq, Value::Reg(RCX), hi);
+        self.store_unchecked(Width::W64, addr, new_lo);
+        self.store_unchecked(Width::W64, hi_addr, new_hi);
+        let zf = self.bin(BinOp::Shl, eq, Value::Imm(ZF.trailing_zeros().into()));
+        self.flags_update(ZF, zf, 0, None);
+        let rax = self.select(eq, Value::Reg(RAX), lo);
+        let rdx = self.select(eq, Value::Reg(RDX), hi);
+        self.set_reg(RAX, rax);
+        self.set_reg(RDX, rdx);
         Ok(Flow::Next)
     }
 }

@@ -672,6 +672,11 @@ pub enum X87 {
     Unary(X87Unary),
     /// fscale: ST(0) scaled by ST(1).
     Scale,
+    /// fprem: ST(0) = the partial remainder of ST(0) / ST(1); C2, and C0,
+    /// C3, C1 = quotient bits 2, 1, 0.
+    Prem,
+    /// fxsave m512 (non-waiting): the x87, MXCSR and XMM state to memory.
+    Save,
     /// fcom, fucom (`quiet`), ficom: C3, C2, C0 from ST(0) and `src`, then
     /// `pops` pops.
     Com {
@@ -710,6 +715,7 @@ impl X87 {
             X87::Unary(X87Unary::Sqrt) => Some(F::F80Sqrt),
             X87::Unary(X87Unary::Round) => Some(F::F80Round),
             X87::Scale => Some(F::F80Scale),
+            X87::Prem => Some(F::F80Prem),
             X87::Com { .. } | X87::Comi { .. } => Some(F::F80Cmp),
             _ => None,
         }
@@ -766,6 +772,9 @@ pub enum Op {
     /// `dst` = 1 if `cond` holds for the current flag record, else 0. A
     /// flag reader.
     Cond { dst: Temp, cond: Cond },
+    /// `dst` = the six status flags of the current flag record, in their
+    /// RFLAGS bit positions (every other bit 0). A flag reader (pushfq).
+    ReadFlags { dst: Temp },
     /// Records the status-flag inputs of an operation (lazy flags). `a`, `b`
     /// and `r` are zero-extended to `width`. With `when`, the record is
     /// written only if `when != 0`. `live` is false when no reader can
@@ -1233,7 +1242,7 @@ impl Program {
         // Backward transfer of one op: readers make the record live, full
         // records kill it, partial and conditional ones pass it through.
         let step = |op: &Op, live: bool| match op {
-            Op::Cond { .. } => true,
+            Op::Cond { .. } | Op::ReadFlags { .. } => true,
             op if op.writes_flags() && !op.is_partial_flags() => false,
             _ => live,
         };
@@ -1371,6 +1380,7 @@ impl fmt::Display for Op {
                 value,
             } => write!(f, "store{width} state[{offset:#x}], {value}"),
             Op::Cond { dst, cond } => write!(f, "t{} = cond.{}", dst.0, cond.name()),
+            Op::ReadFlags { dst } => write!(f, "t{} = flags", dst.0),
             Op::Flags {
                 op,
                 width,
@@ -1542,6 +1552,11 @@ impl fmt::Display for Op {
                     } => write!(f, "x87.{}{} st{dst}, {}", lower(op), p(*pop), src(s)),
                     X87::Unary(u) => write!(f, "x87.{}", lower(u)),
                     X87::Scale => write!(f, "x87.scale"),
+                    X87::Prem => write!(f, "x87.prem"),
+                    X87::Save => match addr {
+                        Some(a) => write!(f, "x87.fxsave [{a}]"),
+                        None => write!(f, "x87.fxsave ?"),
+                    },
                     X87::Com {
                         src: s,
                         quiet,
