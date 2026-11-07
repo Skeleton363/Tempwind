@@ -168,8 +168,8 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - run 42353561868: everything passed except a transient publish 403;
   - run 42355029562 (`wine-bf443f0`): the new publishing, but bogus units in the Wine baseline;
   - run 42356976933 (`wine-b4ecc3c`): correct baselines, then the closure summary failed on a `| head` broken pipe under `pipefail`;
-  - `ccff087`: the fix.
-- **`tests/targets/wine.lock`** names the first release that has every asset (below).
+  - run 42357971957 (`wine-ccff087`): every job green, every asset published.
+- **`tests/targets/wine.lock`** names `wine-ccff087`. Its closure is identical to `wine-bf443f0`'s (83 modules, the same names, bases and sizes).
 
 ### WP2, census and fixtures: running
 WP2 is a deep-worker on `wine-bf443f0`'s PE modules and closure. They are the same build as later releases, from the same tarball, flags and ccache.
