@@ -25,6 +25,18 @@ Keep this section current; add each command when it first works.
 - CoreMark benchmark (translated in Node vs `wine64`, medians of 3, prints one JSON line; needs `coremark.exe`, the fp module and `wine64`): `node tests/bench/coremark.mjs [--runs N] [--skip-native] [--wine CMD]`; CI: `.github/workflows/bench.yml`.
 - 7-Zip command matrix (`tests/sevenzip/README.md`; needs `target/targets/7zz.exe`): `node tests/sevenzip/matrix.mjs --mode native|wine|translated --out OUT [--jobs N] [--filter STEP_OR_GROUP] [--quiet]` runs the 138 steps in `steps.json` (7z, zip, tar, gz, bz2, xz, hashes, encryption round trips) in per-archive work directories and writes `OUT/results/`; `node tests/sevenzip/compare.mjs OUT tests/sevenzip/expected` names the first byte difference per step. `tests/sevenzip/expected/` comes from `--mode wine` (`WINE=/usr/lib/wine/wine64`); real Windows (CI `windows-x64`) is the reference. `translated` translates with `translate-pe` into `target/sevenzip` (`--skip-translate` reuses it) and needs `x64wasm_rt.wasm`, `x64wasm_fp.wasm` and `run-pe --dir`. Never convert line ends in `expected/` (`.gitattributes` marks it binary).
 - `7z b` benchmark (translated in Node vs `wine64`, `7zz b 2 -mmt1 -md18`, medians of 3, prints one JSON line with the "Tot:" ratings; same needs as CoreMark plus `7zz.exe`): `node tests/bench/sevenzip.mjs [--runs N] [--skip-native] [--wine CMD] [--aot-dir DIR]`; CI: `.github/workflows/bench.yml` (`sevenzip.jsonl` on `bench-data`).
+- **Wine 11 build (Phase 2; `docs/design/wine-build.md`, `.github/workflows/wine.yml`):**
+  - Fetch: `scripts/fetch-artifact.sh "$(cat tests/targets/wine.lock)" ASSET target/wine`. The assets are `wine-pe-x86_64.tar.zst`, `wine-native.tar.zst`, `wine-prefix.tar.zst`, `closure.json`, `baseline-windows.json`, `baseline-wine.json`, `loaddll-traces.tar.zst` and `build-info.json`.
+  - Workflow artifacts can't be downloaded in a session (their storage host is outside the network allowlist). Use the release.
+  - Native Wine 11 in a session (for `/diverge`), with N an absolute directory:
+    - unpack: `tar -C N -I zstd -xf wine-native.tar.zst`, then `tar -C N --no-same-owner -I zstd -xf wine-prefix.tar.zst`. Without `--no-same-owner`, Wine refuses a prefix that isn't owned by you;
+    - run: `WINEPREFIX=N/wine-prefix WINEDEBUG=-all N/opt/wine-11.0/bin/wine PROG.exe` (`+relay,+loaddll` for traces);
+    - stop the server afterwards: `N/opt/wine-11.0/bin/wineserver -k`.
+
+    `hello.exe` matches `tests/native/hello.expected` this way, in 0.6 s.
+  - The DLL closure: `cargo run -p testkit --release -- closure --tree TREE --apiset apisetschema.spec --root EXE... [--traces DIR] [--data-file F]... --wine TAG [--note TEXT] --out closure.json`. TREE is an unpacked `wine-pe-x86_64.tar.zst`; CI runs it in the `closure` job.
+  - Conformance baselines: `node tests/conformance/run-baseline.mjs --exe PATH --platform NAME --out OUT.json [--launcher wine] [--timeout 120] [--env K=V]... [--trace-dir DIR] [--only a,b]`. It runs one unit per process with `WINETEST_DEBUG=1`; `tests/conformance/parse.mjs` reads the summary lines.
+  - Publishing to a release (CI): `SHA=<commit> scripts/release-publish.sh TAG NOTES FILE...`. It creates the release if needed, keeps assets already there, and retries API calls.
 - Release assets: `scripts/fetch-artifact.sh TAG ASSET [DIR]` or `scripts/fetch-artifact.sh --latest PREFIX ASSET [DIR]` (sha256-verified). Releases are published by `.github/workflows/artifacts.yml` as `<artifact>-<sha7>`.
 
 ## Environment and builds

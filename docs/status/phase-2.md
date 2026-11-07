@@ -1,11 +1,15 @@
 # Phase 2 status: Wine underneath
 
-**Phase 2 is planned (2026-11-06). M1 is in progress and paused; the resume path is under "M1 progress (paused 2026-11-06)".** The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pass is in `docs/dev/research.md`, "2026-11-06: Phase 2, Wine underneath". From Phase 2 on, a session covers one milestone.
+**Phase 2 is planned (2026-11-06). M1 is in progress (resumed 2026-11-07):**
+- WP1 (the Wine CI build) and WP3 (the boundary spike) are done;
+- WP2 (census, fixtures, translating the closure) is running.
 
-- **Session 1 (2026-11-06):**
+The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pass is in `docs/dev/research.md`, "2026-11-06: Phase 2, Wine underneath". A new session starts only with a new milestone (the owner, 2026-11-07).
+
+- **Session 1 (2026-11-06 and 07):**
   - planned Phase 2: three Explore runs, then a Plan-agent review of the draft, whose six blockers are folded in below;
   - the owner decided on one session per milestone and on a basic raise path in Phase 2;
-  - M1 follows.
+  - M1: the spike, then the Wine CI build. Paused overnight, resumed in the same session.
 
 ## Decisions taken when planning (2026-11-06)
 
@@ -144,56 +148,31 @@
   - WP3 (deep-worker): the boundary spike, in parallel with WP1;
   - WP2 (deep-worker), after WP1's first release: census, fixtures, lowering, translation of the closure and the base table.
 
-## M1 progress (paused 2026-11-06)
+## M1 progress (2026-11-07)
 
-The owner paused the session at 23:00 UTC. Everything is committed on the PR branch `claude/gifted-bardeen-a0hot6` (head `a91444e`, plus this note's commit). No pull request is open yet, and the working tree is clean.
+### Decisions taken in M1
+- **Sessions reach CI results only through releases.**
+  - Workflow artifacts are stored on Azure blob hosts that the session's network allowlist doesn't include (a 403 from the proxy, 2026-11-07).
+  - Opening `*.blob.core.windows.net` would admit anyone's Azure storage, so we don't. CI publishes whatever sessions need as release assets.
+- **`wine.yml` publishes early.**
+  - `publish-build` creates `wine-<sha7>` as soon as the build passes.
+  - `publish-results` adds the baselines, the traces and `closure.json` as their jobs finish, and still runs when one of them failed. A missing asset is a warning.
+  - `closure` runs whenever the build passed, with static edges only if there are no traces (`wine-build.md`, "Release").
+  - Why: run 42306869519 built Wine, but its late `baseline-wine` failure left nothing published.
+- **`scripts/release-publish.sh`:** creates the release if needed, keeps assets already there, and retries every API call. The releases API refused a run's token with a transient 403, "Resource not accessible by integration", for the second time (the publish of run 42353561868). The same call succeeded minutes later.
+- **The conformance runner** lists units from stdout only, and `parseList` takes only the list's indented names. Under Wine, the `+loaddll` lines on stderr had become 176 bogus "units" per exe. A test reproduces the mixed output.
 
-### Committed
-- **Planning and contracts:**
-  - `4eb7d6f`: the plan, this note, research, workflow;
-  - `53e166c`: `wine-build.md`, the closure in `instruction-scope.md`, the draft "Wine boundary" in `abi.md`.
-- **WP3, the boundary spike: done.**
-  - `0182d2f`: CI run 42306776103 passed all three jobs;
-  - its results are under "What works" below.
-- **WP1, the Wine CI build: committed, but its first run is not finished.**
-  - `7cd714a` contains:
-    - `.github/workflows/wine.yml`, with the jobs source, build, baseline-windows, baseline-wine, closure and publish;
-    - `tests/targets/sources.json`'s `"wine"` pin (sha256 `c07a6857…0701`; sha512 checked against `sha512sums.asc`);
-    - `tests/targets/wine-build-info.sh`;
-    - `testkit closure` (`crates/testkit/src/closure.rs`);
-    - delay-load imports in `x64wasm::pe`, with tests;
-    - `tests/conformance/{parse,run-baseline}.mjs` and `tests/node/conformance-parse.test.mjs`.
-  - Its first `wine` run, **42306869519** at `7cd714a`:
-    - `source` passed;
-    - `build` was in its Build step at the pause, and CI keeps running without the session.
-  - `targets` run 42306869181 passed.
-- **Also committed:** `18b58c6`, the command reference; `a91444e`, the spike's results.
+### WP1, the Wine CI build: done
+- **The CI history:**
+  - run 42306869519: the build passed, then `baseline-wine` failed on `basic.exe`'s designed exit code 42 under `bash -e`;
+  - run 42353561868: everything passed except a transient publish 403;
+  - run 42355029562 (`wine-bf443f0`): the new publishing, but bogus units in the Wine baseline;
+  - run 42356976933 (`wine-b4ecc3c`): correct baselines, then the closure summary failed on a `| head` broken pipe under `pipefail`;
+  - `ccff087`: the fix.
+- **`tests/targets/wine.lock`** names the first release that has every asset (below).
 
-### In progress, and how to resume (for a fresh session)
-1. **Read** `docs/plan.md` ("Phase 2 milestones"), then this note's "Decisions" and this section.
-2. **WP1, finish it** (builder; the contract is `docs/design/wine-build.md`, its deliverables are below).
-   1. Look up run 42306869519 (`mcp__github__actions_list` / `actions_get`, or `gh run view 42306869519`).
-   2. If a job failed, read that job's log tail (save it to a file and grep it), fix the cause in `wine.yml` or the scripts, and push. Each Wine build takes about an hour; ccache shortens later ones.
-   3. When `wine-<sha7>` is published with every asset in `wine-build.md`'s table, write `tests/targets/wine.lock` with that tag and check that `scripts/fetch-artifact.sh "$(cat tests/targets/wine.lock)" closure.json` works.
-   4. Verify locally: `cargo test -p testkit`, `cargo test -p x64wasm`, `npm run test:node` and `cargo clippy --workspace --all-targets -- -D warnings`. They were not confirmed before the pause.
-   5. Add to `docs/dev/commands.md`: the fetch command, running the native Wine 11 from `wine-native.tar.zst` in a session, and `testkit closure`.
-   6. Record here the build minutes, the closure's module count, its overlaps, `highest_end` and `memory_bytes`, and the baseline units per platform and exe (ok, failed, crashed, timeout).
-   - **WP1's deliverables:**
-     - `wine.yml` per `wine-build.md`: the source mirror `src-wine-11.0`; the build with the exact configure flags and `--strip-debug` PE packing; the prefix; `build-info.json`; the two baseline jobs (`--list`, one unit per process, `WINETEST_DEBUG=1`, `WINETEST_PLATFORM=wine` under Wine, 120 s limit); `+loaddll` traces of the program roots and every unit; `closure.json`; the publish job;
-     - `tests/targets/wine.lock`;
-     - the conformance parser and runner.
-   - **It is done when** the run is green, the release exists, the lock names it, and the local checks pass.
-3. **WP2, after WP1's release** (deep-worker):
-   - run `testkit census` over the closure's modules (listed in `closure.json`) with the profile;
-   - write fixture generators for the new forms (expected: `fxsave` and `pushfq` from `RtlCaptureContext`), record them with `testkit record` on this x86-64 machine, and lower them in the translator;
-   - add the closure to CI's `census --check` (ci.yml, with the closure fetched through `wine.lock`);
-   - `translate-pe` every closure DLL and measure V8 compile sizes and times (`tests/bench/translator/images.mjs` is the pattern);
-   - write the base and overlap table here.
-   - Exclusions follow `instruction-scope.md`'s Phase 2 section.
-   - It is done when `census --check` passes on the closure (replay 100 %) and every closure DLL translates and compiles in V8.
-4. **Then close M1:** `/milestone-close`, the draft PR "[Phase 2] Wine in CI, and the boundary spike", the retro and the hand-off to M2.
-
-Ledger: WP1's and the main session's lines at the pause are in `docs/dev/agent-runs.jsonl` (milestone `P2-M1`).
+### WP2, census and fixtures: running
+WP2 is a deep-worker on `wine-bf443f0`'s PE modules and closure. They are the same build as later releases, from the same tarball, flags and ccache.
 
 ## What works
 
@@ -201,7 +180,31 @@ Ledger: WP1's and the main session's lines at the pause are in `docs/dev/agent-r
 |---|---|
 | **The Wine boundary** (M1 WP3, `native/spike/boundary/`, `abi.md` "Wine boundary").<br>An Emscripten wasm64 module (imported shared memory64, `GLOBAL_BASE` 2 GiB, wasm EH, no pthreads, no `-sJSPI`):<br>• owns the run loop over translated code<br>• is entered through raw exports in `env.table`<br>• runs two green threads that suspend through `green_block` and get their save set back<br>• makes a nested guest call<br>• grows memory while JS, its glue and translated code all see the growth | `tests/node/wine-boundary.test.mjs` and `tests/browser/wine-boundary.spec.mjs` (a Chromium Worker) pass locally and in CI (run 42306776103 at `0182d2f`). A build without the save-set restores fails the checks. A JS frame between `promising` and `Suspending` throws `SuspendError: trying to suspend JS frames`: Node 24.22 first runs the import and drops its Promise, while Chromium 153 refuses before calling it. |
 
+| **The Wine CI build** (M1 WP1, `wine.yml`, `wine-build.md`):<br>• the pinned, mirrored wine-11.0 tarball<br>• 64-bit and minimal, with MinGW GCC 13<br>• the PE modules, the native tree, the prefix<br>• Windows and native-Wine baselines<br>• `+loaddll` traces and the DLL closure<br>• published as `wine-<sha7>` | Releases `wine-bf443f0` and `wine-b4ecc3c`; the first complete one is named by `tests/targets/wine.lock`. A session fetches the assets with `fetch-artifact.sh` (sha256 checked), and the native Wine 11 from the release runs `hello.exe` here, matching `hello.expected`. `tests/node/conformance-parse.test.mjs` covers the parser, the Wine trace lines after the list included. |
+
 ## Measurements
+
+- **The Wine CI build** (`wine.yml`, ubuntu-24.04, 4 vCPU):
+  - the build step takes 22.5 min cold, and 1.5-1.8 min with ccache warm;
+  - the build job takes 26 min cold and 4.6-5.5 min warm, `make install` and packing included;
+  - the Windows baseline takes 3 min; the native-Wine baseline 6 min (31 min while it ran bogus units).
+- **Conformance baselines** (`wine-b4ecc3c`; units per exe; checks = executed − failures over executed):
+
+  | Platform | kernel32_test.exe | ntdll_test.exe |
+  |---|---|---|
+  | windows-2025 (truth) | 23/33 units ok, 10 failed; checks 15,824,168 / 15,828,393 | 15/26 ok, 10 failed, 1 crashed; checks 5,416,706 / 5,416,806 |
+  | native Wine 11 (`--without-x`) | 31/33 ok, 2 failed; checks 5,314,727 / 5,314,776 | 23/26 ok, 2 failed, 1 crashed; checks 5,330,030 / 5,330,035 |
+
+  - Wine's tests aren't clean on Windows Server 2025: units fail on server-edition differences.
+  - Under native Wine, `todo_wine` marks absorb Wine's known gaps.
+  - Our port is measured against both (M5).
+- **The DLL closure** (`wine-bf443f0`'s `closure.json`):
+  - 83 modules, 96 unresolved names: test-generated temporary DLLs (`ldr*.tmp`, `ldr*.dll`) and similar;
+  - `highest_end` 0x1_808b_c000 and `memory_bytes` 6.45 GB, if everything loads at its preferred base;
+  - **base overlaps:**
+    - 60 DLLs share the MinGW default base 0x1_8000_0000 and overlap each other (1,825 pairs);
+    - only ntdll (0x1_7000_0000), kernelbase (0x1_7400_0000) and kernel32 (0x1_7800_0000) have their own;
+    - the 20 EXEs share 0x1_4000_0000, which is harmless, since each is its own process.
 
 - **The boundary spike** (this container, Node 24.22 and Chromium 153 headless):
   - creating the shared memory64 of 2 GiB + 64 MiB takes 0.3-1.4 ms, since the pages are reserved, not committed;
@@ -211,8 +214,10 @@ Ledger: WP1's and the main session's lines at the pause are in `docs/dev/agent-r
 ## Known issues and risks
 - **The Unix-side port is the bulk:** about 100k lines in M2-M3, and 106k more with win32u in M4. The hard parts are the machine layer, the virtual backend and the server transport (Phase 0's risks 2, 4 and 6 in `native/README.md`).
 - **Wine's DLLs may need many new instruction forms,** which would lengthen M1.
-- **High default DLL bases** would push the guest memory toward 16 GiB at boot. M1's base table decides whether M3 relocates them low.
-- **The CI Wine build** takes about 40-90 minutes per run; ccache helps.
+- **Wine's DLLs overlap at one default base** (the measurements above). In a process, Wine keeps the first DLL mapped at 0x1_8000_0000 and relocates the others, so an AOT module translated for the preferred base would miss for almost every DLL.
+  - **To decide in M3's contract, with evidence:** rebase the closure DLLs to unique, packed bases when packaging (from 0x1_8000_0000 up, which keeps the memory near 6 GiB), or translate at the observed, deterministic base (`translate-pe --base`).
+  - The observed base depends on each program's load order, which argues for rebasing.
+  - The guest memory at boot is not a problem: about 6 GiB, well below 16.
 - **Session disk:** the Wine source (hundreds of MB) plus build outputs go under `target/`.
 - **Boot cost per program run:** the matrix runs 138 processes. Measure in M3.
 - **Out of reach until Phase 4:** test units that need child processes, explorer or services. They are tracked, not fixed.
@@ -226,7 +231,7 @@ Ledger: WP1's and the main session's lines at the pause are in `docs/dev/agent-r
 
 ## Next step
 
-Resume M1 from "M1 progress (paused 2026-11-06)":
-1. finish WP1, whose first `wine` run is 42306869519;
-2. then WP2;
-3. then close M1.
+1. Finish WP2.
+2. Set `wine.lock` to the first complete release.
+3. Close M1 with `/milestone-close`.
+4. Hand off to M2's new session.
