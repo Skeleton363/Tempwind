@@ -209,15 +209,19 @@ The owner paused at 09:55 UTC. The PR branch `claude/gifted-bardeen-a0hot6` is a
   2. `testkit closure` (`crates/testkit/src/closure.rs`) writes tree-relative root paths (`tests/kernel32_test.exe`), with a unit test.
      - `closure.rs` is in `wine.yml`'s path filter, so the push publishes a new release. Move `wine.lock` to it once it is complete (`scripts/fetch-artifact.sh TAG closure.json`, then the closure's module list compared with `wine-ccff087`'s).
 - **State:** WP2 had started on the recorder: `crates/testkit/src/oracle/forms/wine.rs` and `oracle/record.rs`, uncommitted and untested.
-  - They are saved on the side branch `m1-census-checkpoint`, at `9ad9057`, whose tree is the PR head plus those two files.
-  - If this container survived, they are still in the working tree.
+  - They are saved only on the side branch `m1-census-checkpoint`, at `9ad9057`, whose tree is the PR head plus those two files.
+  - The working tree was reset to the PR head for a clean pause, after checking the backup was identical.
 - **Done when:** `cargo test --workspace`, `record --check`, fmt and clippy are clean, `npm run test:node` passes, and a `workflow_dispatch` of ci.yml on the PR branch is green.
 
 ### How to resume
-- **In this session:** send the stopped WP2 agent a message; its transcript survives. It continues the follow-up with its files in place.
-- **In a fresh session:**
-  1. Restore the files with `git checkout origin/m1-census-checkpoint -- crates/testkit/src/oracle/forms/wine.rs crates/testkit/src/oracle/record.rs`, or start the follow-up from the PR head.
-  2. Give a deep-worker the brief above.
+- **In any session, first restore WP2's files** as uncommitted changes:
+  - `git fetch origin m1-census-checkpoint`;
+  - `git checkout origin/m1-census-checkpoint -- crates/testkit/src/oracle/forms/wine.rs crates/testkit/src/oracle/record.rs`;
+  - `git restore --staged crates/testkit/src/oracle/forms/wine.rs crates/testkit/src/oracle/record.rs`.
+
+  Or start the follow-up from the PR head.
+- **Then, in this session:** send the stopped WP2 agent a message; its transcript survives.
+- **Then, in a fresh session:** give a deep-worker the brief above.
 - **Then close M1:**
   1. `/milestone-close`: the full verification, the spec review and `/code-review medium`, the status note, the draft PR "[Phase 2] Wine in CI, and the boundary spike", the retro (trial 2 is due at M2), and the hand-off.
   2. M2 starts in a new session.
