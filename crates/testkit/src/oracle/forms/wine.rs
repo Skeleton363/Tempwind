@@ -30,6 +30,11 @@ const MISALIGNED: [usize; 2] = [21, 34];
 
 /// RFLAGS bits that popfq ignores at CPL 3 with IOPL 0: IF, IOPL, RF, VM,
 /// VIF, VIP and the reserved bits 3, 5, 15 and 22-63 (bit 1 reads 1).
+/// RFLAGS.NT and RFLAGS.ID: popfq loads them at CPL 3, with no effect in
+/// 64-bit user mode.
+const NT: u64 = 1 << 14;
+const ID: u64 = 1 << 21;
+
 const POPF_IGNORED: u64 =
     flags::IF | 3 << 12 | 1 << 16 | 1 << 17 | 1 << 19 | 1 << 20 | 1 << 3 | 1 << 5 | 1 << 15;
 
@@ -129,17 +134,20 @@ pub(super) fn case(
         }
         Spec::Popfq => {
             let rsp = setup_stack(rng, &mut b)?;
-            // Status flags and DF from the edges first, then random; the
-            // bits popfq ignores at CPL 3 vary in half the cases. TF, NT, AC
-            // and ID stay as they are (0): the recorder can't follow them.
+            // Status flags, DF, NT and ID from the edges first, then random
+            // (compared: `flags_mask` has NT and ID); the bits popfq ignores
+            // at CPL 3 vary in half the cases. TF and AC stay 0: translated
+            // code stops at them (a lowering test covers that).
+            let set = flags::STATUS | flags::DF | NT | ID;
             let base = match idx {
                 0 => 0,
-                1 => flags::STATUS | flags::DF,
+                1 => set,
                 2 => flags::STATUS,
                 3 => flags::DF,
-                _ => rng.next_u64() & (flags::STATUS | flags::DF),
+                4 => NT | ID,
+                _ => rng.next_u64() & set,
             };
-            let ignored = if idx >= 4 && rng.chance(1, 2) {
+            let ignored = if idx >= 5 && rng.chance(1, 2) {
                 let high = if rng.chance(1, 4) {
                     rng.next_u64() & !((1 << 22) - 1)
                 } else {
@@ -151,7 +159,11 @@ pub(super) fn case(
             };
             let value = base | ignored;
             b.put(rsp, &value.to_le_bytes())?;
-            finish_with(b, Instruction::with(Code::Popfq), None, None)
+            let case = finish_with(b, Instruction::with(Code::Popfq), None, None)?;
+            Ok(case.map(|mut c| {
+                c.flags_mask |= NT | ID;
+                c
+            }))
         }
         Spec::MovSreg { code, mem } => {
             let sreg = SREGS[idx % SREGS.len()];

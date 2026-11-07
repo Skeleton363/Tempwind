@@ -171,8 +171,23 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - run 42357971957 (`wine-ccff087`): every job green, every asset published.
 - **`tests/targets/wine.lock`** names `wine-ccff087`. Its closure is identical to `wine-bf443f0`'s (83 modules, the same names, bases and sizes).
 
-### WP2, census and fixtures: running
-WP2 is a deep-worker on `wine-bf443f0`'s PE modules and closure. They are the same build as later releases, from the same tarball, flags and ccache.
+### WP2, census and fixtures: done, with one follow-up in progress
+- **The census** of the closure (`wine-bf443f0`, the same modules as `wine-ccff087`): 83 modules, 3,779,886 instructions, 663 Codes, 797 in-scope forms, all with fixtures. Replay passes 60,752 of 60,752 cases, and `record --check` reproduces all 80 files.
+- **16 new forms,** recorded and lowered (`translator.md`, "Wine closure forms"):
+  - executed code: `pushfq`; `mov r/m16, Sreg`, register and memory; `fxsave` (RtlCaptureContext); `cmpxchg16b` (the SList functions); `fprem` (oleaut32); and in `ntdll_test.exe`, `popfq` and `mov rm16, Sreg`;
+  - data the census decodes (RTTI tables inside `__asm_dummy_*` `.pdata` ranges): `lahf`, `sahf`, `enter`, `fadd m64`, `fiadd m32`, `fsub m32`, `fsubr m64`, `fdivr m32`, `fcomp st(i)`.
+- **Exclusions:**
+  - `int3` is a debug trap; `int imm8` is privileged or system;
+  - `movsxd` without REX.W is a new class, "vendor-dependent": data only, and its generator has excluded it since M3;
+  - out of profile, by function: `test_extended_context*`, `func_time`, `read_tsc_frequency` and `write_minidump`.
+- **The recorder** starts a fresh tracee after each `popf` case: Linux leaves TF set after a traced `popf` (`arch/x86/kernel/step.c`).
+- **Translation:** all 82 modules with code translate; `apisetschema.dll` is data only. The only unsupported sites are excluded or out-of-profile forms: `syscall` 1,798, `int3` 12, `cli`/`sti`/`in` in RTTI data, `rdtsc(p)`, `int 29h`, and one `vmovups`.
+- **CI:** ci.yml's census step covers the closure from the `wine.lock` release (`census --closure FILE --tree DIR`); dispatch run 42360530592 at `a1beaa6` is green.
+- **Decisions at review:**
+  - segment selectors are the Linux values: CS 0x33, SS 0x2B, DS/ES/FS/GS 0. That is what native Wine's PE code reads and what the oracle records; Windows has DS = ES = GS = SS = 0x2B and FS = 0x53;
+  - the `movsxd` exclusion stays;
+  - **popfq is changed:** NT and ID stay in RFLAGS, and an image with TF or AC set exits `EXIT_UNSUPPORTED` instead of being silently dropped. Single-step and alignment checks aren't modelled (the follow-up);
+  - `closure.json`'s root paths become tree-relative, as the schema says (the follow-up).
 
 ## What works
 
@@ -198,6 +213,10 @@ WP2 is a deep-worker on `wine-bf443f0`'s PE modules and closure. They are the sa
   - Wine's tests aren't clean on Windows Server 2025: units fail on server-edition differences.
   - Under native Wine, `todo_wine` marks absorb Wine's known gaps.
   - Our port is measured against both (M5).
+- **The closure translated, in V8** (WP2, `images.mjs`, 75 Wine modules):
+  - 153.5 MB of wasm;
+  - compile times: 258 ms by default (lazy), 1,978 ms eager (Liftoff), 57,063 ms eager TurboFan;
+  - the largest: `kernel32_test.exe` 23.4 MB, `ntdll_test.exe` 16.5, `windowscodecs.dll` 8.7, `ucrtbase.dll` 7.0, `user32.dll` 6.3.
 - **The DLL closure** (`wine-bf443f0`'s `closure.json`):
   - 83 modules, 96 unresolved names: test-generated temporary DLLs (`ldr*.tmp`, `ldr*.dll`) and similar;
   - `highest_end` 0x1_808b_c000 and `memory_bytes` 6.45 GB, if everything loads at its preferred base;
@@ -224,6 +243,8 @@ WP2 is a deep-worker on `wine-bf443f0`'s PE modules and closure. They are the sa
 - **Found by the spike, for M2** (`abi.md`, "Wine boundary"):
   - Emscripten's `sbrk` grows the memory too (`emscripten_resize_heap`), which conflicts with "one owner of `memory.grow`";
   - `run` resets `env.depth` on entry, so a nested loop loses the outer call depth.
+- **Segment selectors differ from Windows** (DS, ES, FS, GS read 0, as on Linux and native Wine). Only code that inspects selectors, such as anti-debug or VM checks, can tell.
+- **The translated closure is 153.5 MB of wasm.** M6 measures its compressed download and caching. The two test exes (40 MB) are only needed for conformance runs.
 - **Carried from Phase 1** (`phase-1.md`, "Known issues"):
   - the two store-check gaps, which close in M3;
   - Firefox is untested (Phase 3);

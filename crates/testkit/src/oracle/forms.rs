@@ -1626,7 +1626,7 @@ fn gen_case(
     }
 }
 
-/// The M3 and M4 fixture groups, in commit order: each lands in one "Fixtures:
+/// The M3, M4 and Phase 2 M1 fixture groups, in commit order: each lands in one "Fixtures:
 /// <group>" commit (`docs/design/fixtures.md`). The Phase 0 forms belong to
 /// no group and are always recorded.
 pub const GROUPS: [&str; 15] = [
@@ -1781,7 +1781,8 @@ mod tests {
     }
 
     /// The x87 forms of the census (7zz.exe's and l2_float.exe's) and the
-    /// control forms (`instruction-scope.md`, "M4 additions to the scope").
+    /// control forms (`instruction-scope.md`, "M4 additions to the scope"),
+    /// with those Wine's closure adds ("Wine closure census").
     #[test]
     fn m4_x87_scope_is_generated() {
         let want = [
@@ -1816,11 +1817,18 @@ mod tests {
             "Fsqrt/reg",
             "Frndint/reg",
             "Fscale/reg",
+            "Fadd_m64fp/mem",
+            "Fiadd_m32int/mem",
+            "Fsub_m32fp/mem",
+            "Fsubr_m64fp/mem",
+            "Fdivr_m32fp/mem",
+            "Fprem/reg",
             "Fcomp_m64fp/mem",
             "Ficomp_m16int/mem",
             "Fcomi_st0_sti/reg",
             "Fucomi_st0_sti/reg",
             "Fucomip_st0_sti/reg",
+            "Fcomp_st0_sti/reg",
             "Fnstcw_m2byte/mem",
             "Fldcw_m2byte/mem",
             "Fnstsw_m2byte/mem",

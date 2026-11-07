@@ -537,7 +537,14 @@ impl ChunkEmitter<'_> {
                 self.close_if(f);
                 self.x87_write(f, l.top, l.rm, l.rse);
                 // fprem: C2 (incomplete) and the quotient bits C0, C3, C1.
-                self.x87_finish(f, if op == X87::Prem { C3 | C2 | C1 | C0 } else { C1 });
+                self.x87_finish(
+                    f,
+                    if op == X87::Prem {
+                        C3 | C2 | C1 | C0
+                    } else {
+                        C1
+                    },
+                );
             }
             X87::Com { src, quiet, pops } => {
                 self.x87_compare(f, src, quiet, false);

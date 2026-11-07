@@ -96,12 +96,15 @@ impl Lower<'_> {
     }
 
     /// `mov r/m16, Sreg`: the selector (`segment_selector`) to memory (16
-    /// bits) or a register (66h: the low 16 bits; otherwise zero-extended).
+    /// bits) or, with 66h, to the low 16 bits of a register. A 32- or 64-bit
+    /// register destination stays unsupported: the SDM leaves its upper bits
+    /// to the CPU model.
     pub(super) fn mov_from_sreg(&mut self) -> Lowered<Flow> {
         let sel = segment_selector(self.insn.op_register(1)).ok_or(Unsupported)?;
         let w = match self.insn.op_kind(0) {
             OpKind::Memory => Width::W16,
-            _ => self.width_of(0)?,
+            _ if self.width_of(0)? == Width::W16 => Width::W16,
+            _ => return Err(Unsupported),
         };
         self.write(0, w, Value::Imm(u64::from(sel)))?;
         Ok(Flow::Next)

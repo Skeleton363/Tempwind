@@ -23,9 +23,17 @@ use crate::oracle::{CODE_ADDR, fixture};
 /// Arguments of `testkit census`.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// PE files to analyze.
+    /// PE files to analyze. With `--closure`, these are the closure's roots.
     #[arg(required = true)]
     pub files: Vec<PathBuf>,
+    /// A DLL closure (`closure.json`, `docs/design/wine-build.md`): adds
+    /// its modules under `lib/` from `--tree`; every other module of it (the
+    /// roots) must be among FILES, by file name.
+    #[arg(long, requires = "tree")]
+    pub closure: Option<PathBuf>,
+    /// The unpacked `wine-pe-x86_64.tar.zst` that `--closure` paths are in.
+    #[arg(long, requires = "closure")]
+    pub tree: Option<PathBuf>,
     /// Write the full census as JSON.
     #[arg(long)]
     pub json: Option<PathBuf>,
@@ -109,9 +117,16 @@ pub fn exclusion(insn: &Instruction) -> Option<&'static str> {
         | Wbinvd | Invlpg | Lgdt | Lidt | Sgdt | Sidt | Lldt | Sldt | Ltr | Str | Lmsw | Smsw
         | Rdmsr | Wrmsr | Rdpmc | Sysret | Sysexit | Iret | Iretd | Iretq | Swapgs | Lar | Lsl
         | Verr | Verw | Clac | Stac | Xsetbv => Some("privileged or system"),
+        // int n enters the kernel through a gate user mode may not use
+        // (#GP), except n = 3; Windows code uses it for __fastfail (29h)
+        // and the debug services (2Dh).
+        Int => Some("privileged or system"),
         Syscall | Sysenter => Some("syscall"),
         Cpuid | Rdtsc | Rdtscp | Rdrand | Rdseed => Some("nondeterministic"),
-        Int1 => Some("debug trap"),
+        Int1 | Int3 => Some("debug trap"),
+        // movsxd without REX.W: the SDM discourages it, and the result
+        // differs between vendors (the oracle has no fixtures for it).
+        Movsxd if insn.op0_register().size() != 8 => Some("vendor-dependent"),
         Mov => {
             let special = (0..insn.op_count()).any(|i| {
                 matches!(insn.op_kind(i), OpKind::Register) && {
@@ -910,9 +925,44 @@ fn to_markdown(
     s
 }
 
+/// The files a census covers: FILES, plus a closure's modules from the tree.
+fn input_files(args: &Args) -> Result<Vec<PathBuf>> {
+    let mut files = args.files.clone();
+    let (Some(closure), Some(tree)) = (&args.closure, &args.tree) else {
+        return Ok(files);
+    };
+    let text = std::fs::read_to_string(closure)
+        .with_context(|| format!("reading {}", closure.display()))?;
+    let v: Value =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", closure.display()))?;
+    if v["schema"] != 1 {
+        bail!("{}: not a closure.json of schema 1", closure.display());
+    }
+    let given: BTreeSet<String> = args
+        .files
+        .iter()
+        .filter_map(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .collect();
+    let modules = v["modules"]
+        .as_array()
+        .with_context(|| format!("{}: no modules", closure.display()))?;
+    for m in modules {
+        let (Some(name), Some(path)) = (m["name"].as_str(), m["path"].as_str()) else {
+            bail!("{}: a module without name or path", closure.display());
+        };
+        if path.starts_with("lib/") {
+            files.push(tree.join(path));
+        } else if !given.contains(&name.to_lowercase()) {
+            bail!("closure root {name} ({path}) is not among the files given");
+        }
+    }
+    Ok(files)
+}
+
 pub fn run(args: &Args) -> Result<()> {
     let mut bins = Vec::new();
-    for path in &args.files {
+    for path in &input_files(args)? {
         let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
@@ -1118,6 +1168,13 @@ mod tests {
         assert_eq!(exclusion(&decode(&[0x0f, 0xa2])), Some("nondeterministic")); // cpuid
         assert_eq!(exclusion(&decode(&[0x0f, 0x31])), Some("nondeterministic")); // rdtsc
         assert_eq!(exclusion(&decode(&[0xf1])), Some("debug trap")); // int1 (ICEBP)
+        assert_eq!(exclusion(&decode(&[0xcc])), Some("debug trap")); // int3
+        assert_eq!(
+            exclusion(&decode(&[0xcd, 0x29])),
+            Some("privileged or system")
+        ); // int 29h
+        assert_eq!(exclusion(&decode(&[0x63, 0x03])), Some("vendor-dependent")); // movsxd eax, [rbx]
+        assert_eq!(exclusion(&decode(&[0x48, 0x63, 0x03])), None); // movsxd rax, [rbx]
         assert_eq!(
             exclusion(&decode(&[0x0f, 0x20, 0xc0])), // mov rax, cr0
             Some("privileged or system")
@@ -1139,6 +1196,39 @@ mod tests {
         assert_eq!(class_of(&[MSR]), "other");
         assert!(in_profile(X64) && in_profile(SSE2) && in_profile(FPU));
         assert!(!in_profile(SSE3) && !in_profile(POPCNT) && !in_profile(AVX));
+    }
+
+    #[test]
+    fn closure_modules_and_roots() {
+        let dir = std::env::temp_dir().join(format!("census-closure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let closure = dir.join("closure.json");
+        std::fs::write(
+            &closure,
+            r#"{"schema": 1, "modules": [
+                {"name": "a.dll", "path": "lib/wine/x86_64-windows/a.dll"},
+                {"name": "Root.exe", "path": "roots/Root.exe"}]}"#,
+        )
+        .unwrap();
+        let args = |files: &[&str]| Args {
+            files: files.iter().map(PathBuf::from).collect(),
+            json: None,
+            md: None,
+            check: false,
+            closure: Some(closure.clone()),
+            tree: Some(PathBuf::from("tree")),
+        };
+        let files = input_files(&args(&["x/root.exe"])).unwrap();
+        assert_eq!(
+            files,
+            [
+                PathBuf::from("x/root.exe"),
+                PathBuf::from("tree/lib/wine/x86_64-windows/a.dll")
+            ]
+        );
+        // A root of the closure that isn't given is an error.
+        assert!(input_files(&args(&["x/other.exe"])).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

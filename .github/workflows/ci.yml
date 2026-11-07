@@ -75,12 +75,27 @@ jobs:
           scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
           scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets
 
+      - name: Fetch Wine's PE modules and DLL closure (wine.lock release)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          scripts/fetch-artifact.sh "$(cat tests/targets/wine.lock)" wine-pe-x86_64.tar.zst target/wine
+          scripts/fetch-artifact.sh "$(cat tests/targets/wine.lock)" closure.json target/wine
+          mkdir -p target/wine/pe
+          tar -C target/wine/pe -I zstd -xf target/wine/wine-pe-x86_64.tar.zst
+
+      # The scope rule (instruction-scope.md): the Phase 1 programs, and Wine's
+      # DLL closure with its roots (the programs and the two test exes).
       - name: The programs use only forms with L1 fixtures
         if: ${{ !cancelled() }}
         run: >
           cargo run -p testkit --release -- census
+          --closure target/wine/closure.json --tree target/wine/pe
           target/pe/basic.exe target/targets/coremark.exe target/targets/7zz.exe target/native/hello.exe
-          target/native/l2_int.exe target/native/l2_crt.exe target/native/l2_float.exe --check
+          target/native/l2_int.exe target/native/l2_crt.exe target/native/l2_float.exe
+          target/wine/pe/tests/kernel32_test.exe target/wine/pe/tests/ntdll_test.exe
+          --json target/wine/census.json --md target/wine/census.md --check
 
       - name: Translate the L2 programs and CoreMark (AOT), build x64wasm_fp.wasm, write its vectors
         if: ${{ !cancelled() }}
