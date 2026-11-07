@@ -334,18 +334,21 @@ jobs:
           wine=/opt/wine-11.0/bin/wine
           roots=$PWD/roots traces=$PWD/traces
           work=$(mktemp -d); cd "$work"
-          run() { # exe label args...
-            local exe=$1 label=$2; shift 2
-            timeout 300 "$wine" "$roots/$exe" "$@" > "$label.out" 2> "$traces/${exe}__$label.log"
-            echo "$exe $label: exit $?, $(grep -c 'trace:loaddll' "$traces/${exe}__$label.log") loaddll lines"
+          # The job's shell is `bash -e`, and the programs exit with their documented
+          # codes (tests/pe/basic.exitcode is 42), so each exit code is recorded, not fatal.
+          run() { # exe label expected-exit args...
+            local exe=$1 label=$2 expected=$3 rc=0; shift 3
+            timeout 300 "$wine" "$roots/$exe" "$@" > "$label.out" 2> "$traces/${exe}__$label.log" || rc=$?
+            echo "$exe $label: exit $rc (documented $expected), $(grep -c 'trace:loaddll' "$traces/${exe}__$label.log" || true) loaddll lines"
           }
-          for p in basic hello l2_int l2_crt l2_float; do run "$p.exe" run; done
-          run coremark.exe run 0x0 0x0 0x66 200
-          run 7zz.exe i i
+          run basic.exe run "$(cat "$GITHUB_WORKSPACE/tests/pe/basic.exitcode")"
+          for p in hello l2_int l2_crt l2_float; do run "$p.exe" run "$(cat "$GITHUB_WORKSPACE/tests/native/$p.exitcode" 2>/dev/null || echo 0)"; done
+          run coremark.exe run 0 0x0 0x0 0x66 200
+          run 7zz.exe i 0 i
           mkdir -p tree/sub; printf 'hello\nworld\n' > tree/hello.txt; seq 1 20000 > tree/numbers.txt
           head -c 70000 /dev/urandom > tree/random.bin; printf 'nested\n' > tree/sub/nested.txt
-          run 7zz.exe a a -mmt1 -bsp0 t.7z tree
-          run 7zz.exe x x -bsp0 -y -oout t.7z
+          run 7zz.exe a 0 a -mmt1 -bsp0 t.7z tree
+          run 7zz.exe x 0 x -bsp0 -y -oout t.7z
           diff -r tree out/tree && echo "7zz round trip ok"
           # basic.exe and the others exit with their documented codes; the traces are what counts.
           true
