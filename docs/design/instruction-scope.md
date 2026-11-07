@@ -78,6 +78,8 @@ The rule above decides which forms need fixtures. M4 adds forms by decision as w
    - `syscall`/`sysenter` (PE user code doesn't use them in Phase 1);
    - nondeterministic instructions (`cpuid`, `rdtsc`, `rdtscp`, `rdrand`, `rdseed`), which get dedicated tests instead of recorded fixtures (`cpuid` must return the profile above).
    - debug traps: `int1` (ICEBP, `F1`), which raises #DB for a debugger. Decided at the M5 gate: it occurs in the targets only in gaps (data the sweep reads as code). The other gap-only forms stay in scope; they all have fixtures.
+   - Phase 2 (M1): `int3` (#BP) joins the debug traps, and `int imm8` the privileged or system instructions (user mode may only use vector 3; Windows code uses 29h for `__fastfail` and 2Dh for the debug services). Neither can be recorded: the recorder treats a `SIGTRAP` other than its single step, and a #GP it didn't predict, as errors.
+   - vendor-dependent forms: `movsxd` without REX.W (`Movsxd_r16_rm16`, `Movsxd_r32_rm32`). The SDM discourages it and the oracle's generator has excluded it since M3; it occurs only in data (Wine closure census, below).
 2. **Fixtures.** Every Code in S has recorded L1 fixtures in `crates/testkit/fixtures/l1/`:
    - covering each operand-kind combination (register or memory, every width the Code allows);
    - for memory operands, all 9 address modes of the oracle (base, base+disp8, base+disp32, base+index, base+index+disp8, base+index+disp32, index+disp32, absolute, RIP-relative);
@@ -164,3 +166,55 @@ MMX has no instructions in these builds. `mov` alone is 34.5 % of all instructio
 | `user32.dll` | 2 | 2 | 0 | 0 |
 
 189 distinct functions in 5 DLLs (7zz.exe imports 186, coremark.exe 49, hello.exe 48). `ntdll`, `ws2_32`, `gdi32`, `shell32` and `ole32` are not imported. 7-Zip's `advapi32` use is registry and token privileges (`Reg*`, `AdjustTokenPrivileges`, `LookupPrivilegeValueW`, `OpenProcessToken`, `Get/SetFileSecurityW`, `SystemFunction036` = `RtlGenRandom`); `oleaut32` is the `BSTR`/`VARIANT` helpers; `user32` is `CharPrevExA` and `CharUpperW`. Names per DLL are in `census.md`.
+
+## Wine closure census (Phase 2, M1)
+
+Measured on release `wine-bf443f0` (the PE modules are the same build as `wine-ccff087`, which `tests/targets/wine.lock` names; both `closure.json` files list the same 83 modules). The closure (`wine-build.md`, "The DLL closure") is 83 modules: 74 from `lib/wine/x86_64-windows` (`apisetschema.dll` is data only: no code, not translated), `kernel32_test.exe` and `ntdll_test.exe`, and the 7 Phase 1 roots. CI checks it with `testkit census --closure closure.json --tree <unpacked wine-pe-x86_64.tar.zst> <roots and test exes> --check`.
+
+| | closure (83 modules) |
+|---|---|
+| file size (bytes) | 57,128,023 |
+| functions (`.pdata`) | 69,267 |
+| instructions in functions | 3,763,491 |
+| instructions in gaps | 16,395 |
+| padding instructions (not counted) | 617,078 |
+| distinct `Code`s | 663 (59 outside the profile) |
+| in-scope forms | 797 |
+
+Per class: integer 3,695,557, SSE2 55,916, SSE 25,098, other 1,836 (`syscall`, `cpuid`, `rdtsc`), x87 572, AVX and later 639, crypto 212, SSE3 and later 56. Nearly all the AVX, crypto and SSE3+ instructions are 7-Zip's (Phase 1 census above).
+
+### New forms (Phase 2, M1)
+Wine's closure adds 16 forms to the 781 the Phase 1 families already covered. Each has its generator and recorded fixtures; the lowerings are in `translator.md`, "Wine closure forms":
+- **in code:** `Pushfq/reg` and `Mov_r32m16_Sreg/mem` (ntdll's `RtlCaptureContext`, which stores RFLAGS and all six selectors), `Fxsave_m512byte/mem` (the same function), `Cmpxchg16b_m128/mem` (ntdll's SList functions), `Fprem/reg` (oleaut32's `VarR8Round`); `Popfq/reg` and `Mov_rm16_Sreg/reg` in `ntdll_test.exe` (`align_check_handler`, `test_exceptions`, `prot_fault_handler`);
+- **only in data:** `Lahf/reg`, `Sahf/reg`, `Enterq_imm16_imm8/reg`, `Fadd_m64fp/mem`, `Fiadd_m32int/mem`, `Fsub_m32fp/mem`, `Fsubr_m64fp/mem`, `Fdivr_m32fp/mem`, `Fcomp_st0_sti/reg`. Wine's C++ runtime (msvcrt, ucrtbase, msvcp90, msvcr90) builds its RTTI tables with `__ASM_BLOCK_BEGIN`, which puts them in `.text` inside an `__asm_dummy_*` function that has a `.pdata` entry, so the census decodes them as function code. As with Phase 1's gap-only forms, they stay in scope and have fixtures.
+
+### Exclusions in the closure
+| `Code` | occurrences | where | reason |
+|---|---|---|---|
+| `Syscall` | 1,798 | the system call thunks of ntdll (258) and win32u (1,540) | syscall: Wine's PE side enters the Unix side here (M2's boundary) |
+| `Int3` | 9 | ntdll (`DbgBreakPoint`, `DbgUserBreakPoint`, after the non-returning calls of `KiUser*Dispatcher`, `RtlUserThreadStart`); RTTI data in msvcp90, msvcr90 | debug trap (#BP) |
+| `Int_imm8` | 1 | `int 29h` (`__fastfail`) in `ntdll_test.exe`'s `func_exception` | privileged or system |
+| `Int1` | 4 | 7-Zip's gaps, RTTI data in msvcp90 | debug trap |
+| `Cpuid` | 24 | probes: dbghelp's `write_minidump`, wineboot, `ntdll_test.exe`, MinGW's `__mingw_has_sse` (l2_float), 7-Zip | nondeterministic (dedicated test) |
+| `Rdtsc`, `Rdtscp` | 8, 4 | wineboot's `read_tsc_frequency`, `ntdll_test.exe`'s `func_time` | nondeterministic |
+| `Cli`, `Sti`, `Hlt`, `In_*`, `Out_*` | 4, 8, 2, 7, 10 | RTTI data in msvcrt, ucrtbase, msvcp90 and msvcr90; 7-Zip's gaps | privileged or system |
+| `Movsxd_r32_rm32` | 1 | RTTI data in msvcr90 | vendor-dependent |
+
+### Outside the CPUID profile
+Besides 7-Zip's 27 functions and MinGW's `cpuid` probes (above), the Wine modules have 5 functions with out-of-profile instructions, all CPUID-gated or unreachable under the profile: `ntdll_test.exe`'s `test_extended_context` and `test_extended_context_handler` (AVX `vmovups ymm`, run only when `cpuid` reports AVX) and `func_time` (`rdtsc`), wineboot's `read_tsc_frequency` (`rdtsc`, `rdtscp`), and dbghelp's `write_minidump` (`cpuid`). No Wine DLL has an SSE3+ or AVX path in the closure: ucrtbase, msvcrt and ntdll use only baseline forms.
+
+### Translation
+Every closure module with code (82) translates with `translate-pe` and validates. The only unsupported sites are excluded or out-of-profile instructions: `syscall` (1,798), `int3` (12: ntdll 8, kernelbase 4 after non-returning calls), `cli`/`sti`/`in` in RTTI data (msvcp90 2, msvcr90 2), `rdtsc`/`rdtscp` (wineboot 8, `ntdll_test.exe` 4), `int 29h` and one AVX `vmovups` (`ntdll_test.exe`). The 7 Phase 1 roots translate as before (Phase 1 measurements).
+
+In V8 (Node 24.22, V8 13.6, this session's 4-CPU VM, median of 3; `node tests/bench/translator/images.mjs --out target/wine/aot <modules>`), the 75 Wine modules with code (73 DLLs, drivers and programs, and the two test exes):
+
+| | total | kernel32_test.exe | ntdll_test.exe | windowscodecs.dll | ucrtbase.dll | user32.dll |
+|---|---:|---:|---:|---:|---:|---:|
+| functions translated | 84,013 | 1,926 | 1,370 | | | |
+| guest instructions translated | 3,101,519 | 441,752 | 313,435 | | | |
+| wasm bytes | 153,469,164 | 23,396,424 | 16,544,643 | 8,733,747 | 6,985,799 | 6,250,846 |
+| compile ms, default (lazy) | 258 | 35.7 | 21.9 | 14.3 | 11.2 | 9.0 |
+| compile ms, eager Liftoff | 1,978 | 311.6 | 227.2 | 105.5 | 78.1 | 72.8 |
+| compile ms, eager TurboFan | 57,063 | 10,042 | 6,824 | 2,642 | 2,206 | 2,312 |
+
+`translate-pe` takes 11.2 s for all 75. The two test exes are a quarter of the bytes. The modules every Wine process loads are smaller: ntdll.dll 4.8 MB (52.7 ms eager Liftoff), kernelbase.dll 5.4 MB (66.8 ms), kernel32.dll 2.5 MB (26.7 ms).
