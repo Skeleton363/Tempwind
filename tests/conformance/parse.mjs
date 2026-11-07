@@ -42,9 +42,13 @@ export function parseList(text) {
   const out = [];
   let seen = false;
   for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!seen) { seen = line.startsWith('Valid test names'); continue; }
-    if (line) out.push(line);
+    if (!seen) { seen = raw.trim().startsWith('Valid test names'); continue; }
+    if (!raw.trim()) continue;
+    // `list_tests` (include/wine/test.h) prints "    %s\n" per test. Anything else,
+    // such as a Wine trace or fixme line on stderr, ends the list.
+    const m = /^\s+(\S+)$/.exec(raw);
+    if (!m) break;
+    out.push(m[1]);
   }
   return out;
 }

@@ -45,6 +45,7 @@ How CI builds Wine 11 from the dl.winehq.org tarball, what it publishes, and the
   - The same run's `publish-results` then adds the baselines, the traces and `closure.json`. It runs even when one of those jobs failed, so whatever exists is published, and a missing asset is a warning in the run.
   - **Why:** workflow artifacts can't be downloaded in a session (their storage host is outside the session's network allowlist), so a release is the only way a session gets the build. Run 42306869519 built Wine, but its late `baseline-wine` failure left nothing published.
 - **Assets are never replaced.** An asset already on a tag stays as it is, and a new build is a new tag.
+- **Retries:** both publish jobs go through `scripts/release-publish.sh`, which retries every API call. The releases API has twice refused a run's token with a transient 403, "Resource not accessible by integration".
 - **Without traces,** `closure` runs on the static edges alone and says so in `closure.json`'s `note`.
 
 ## The DLL closure

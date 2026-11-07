@@ -16,6 +16,7 @@ on:
       - "crates/testkit/src/closure.rs"
       - "crates/x64wasm/src/pe.rs"
       - "tests/conformance/**"
+      - "scripts/release-publish.sh"
   pull_request:
     paths:
       - ".github/workflows/wine.yml"
@@ -24,6 +25,7 @@ on:
       - "crates/testkit/src/closure.rs"
       - "crates/x64wasm/src/pe.rs"
       - "tests/conformance/**"
+      - "scripts/release-publish.sh"
 
 permissions:
   contents: write
@@ -457,15 +459,12 @@ jobs:
         run: |
           set -euo pipefail
           tag="wine-${SHA:0:7}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; its assets stay as they are." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           mkdir -p dist
           cp wine-build/{wine-pe-x86_64,wine-native,wine-prefix}.tar.zst wine-build/build-info.json dist/
-          (cd dist && for f in *; do sha256sum "$f" > "$f.sha256"; done && ls -l)
+          ls -l dist
           notes="Wine 11.0 built from the pristine tarball by workflow run $RUN_URL at commit $SHA: PE modules (COFF symbols kept), the native install tree, the prefix and build-info.json. The same run adds the conformance baselines (windows-2025, native Wine), the +loaddll traces and the DLL closure as their jobs finish (docs/design/wine-build.md)."
-          gh release create "$tag" dist/* --target "$SHA" --prerelease --title "$tag" --notes "$notes"
+          # Creates the release if needed, keeps assets it already has, retries transient API errors.
+          scripts/release-publish.sh "$tag" "$notes" dist/*
           echo "Published $tag with the build's assets" >> "$GITHUB_STEP_SUMMARY"
 
   # Adds what the later jobs produced. It runs even when one of them failed, so
@@ -511,16 +510,9 @@ jobs:
           for want in baseline-windows.json baseline-wine.json loaddll-traces.tar.zst closure.json; do
             if [ ! -f "dist/$want" ]; then missing+=("$want"); fi
           done
-          have=$(gh release view "$tag" --json assets --jq '.assets[].name')
-          upload=()
-          for f in dist/*; do
-            [ -e "$f" ] || continue
-            n=$(basename "$f")
-            if grep -qx "$n" <<<"$have"; then echo "$n is already on $tag; kept"; continue; fi
-            sha256sum "$f" | sed "s| dist/| |" > "$f.sha256"
-            upload+=("$f" "$f.sha256")
-          done
-          if [ ${#upload[@]} -gt 0 ]; then gh release upload "$tag" "${upload[@]}"; fi
+          if compgen -G 'dist/*' >/dev/null; then
+            scripts/release-publish.sh "$tag" "Wine 11.0 build of workflow run $RUN_URL (docs/design/wine-build.md)." dist/*
+          fi
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::warning::$tag lacks ${missing[*]}: their jobs did not pass"
             echo "Missing: ${missing[*]}" >> "$GITHUB_STEP_SUMMARY"

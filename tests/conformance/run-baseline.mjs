@@ -44,7 +44,7 @@ function killTree(child) {
   } catch { /* already gone */ }
 }
 
-/** Run a command; resolves {output, stderr, exit, timedOut, seconds}. */
+/** Run a command; resolves {stdout, output (stdout then stderr), exit, timedOut, seconds}. */
 function exec(args, cwd, ms, stderrFile) {
   return new Promise((done) => {
     const t0 = performance.now();
@@ -62,6 +62,7 @@ function exec(args, cwd, ms, stderrFile) {
       file?.end();
       // Leftover children of a finished unit would hold the pipes open; the tree is gone by now.
       done({
+        stdout: Buffer.concat(chunks).toString('latin1'),
         output: Buffer.concat([...chunks, ...err]).toString('latin1'),
         exit, timedOut, seconds: (performance.now() - t0) / 1000,
       });
@@ -72,7 +73,8 @@ function exec(args, cwd, ms, stderrFile) {
 }
 
 const listed = await exec([exe, '--list'], tmpdir(), 60_000);
-const units = parseList(listed.output);
+// The list is on stdout; under Wine, stderr carries WINEDEBUG traces (parse.mjs, parseList).
+const units = parseList(listed.stdout);
 if (units.length === 0) {
   console.error(`no units from "${exeName} --list" (exit ${listed.exit}):\n${listed.output.slice(0, 2000)}`);
   process.exit(1);

@@ -68,3 +68,14 @@ test('--list output', () => {
   assert.deepEqual(parseList('Valid test names:\n    alpha\n    beta\n\n'), ['alpha', 'beta']);
   assert.deepEqual(parseList('nothing\n'), []);
 });
+
+// Under Wine with WINEDEBUG=+loaddll, trace lines follow the list when stderr is
+// appended to stdout (wine run 42353561868 listed 209 "units" for kernel32_test.exe).
+// Only the indented names of the list count; the list ends at the first other line.
+test('--list output followed by Wine trace and fixme lines', () => {
+  const text = 'Valid test names:\n    actctx\n    atom\n' +
+    '0024:trace:loaddll:build_module Loaded L"C:\\\\windows\\\\system32\\\\kernel32.dll" at 0000000178000000: builtin\n' +
+    '0024:fixme:ntdll:NtQuerySystemInformation info_class SYSTEM_PERFORMANCE_INFORMATION\n' +
+    '    not_a_unit\n';
+  assert.deepEqual(parseList(text), ['actctx', 'atom']);
+});
