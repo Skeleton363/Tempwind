@@ -185,7 +185,7 @@ jobs:
           # Import libraries (.a) are not modules.
           find pe/lib/wine/x86_64-windows -name '*.a' -delete
           for t in kernel32 ntdll; do
-            f=$(find build/dlls/$t/tests -name "${t}_test.exe" | head -n 1)
+            f=$(find build/dlls/$t/tests -name "${t}_test.exe" -print -quit)
             [ -n "$f" ] || { echo "::error::${t}_test.exe was not built"; exit 1; }
             cp "$f" "pe/tests/${t}_test.exe"
           done
@@ -431,7 +431,11 @@ jobs:
           cargo run -q -p testkit --release -- closure --tree tree --apiset wine-build/apisetschema.spec \
             "${trace_args[@]}" --wine "wine-${SHA:0:7}" "${args[@]}" --note "$note" --out closure.json
           jq '{modules: (.modules|length), overlaps: (.overlaps|length), root_overlaps: (.root_overlaps|length), highest_end, memory_bytes, unresolved: (.unresolved|length), trace_files}' closure.json | tee -a "$GITHUB_STEP_SUMMARY"
-          jq -r '.unresolved[] | "\(.name) <- \(.from|join(","))"' closure.json | head -n 40
+          # jq slices the list itself: `| head` would close the pipe early, and under pipefail
+          # jq's broken pipe failed the step (run 42356976933: the kernel32 loader tests'
+          # temporary DLLs, ldr*.tmp and ldr*.dll, make the unresolved list long).
+          echo "unresolved names (not in the tree): $(jq '.unresolved | length' closure.json), the first 40:"
+          jq -r '.unresolved[:40][] | "\(.name) <- \(.from|join(","))"' closure.json
       - uses: actions/upload-artifact@v7
         with:
           name: closure
