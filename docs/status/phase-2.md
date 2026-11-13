@@ -272,13 +272,8 @@ Session 2 (from 2026-11-13) started fresh from M1's hand-off. The research pass 
 - **Image placement and section views are tested through the server,** in the `section` harness after the virtual and wait packages merge, since `NtCreateSection` needs the server. The virtual harness tests the backend without it.
 - **Context checkpoints (the owner's change, trial 6 in `docs/dev/agent-runs.md`):** planning filled 483,687 of 1,000,000 tokens before any work, so the coordinator reads `context_usage` at each checkpoint and asks for `/compact` above 35 %.
 
-### Paused (2026-11-13, the owner's 5-hour limit)
-- **Done:** the research pass, the contracts (`fa05b93`) and the planning records (`56750e6`).
-- **WP0 and WP1 were stopped after about 10 minutes.** Their work is on the side branches:
-  - `m2-wp0-wip` (`2888331`): `abi.rs`'s new constants and `gen-header` with its drift test, committed; the spike at 4 GiB with the `sbrk` cap and `abi.h`, and the depth check, which fails on the old `run` as intended. Next: the trampoline change, the L5 snapshots, then the brief's tests.
-  - `m2-wp1-wip` (`fa891e1`): `build.sh`, `config.h`, three `00xx` patches, the `src/` skeletons, `imports.txt` and `rename-server.h`, before the first full link.
-- **To resume:** restart WP0 and WP1 from their side branches (each in its own worktree: `git worktree add -b NAME DIR origin/m2-wpN-wip`), with briefs written from the WP rows below and `wine-unix.md`. Each agent first reads its branch's diff against `fa05b93`. Parallel agents work in their own worktrees, so their commits don't share a HEAD (M1's two branch reconciliations).
-- The Wine source for reading is unpacked from the pinned tarball (`tests/targets/sources.json`) into the scratchpad; a new container needs it unpacked again.
+### First pause (2026-11-13, 14:57-18:30 UTC)
+The owner's 5-hour limit stopped WP0 and WP1 after about 10 minutes. Their work went to `m2-wp0-wip` (`2888331`) and `m2-wp1-wip` (`fa891e1`), and both were resumed by message ("Resumed" below). The current resume path is in "M2 progress (paused 2026-11-13)".
 
 ### Resumed (2026-11-13, 18:30 UTC)
 - WP0 and WP1 were resumed by `SendMessage` in their worktrees, keeping their context. The owner ran `/compact` at the boundary from planning to execution.
@@ -319,6 +314,34 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 
 - **Hand-offs:** a `src/` skeleton or a Wine file passes from WP1 to its area's owner when WP1 merges, and `unix-host.mjs` passes from WP1 to WP3 to WP4. `00xx` is frozen once WP1 merges: a later header fix goes in a new patch in the fixing package's range. `config.h`, `stubs.c`, `imports.txt` and `rename-server.h` take appended lines from any package, each with its reason.
 - **The coordinator:** reviews each diff, merges each track into the PR branch with a context checkpoint after the merge, sets `tests/targets/wine-unix.lock`, then runs `/milestone-close`.
+
+## M2 progress (paused 2026-11-13)
+
+Paused at 19:08 UTC at the owner's request (the 5-hour limit). The PR branch `claude/beautiful-fermi-7thp8n` is pushed; there is no PR yet (the draft PR comes at `/milestone-close`).
+
+- **Committed and passing:**
+  - **The contracts:** `wine-unix.md` v1 and `abi.md` v5 (`fa05b93`), with the follow-ups `dc5a2c0` (`depth` in the green-thread save set) and `d03b8b4` (the tree after WP1), and WP1's two build-flag changes (`3c4142b`, `379f41b`).
+  - **WP0 (`f0c0827`):** `cargo test --workspace` 231 passed, `npm run test:node` 261 of 261, `wine-boundary` 5 of 5 in Node and in the Chromium Worker (WP0's runs).
+  - **WP1 (`7d55b61`):** `native/wine/build.sh` with its three gates, and `npm run test:wine` 4 of 4 (the coordinator's run on the merge).
+  - **WP5 (`c8d0cf2`, fixes `b209caa`):** `tests/wine/prepare.sh` exits 0 with a 4096-byte `kuser.bin`. The `wine-unix` workflow is green on the PR branch at `447da5e` (about 3 minutes, `wine-unix-447da5e`), and so is `targets`. `ci` runs once the PR exists.
+- **In progress (stopped):**
+  - **WP2, the virtual backend:** `m2-wp2-wip` at `62e64b8`, a WIP checkpoint the coordinator committed, untested:
+    - patch `0101-ntdll-virtual-backend.patch`: `virtual.c`'s maps go to `virtual_wasm.c`, the 16 GiB limits, the static reserve list, the bookkeeping in the host heap;
+    - `virtual_wasm.c` (+438 lines);
+    - `tests/virtual.c` and `tests/wine/virtual.test.mjs`, begun;
+    - an edit to `wine-unix.md` section 6 that belongs in its own contract commit: the guest regions start mapped with no access, a map outside them fails, a fixed map zeroes only the pages that may hold data.
+
+    Next: the Node test, then part 1's checks (`virtual_init`, the first TEB with the KUSER page, reserve, commit and free), then stop for the early merge.
+  - **WP3, the in-process server:** stopped after 12 minutes of reading Wine's server and ntdll sources. Nothing written, no track yet.
+  - **WP4, boot:** not started (after WP2 and WP3).
+- **How to resume** in a fresh session (in this session, a message to the WP2 and WP3 agents continues them with their context):
+  1. Read `docs/plan.md`, this note's M2 sections ("Decisions taken when planning M2", "Resumed", "Work packages"), `docs/design/wine-unix.md` and `abi.md` v5 ("Wine boundary").
+  2. A new container needs `apt-get install -y zstd` (for `prepare.sh`) and the wine-11.0 tarball (`tests/targets/sources.json`) unpacked into the scratchpad for reading.
+  3. **WP2:** a deep-worker in its own worktree. Its first command: `git fetch origin m2-wp2-wip && git checkout -B m2-wp2 origin/m2-wp2-wip`. Brief it from WP2's row and the "Resumed" notes: split the `wine-unix.md` edit into its own contract commit, finish part 1 and stop for the early merge, then part 2 (section 10's `virtual` checks). Track: `m2-wp2-wip`.
+  4. **WP3:** a deep-worker in its own worktree, from the PR branch's head, briefed from WP3's row. It merges WP2's base maps when they land, and confirms WP1's guessed reasons in `imports.txt`. Not in M2: `depth` in the save set (M3) and `pthread_create` (M4). Track: `m2-wp3-wip`.
+  5. **Then** WP4 from its row, once WP2 and WP3 are merged; then `tests/targets/wine-unix.lock` (the last green `wine-unix-<sha7>`), then `/milestone-close`.
+  - Each brief asks the agent to check its worktree's base first: WP5's started at `main`.
+  - The ledger has a line for each stopped segment. A resumed agent's increment is measured with `agent-usage.mjs --since` 1 ms past its segment's `last`, since the filter is inclusive.
 
 ## What works
 
@@ -392,6 +415,8 @@ At most two deep-workers at once and three subagents in all. Each brief names it
   - calls and floating point are slow.
 
 ## Next step: M2, "Wine's Unix side boots", in a new session
+
+M2 is in progress and paused: resume from "M2 progress (paused 2026-11-13)" above. The steps below were M2's start; the research pass, the contracts and WP0, WP1 and WP5 are done.
 
 Start from `docs/plan.md` ("Phase 2 milestones": the M2 row and the M2-M6 outline), this note and `ARCHITECTURE.md`.
 
