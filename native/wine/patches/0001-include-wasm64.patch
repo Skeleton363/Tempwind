@@ -1,0 +1,65 @@
+Headers for wasm64 (docs/design/wine-unix.md, sections 2 and 3).
+
+The module is wasm64; the Windows it describes is AMD64. _WIN64 is defined
+for __wasm64__ as for __x86_64__ (basetsd.h, minwindef.h), and the guest
+branches (CONTEXT, DISPATCHER_CONTEXT) take __wasm64__. Host-CPU branches
+(inline asm, barriers) keep their generic paths. WINE_UNIX_LIB already
+makes the calling conventions empty.
+
+diff --git a/include/basetsd.h b/include/basetsd.h
+index b3587da..981c406 100644
+--- a/include/basetsd.h
++++ b/include/basetsd.h
+@@ -36,7 +36,7 @@ extern "C" {
+  * 64-bit.
+  */
+ 
+-#if (defined(__x86_64__) || defined(__powerpc64__) || defined(__aarch64__)) && !defined(_WIN64)
++#if (defined(__x86_64__) || defined(__powerpc64__) || defined(__aarch64__) || defined(__wasm64__)) && !defined(_WIN64)
+ #define _WIN64
+ #endif
+ 
+diff --git a/include/minwindef.h b/include/minwindef.h
+index 0e386ad..965e812 100644
+--- a/include/minwindef.h
++++ b/include/minwindef.h
+@@ -37,7 +37,7 @@ extern "C" {
+ 
+ /* Calling conventions definitions */
+ 
+-#if (defined(__x86_64__) || defined(__powerpc64__) || defined(__aarch64__)) && !defined(_WIN64)
++#if (defined(__x86_64__) || defined(__powerpc64__) || defined(__aarch64__) || defined(__wasm64__)) && !defined(_WIN64)
+ #define _WIN64
+ #endif
+ 
+diff --git a/include/winnt.h b/include/winnt.h
+index a7261cf..bc169ce 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -1417,7 +1417,7 @@ typedef struct DECLSPEC_ALIGN(16) _AMD64_CONTEXT {
+     DWORD64 LastExceptionFromRip; /* 4c8 */
+ } AMD64_CONTEXT;
+ 
+-#ifdef __x86_64__
++#if defined(__x86_64__) || defined(__wasm64__)  /* wasm64: the guest is AMD64 */
+ 
+ #define CONTEXT_CONTROL CONTEXT_AMD64_CONTROL
+ #define CONTEXT_INTEGER CONTEXT_AMD64_INTEGER
+@@ -1483,7 +1483,7 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
+     } DUMMYUNIONNAME2;
+ } KNONVOLATILE_CONTEXT_POINTERS, *PKNONVOLATILE_CONTEXT_POINTERS;
+ 
+-#endif /* __x86_64__ */
++#endif /* __x86_64__ || __wasm64__ */
+ 
+ #define XSTATE_LEGACY_FLOATING_POINT 0
+ #define XSTATE_LEGACY_SSE            1
+@@ -2087,7 +2087,7 @@ typedef union _DISPATCHER_CONTEXT_NONVOLREG_ARM64
+     } DUMMYSTRUCTNAME;
+ } DISPATCHER_CONTEXT_NONVOLREG_ARM64;
+ 
+-#ifdef __x86_64__
++#if defined(__x86_64__) || defined(__wasm64__)  /* wasm64: the guest is AMD64 */
+ 
+ typedef struct _DISPATCHER_CONTEXT
+ {

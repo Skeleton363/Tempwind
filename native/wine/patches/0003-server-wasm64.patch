@@ -1,0 +1,31 @@
+wineserver for wasm64 (docs/design/wine-unix.md, sections 2 and 3).
+
+The guest is AMD64: guest branches of __x86_64__ take __wasm64__; host-CPU
+branches keep their generic paths.
+
+diff --git a/server/registry.c b/server/registry.c
+index bb7897e..cf761d8 100644
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -1850,7 +1850,7 @@ static void init_supported_machines(void)
+     unsigned int count = 0;
+ #ifdef __i386__
+     if (prefix_type == PREFIX_32BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_I386;
+-#elif defined(__x86_64__)
++#elif defined(__x86_64__) || defined(__wasm64__)  /* wasm64: the guest is AMD64 */
+     if (prefix_type == PREFIX_64BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_AMD64;
+     supported_machines[count++] = IMAGE_FILE_MACHINE_I386;
+ #elif defined(__arm__)
+diff --git a/server/sock.c b/server/sock.c
+index 7785d3c..ee43c9a 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -2235,7 +2235,7 @@ static int bind_to_iface_name( int fd, in_addr_t bind_addr, const char *name )
+     return setsockopt( fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable) );
+ }
+ 
+-#elif defined(IP_UNICAST_IF) && defined(SO_ATTACH_FILTER) && defined(SO_BINDTODEVICE)
++#elif defined(IP_UNICAST_IF) && defined(SO_ATTACH_FILTER) && defined(SO_BINDTODEVICE) && defined(HAVE_LINUX_FILTER_H)
+ 
+ struct interface_filter
+ {
