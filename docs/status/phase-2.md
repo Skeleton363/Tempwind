@@ -1,8 +1,8 @@
 # Phase 2 status: Wine underneath
 
-**Phase 2 is planned (2026-11-06). M1 is in progress, paused 2026-11-07 (the resume path: "M1 progress (paused 2026-11-07)"):**
-- WP1 (the Wine CI build) and WP3 (the boundary spike) are done;
-- WP2 (census, fixtures, translating the closure) is running.
+**Phase 2 is planned (2026-11-06). M1, "Wine in CI, and the boundary spike", is done (2026-11-13). M2 starts in a new session ("Next step"):**
+- WP1 (the Wine CI build), WP2 (the census, fixtures and translation of Wine's DLL closure) and WP3 (the boundary spike) are done;
+- the draft PR is "[Phase 2] Wine in CI, and the boundary spike".
 
 The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pass is in `docs/dev/research.md`, "2026-11-06: Phase 2, Wine underneath". A new session starts only with a new milestone (the owner, 2026-11-07).
 
@@ -10,6 +10,7 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - planned Phase 2: three Explore runs, then a Plan-agent review of the draft, whose six blockers are folded in below;
   - the owner decided on one session per milestone and on a basic raise path in Phase 2;
   - M1: the spike, then the Wine CI build. Paused overnight, resumed in the same session.
+- **The same session, resumed 2026-11-13:** WP2's review follow-up, then the M1 close.
 
 ## Decisions taken when planning (2026-11-06)
 
@@ -148,7 +149,7 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - WP3 (deep-worker): the boundary spike, in parallel with WP1;
   - WP2 (deep-worker), after WP1's first release: census, fixtures, lowering, translation of the closure and the base table.
 
-## M1 progress (2026-11-07)
+## M1: Wine in CI, and the boundary spike (done 2026-11-13)
 
 ### Decisions taken in M1
 - **Sessions reach CI results only through releases.**
@@ -168,10 +169,14 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - run 42353561868: everything passed except a transient publish 403;
   - run 42355029562 (`wine-bf443f0`): the new publishing, but bogus units in the Wine baseline;
   - run 42356976933 (`wine-b4ecc3c`): correct baselines, then the closure summary failed on a `| head` broken pipe under `pipefail`;
-  - run 42357971957 (`wine-ccff087`): every job green, every asset published.
-- **`tests/targets/wine.lock`** names `wine-ccff087`. Its closure is identical to `wine-bf443f0`'s (83 modules, the same names, bases and sizes).
+  - run 42357971957 (`wine-ccff087`): every job green, every asset published;
+  - run 43385076350 (`wine-4c6ec0d`, started by the closure's path fix): every job green in 14 min, with ccache warm.
+- **`tests/targets/wine.lock`** names `wine-4c6ec0d` (2026-11-13).
+  - Its `closure.json` lists the same 83 modules as `wine-ccff087`'s and `wine-bf443f0`'s, with the same bases, sizes and edges.
+  - The test exes' paths are now tree-relative (`tests/kernel32_test.exe`).
+  - `census --closure ... --check` passes on it locally, with the same totals.
 
-### WP2, census and fixtures: done, with one follow-up in progress
+### WP2, census and fixtures: done
 - **The census** of the closure (`wine-bf443f0`, the same modules as `wine-ccff087`): 83 modules, 3,779,886 instructions, 663 Codes, 797 in-scope forms, all with fixtures. Replay passes 60,752 of 60,752 cases, and `record --check` reproduces all 80 files.
 - **16 new forms,** recorded and lowered (`translator.md`, "Wine closure forms"):
   - executed code: `pushfq`; `mov r/m16, Sreg`, register and memory; `fxsave` (RtlCaptureContext); `cmpxchg16b` (the SList functions); `fprem` (oleaut32); and in `ntdll_test.exe`, `popfq` and `mov rm16, Sreg`;
@@ -186,47 +191,32 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
 - **Decisions at review:**
   - segment selectors are the Linux values: CS 0x33, SS 0x2B, DS/ES/FS/GS 0. That is what native Wine's PE code reads and what the oracle records; Windows has DS = ES = GS = SS = 0x2B and FS = 0x53;
   - the `movsxd` exclusion stays;
-  - **popfq is changed:** NT and ID stay in RFLAGS, and an image with TF or AC set exits `EXIT_UNSUPPORTED` instead of being silently dropped. Single-step and alignment checks aren't modelled (the follow-up);
-  - `closure.json`'s root paths become tree-relative, as the schema says (the follow-up).
+  - **popfq is changed:** NT and ID stay in RFLAGS, and an image with TF or AC set exits `EXIT_UNSUPPORTED` instead of being silently dropped. Single-step and alignment checks aren't modelled. Done in the follow-up, below;
+  - `closure.json`'s root paths become tree-relative, as the schema says. Done in the follow-up.
 
-## M1 progress (paused 2026-11-07)
-
-The owner paused at 09:55 UTC. The PR branch `claude/gifted-bardeen-a0hot6` is at `4e0b8ac` plus this note's commit, and no pull request is open yet.
-
-### Committed
-- WP3 (the boundary spike) and WP1 (the Wine CI build, `wine.lock` = `wine-ccff087`) are done; see above.
-- **WP2's census gate** is in `d32c713..a1beaa6`, green in CI (dispatch run 42360530592):
-  - the contracts (`translator.md` "Wine closure forms", `fixtures.md`, `instruction-scope.md` "Wine closure census");
-  - the fixtures, the lowering, `census --closure`, CI's closure census;
-  - `translate-pe --list-unsupported`;
-  - `images.mjs` taking DLLs.
-
-### In progress: WP2's review follow-up (deep-worker, stopped by the pause)
-- **The brief** is the "Decisions at review" above:
-  1. `popfq` keeps NT and ID in RFLAGS, and an image with TF or AC set exits `EXIT_UNSUPPORTED` with precise state (RIP at the `popfq`; RSP and RFLAGS unchanged).
-     - Record NT and ID fixture cases if the recorder can follow them. Otherwise, a lowering test asserts the contract (an NT/ID round trip through `popfq` then `pushfq`; TF or AC → `EXIT_UNSUPPORTED`).
-     - Update `translator.md`, "RFLAGS images".
-  2. `testkit closure` (`crates/testkit/src/closure.rs`) writes tree-relative root paths (`tests/kernel32_test.exe`), with a unit test.
-     - `closure.rs` is in `wine.yml`'s path filter, so the push publishes a new release. Move `wine.lock` to it once it is complete (`scripts/fetch-artifact.sh TAG closure.json`, then the closure's module list compared with `wine-ccff087`'s).
-- **State:** WP2 had started on the recorder: `crates/testkit/src/oracle/forms/wine.rs` and `oracle/record.rs`, uncommitted and untested.
-  - They are saved only on the side branch `m1-census-checkpoint`, at `9ad9057`, whose tree is the PR head plus those two files.
-  - The working tree was reset to the PR head for a clean pause, after checking the backup was identical.
-- **Done when:** `cargo test --workspace`, `record --check`, fmt and clippy are clean, `npm run test:node` passes, and a `workflow_dispatch` of ci.yml on the PR branch is green.
-
-### How to resume
-- **In any session, first restore WP2's files** as uncommitted changes:
-  - `git fetch origin m1-census-checkpoint`;
-  - `git checkout origin/m1-census-checkpoint -- crates/testkit/src/oracle/forms/wine.rs crates/testkit/src/oracle/record.rs`;
-  - `git restore --staged crates/testkit/src/oracle/forms/wine.rs crates/testkit/src/oracle/record.rs`.
-
-  Or start the follow-up from the PR head.
-- **Then, in this session:** send the stopped WP2 agent a message; its transcript survives.
-- **Then, in a fresh session:** give a deep-worker the brief above.
-- **Then close M1:**
-  1. `/milestone-close`: the full verification, the spec review and `/code-review medium`, the status note, the draft PR "[Phase 2] Wine in CI, and the boundary spike", the retro (trial 2 is due at M2), and the hand-off.
-  2. M2 starts in a new session.
-
-Ledger: WP2's line (rework 1) and the main session's at this pause are in `docs/dev/agent-runs.jsonl`.
+### WP2's review follow-up: done (2026-11-13)
+- **Who:** a fresh deep-worker, not the WP2 agent the pause had stopped; resuming that one would have reloaded its 2.6 MB transcript with a cold cache.
+- **popfq** (`d9d644c` contract, `b53770f` code):
+  - NT and ID now load from the image into RFLAGS;
+  - an image with TF or AC set exits `EXIT_UNSUPPORTED` before any change, through `FaultIf` with the new kind `ir::UNSUPPORTED` (0; the fault kinds start at 1);
+  - `translator.md` ("Faults", "RFLAGS images") and `fixtures.md` say so.
+- **The recorder follows NT and ID through popfq:** the CPU keeps both and ptrace reads them back. So `pushf.json`'s popfq cases now set and compare them, re-recorded with `testkit record` (`flags_mask` adds NT and ID).
+- **A pushfq case can't start with ID set:** `PTRACE_SETREGS` drops ID from the input RFLAGS, while NT survives.
+  - `crates/testkit/tests/rflags_paths.rs` covers instead:
+    - the popfq-then-pushfq round trip of NT and ID;
+    - the TF/AC exit, with RIP, RSP, RFLAGS and memory unchanged.
+  - Both tests fail on the old lowering.
+- **Closure paths** (`e836020` contract, `4c6ec0d` code):
+  - a root inside `--tree` gets a tree-relative `path`, with a unit test;
+  - a root outside keeps the path it was given, and `census --closure` still matches those by file name (`wine-build.md`).
+- **Tests:**
+  - fmt and clippy clean;
+  - `cargo test` 228 passed, 8 ignored;
+  - replay 60,752 of 60,752;
+  - `record --check` reproduces all 80 files;
+  - Node 261 of 261;
+  - ci.yml dispatch 43385084634 green.
+- **Rework at review:** none.
 
 ## What works
 
@@ -234,20 +224,24 @@ Ledger: WP2's line (rework 1) and the main session's at this pause are in `docs/
 |---|---|
 | **The Wine boundary** (M1 WP3, `native/spike/boundary/`, `abi.md` "Wine boundary").<br>An Emscripten wasm64 module (imported shared memory64, `GLOBAL_BASE` 2 GiB, wasm EH, no pthreads, no `-sJSPI`):<br>• owns the run loop over translated code<br>• is entered through raw exports in `env.table`<br>• runs two green threads that suspend through `green_block` and get their save set back<br>• makes a nested guest call<br>• grows memory while JS, its glue and translated code all see the growth | `tests/node/wine-boundary.test.mjs` and `tests/browser/wine-boundary.spec.mjs` (a Chromium Worker) pass locally and in CI (run 42306776103 at `0182d2f`). A build without the save-set restores fails the checks. A JS frame between `promising` and `Suspending` throws `SuspendError: trying to suspend JS frames`: Node 24.22 first runs the import and drops its Promise, while Chromium 153 refuses before calling it. |
 
-| **The Wine CI build** (M1 WP1, `wine.yml`, `wine-build.md`):<br>• the pinned, mirrored wine-11.0 tarball<br>• 64-bit and minimal, with MinGW GCC 13<br>• the PE modules, the native tree, the prefix<br>• Windows and native-Wine baselines<br>• `+loaddll` traces and the DLL closure<br>• published as `wine-<sha7>` | Releases `wine-bf443f0` and `wine-b4ecc3c`; the first complete one is named by `tests/targets/wine.lock`. A session fetches the assets with `fetch-artifact.sh` (sha256 checked), and the native Wine 11 from the release runs `hello.exe` here, matching `hello.expected`. `tests/node/conformance-parse.test.mjs` covers the parser, the Wine trace lines after the list included. |
+| **The Wine CI build** (M1 WP1, `wine.yml`, `wine-build.md`):<br>• the pinned, mirrored wine-11.0 tarball<br>• 64-bit and minimal, with MinGW GCC 13<br>• the PE modules, the native tree, the prefix<br>• Windows and native-Wine baselines<br>• `+loaddll` traces and the DLL closure<br>• published as `wine-<sha7>` | Releases `wine-bf443f0` to `wine-4c6ec0d`. `tests/targets/wine.lock` names `wine-4c6ec0d`, which has every asset. A session fetches the assets with `fetch-artifact.sh` (sha256 checked), and the native Wine 11 from the release runs `hello.exe` here, matching `hello.expected`. `tests/node/conformance-parse.test.mjs` covers the parser, the Wine trace lines after the list included. |
+| **Wine's DLL closure under the translator** (M1 WP2; `instruction-scope.md`, "Wine closure census"; `translator.md`, "Wine closure forms"):<br>• the census of the closure's 83 modules finds 797 in-scope forms, and every one has L1 fixtures (16 new forms recorded and lowered)<br>• every module with code translates with `translate-pe` and compiles in V8 | CI's census step checks the `wine.lock` closure (`census --closure ... --check`). Replay passes 60,752 of 60,752 cases, and `record --check` reproduces all 80 files. The translation and V8 numbers below were measured once, in a session (WP2), not in CI. |
 
 ## Measurements
 
 - **The Wine CI build** (`wine.yml`, ubuntu-24.04, 4 vCPU):
-  - the build step takes 22.5 min cold, and 1.5-1.8 min with ccache warm;
-  - the build job takes 26 min cold and 4.6-5.5 min warm, `make install` and packing included;
-  - the Windows baseline takes 3 min; the native-Wine baseline 6 min (31 min while it ran bogus units).
-- **Conformance baselines** (`wine-b4ecc3c`; units per exe; checks = executed − failures over executed):
+  - the build step takes 22.5 min cold, and 1.5-2.0 min with ccache warm;
+  - the build job takes 26 min cold and 4.6-5.7 min warm, `make install` and packing included;
+  - the Windows baseline takes 3 min; the native-Wine baseline 6 min (31 min while it ran bogus units);
+  - a whole run with ccache warm takes 14 min (run 43385076350).
+- **Conformance baselines** (`wine-4c6ec0d`, the `wine.lock` release; units per exe; checks = executed − failures over executed):
 
   | Platform | kernel32_test.exe | ntdll_test.exe |
   |---|---|---|
-  | windows-2025 (truth) | 23/33 units ok, 10 failed; checks 15,824,168 / 15,828,393 | 15/26 ok, 10 failed, 1 crashed; checks 5,416,706 / 5,416,806 |
-  | native Wine 11 (`--without-x`) | 31/33 ok, 2 failed; checks 5,314,727 / 5,314,776 | 23/26 ok, 2 failed, 1 crashed; checks 5,330,030 / 5,330,035 |
+  | windows-2025 (truth) | 24/33 units ok, 9 failed; checks 19,566,392 / 19,570,626 | 15/26 ok, 10 failed, 1 crashed; checks 5,421,348 / 5,421,446 |
+  | native Wine 11 (`--without-x`) | 31/33 ok, 2 failed; checks 5,312,746 / 5,312,795 | 23/26 ok, 2 failed, 1 crashed; checks 5,330,032 / 5,330,037 |
+
+  - Windows varies between runs: kernel32 had 23 units ok in `wine-b4ecc3c` and 24 in the two runs since, and its executed checks went from 15.8 M to 19.0 M and 19.6 M. Native Wine's executed checks vary by about 6,000.
 
   - Wine's tests aren't clean on Windows Server 2025: units fail on server-edition differences.
   - Under native Wine, `todo_wine` marks absorb Wine's known gaps.
@@ -256,7 +250,7 @@ Ledger: WP2's line (rework 1) and the main session's at this pause are in `docs/
   - 153.5 MB of wasm;
   - compile times: 258 ms by default (lazy), 1,978 ms eager (Liftoff), 57,063 ms eager TurboFan;
   - the largest: `kernel32_test.exe` 23.4 MB, `ntdll_test.exe` 16.5, `windowscodecs.dll` 8.7, `ucrtbase.dll` 7.0, `user32.dll` 6.3.
-- **The DLL closure** (`wine-bf443f0`'s `closure.json`):
+- **The DLL closure** (`wine-bf443f0`'s `closure.json`; `wine-ccff087`'s and `wine-4c6ec0d`'s are the same):
   - 83 modules, 96 unresolved names: test-generated temporary DLLs (`ldr*.tmp`, `ldr*.dll`) and similar;
   - `highest_end` 0x1_808b_c000 and `memory_bytes` 6.45 GB, if everything loads at its preferred base;
   - **base overlaps:**
@@ -271,7 +265,6 @@ Ledger: WP2's line (rework 1) and the main session's at this pause are in `docs/
 
 ## Known issues and risks
 - **The Unix-side port is the bulk:** about 100k lines in M2-M3, and 106k more with win32u in M4. The hard parts are the machine layer, the virtual backend and the server transport (Phase 0's risks 2, 4 and 6 in `native/README.md`).
-- **Wine's DLLs may need many new instruction forms,** which would lengthen M1.
 - **Wine's DLLs overlap at one default base** (the measurements above). In a process, Wine keeps the first DLL mapped at 0x1_8000_0000 and relocates the others, so an AOT module translated for the preferred base would miss for almost every DLL.
   - **To decide in M3's contract, with evidence:** rebase the closure DLLs to unique, packed bases when packaging (from 0x1_8000_0000 up, which keeps the memory near 6 GiB), or translate at the observed, deterministic base (`translate-pe --base`).
   - The observed base depends on each program's load order, which argues for rebasing.
@@ -284,14 +277,42 @@ Ledger: WP2's line (rework 1) and the main session's at this pause are in `docs/
   - `run` resets `env.depth` on entry, so a nested loop loses the outer call depth.
 - **Segment selectors differ from Windows** (DS, ES, FS, GS read 0, as on Linux and native Wine). Only code that inspects selectors, such as anti-debug or VM checks, can tell.
 - **The translated closure is 153.5 MB of wasm.** M6 measures its compressed download and caching. The two test exes (40 MB) are only needed for conformance runs.
+- **No CI job translates the closure yet.**
+  - CI checks the closure's forms (the census) and their semantics (replay). A translator change that broke one closure DLL's translation would only show in a session.
+  - M3 builds the closure's AOT modules in CI, which makes translation a gate there (the M1 spec review).
+- **Native Wine's exit status has 8 bits.** So the `wine-11.0-native` baseline counts a main process that crashes after its child processes printed summaries as `failed`, not `crashed` (`wine-build.md`, "Conformance baselines").
+  - `wine-4c6ec0d` has no such unit.
+  - M5's runner can tell them apart, from Wine's own crash output, if a case appears.
 - **Carried from Phase 1** (`phase-1.md`, "Known issues"):
   - the two store-check gaps, which close in M3;
   - Firefox is untested (Phase 3);
   - calls and floating point are slow.
 
-## Next step
+## Next step: M2, "Wine's Unix side boots", in a new session
 
-Resume from "M1 progress (paused 2026-11-07)":
-1. WP2's follow-up;
-2. then `/milestone-close` for M1;
-3. then M2 in a new session.
+Start from `docs/plan.md` ("Phase 2 milestones": the M2 row and the M2-M6 outline), this note and `ARCHITECTURE.md`. The starter message is in M1's hand-off.
+
+1. **The research pass** for M2, logged in `docs/dev/research.md`. Its topics:
+   - Emscripten 6.0.x for wasm64 with an imported shared memory and `GLOBAL_BASE`;
+   - wasm exceptions for `setjmp`/`longjmp`;
+   - building Wine's ntdll Unix part and wineserver with emcc (the clean-room rules hold);
+   - our workflow. Trial 2 is decided at M2's close and trial 3 from M2's `main` lines (`docs/dev/agent-runs.md`).
+2. **The contracts,** committed before any agent starts:
+   - **`docs/design/wine-unix.md` v1.** Everything under "The Unix side" in this note's planning decisions:
+     - the emcc build;
+     - the in-process wineserver and its patch list;
+     - startup: non-tty stdio devices, constant paths, the `sbrk` cap and one owner of `memory.grow`;
+     - the `.reg` overlay, the wineboot skip, no child processes.
+
+     It must also settle the spike's two open items: Emscripten's `sbrk` growing the memory, and `run` resetting `env.depth` in a nested loop.
+   - **`abi.md` v5,** from the draft "Wine boundary":
+     - the state block as a C header generated from `abi.rs`;
+     - the Unix side's host entries;
+     - who owns the page-state table.
+3. **The work packages** of plan.md's M2 outline, with briefs written from those contracts:
+   - the build, headers and virtual backend (deep-worker);
+   - the in-process server and boot path (deep-worker);
+   - the CI job that publishes `wine-unix-<sha7>`, and the Node harness runner (builder).
+4. **The inputs:**
+   - `tests/targets/wine.lock` names `wine-4c6ec0d`: the PE modules, the prefix, `closure.json` (whose `data_files` list the NLS files and `wine.inf`) and native Wine 11 for `/diverge` (`docs/dev/commands.md`);
+   - the spike in `native/spike/boundary/` shows the boundary that M2's build follows.
