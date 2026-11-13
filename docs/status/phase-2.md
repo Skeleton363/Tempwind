@@ -314,6 +314,32 @@ The owner paused at 19:08 UTC ("M2 progress (paused 2026-11-13)" below). WP2 and
   - An image based above 4 GiB that maps at neither its preferred base nor its slot searches the image range [0x1_0000_0000, 0x1_7000_0000) first. Wine's own first range ends at 16 GiB, so a top-down search there would grow the memory to 16 GiB.
   - The server's `ranges64` change in `server/mapping.c` is WP3's (section 1: one owner per file).
 - **Checkpoint (trial 6):** 322,877 tokens (32.3 %) at the turn's start, before WP2 part 1's merge.
+- **WP3, the in-process server (merged, `5122ac2`):**
+  - **`0201-server-inproc.patch`** (`server/*` and `unix/server.c`):
+    - The server starts inside `server_init_process`: `create_server_dir`; `init_memory` with 4 KiB pages, `ranges64` [0x1_0000_0000, 0x1_7000_0000) and KUSER at 0x7ffe0000; `init_directories`, `init_threading` and `init_registry`.
+    - After `send_request`, the client calls `inproc_server_request`, which reads the one pending request and handles it.
+    - An empty `wait_fd` read waits in `green.c` until `send_thread_wakeup` wakes the queue.
+    - `thread_get_inflight_fd` `dup`s the fd by number, and `send_client_fd` queues a dup for `wine_server_receive_fd`.
+    - The scheduler's timeout entries skip the registry save.
+    - SIGQUIT exits. `main_loop`, `receive_fd`, partial reply writes and other signals stop loudly.
+  - **`green.c`:**
+    - waits on queues with deadlines, sleeps and yield;
+    - `select`, `poll`, `usleep`, `nanosleep` and `sched_yield` in place of libc's;
+    - `tw_next_timeout` and `tw_run_timeouts`.
+  - **`unix-host.mjs`** has the scheduler: a deadlock rejects the waiting entry with `tempwind: green: deadlock`.
+  - **The contract part came first** (`38d8cc9`: `wine-unix.md` sections 7 and 9, and `abi.md`).
+  - **Checks:**
+    - `event_timeout`, `event_signaled`, `timer_fires` and `zero_timeout_polls`;
+    - `delay_not_alertable` and `delay_alertable`;
+    - the loud stop `wait_forever_stops`.
+
+    The non-alertable delay allows 1 ms of slack. Wine counts that deadline with `NtQuerySystemTime`, whose clock (Emscripten's `Date.now`) has a 1 ms resolution.
+  - **On the merge:** the three gates pass, 78 imports, in 17 s. `wine-unix.wasm` is 927,271 bytes (337,544 gzipped). `npm run test:wine` passes 8 of 8 in 0.6 s, with `TW_WINE_DIR` pointing at a prepared `target/wine`. The review found no defects.
+  - **Found for later:**
+    - The server's `process_sigkill` would `kill()` the process itself, since the client and the server share one pid. M2 never reaches it; in M4 it becomes an exit path or a loud stop.
+    - `imports.txt` keeps a line for `__syscall_poll`, which no module imports now. Gate 2 only checks a subset, so it does no harm.
+    - For WP4: `virtual_map_user_shared_data` must keep the KUSER page that the server writes.
+- **Checkpoint (trial 6):** 175,787 tokens (17.6 %) at the start of the turn before WP3's merge. The previous reading was 32.3 %, and no `/compact` ran in between: the reading's boundary marker had changed.
 
 ### Work packages
 At most two deep-workers at once and three subagents in all. Each brief names its files, the contract sections and the tests that decide "done", and a WIP track `m2-wpN-wip`. Agents commit their own paths only and use their own `--out` directories.
@@ -323,7 +349,7 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 | WP0: boundary items (merged, `f0c0827`) | deep-worker | ∥ WP1 | `gen-header` and `abi.h`, with the drift test; the CPUID table and the other new constants in `abi.rs`; `run` keeping the caller's `depth` (`emit.rs`, L5 snapshots regenerated); the spike at 4 GiB with `--wrap=sbrk` | cargo tests pass; a spike check shows `depth` equal before and after a nested run, and fails on the old `run`; a spike check shows `malloc` returning NULL at the cap after growth; `wine-boundary` passes in Node and in the Chromium Worker; the time to create the 4 GiB memory is measured |
 | WP1: build skeleton (merged, `7d55b61`) | deep-worker | first | `build.sh`, `config.h`, `imports.txt`, `rename-server.h`, `00xx`, `src/` skeletons (`green_pthread.c` working; `stubs.c`, `version.c`, `library.js`; `signal_wasm64.c`, `green.c`, `inproc.c`, `boot.c` and `virtual_wasm.c` with `grow_to` and `__wrap_sbrk`), `tests/harness.h`, `runtime/src/wine/unix-host.mjs` (memory, raw exports, imports, `preRun` ENV, the stdio devices, MEMFS), `tests/wine/link.test.mjs`, `npm run test:wine` | everything compiles and links with the three gates; the `link` test passes |
 | WP2: virtual backend (part 1 merged, `4f1e0d1`) | deep-worker | after WP1 | `01xx`, `virtual_wasm.c`, `tests/virtual.c`, `tests/wine/virtual.test.mjs` | the `virtual` checks (`wine-unix.md`, section 10). Its base maps (`virtual_init`, the first TEB, reserve, commit and free) come first and are merged early, since the wait harness needs them |
-| WP3: in-process server | deep-worker | after WP1, ∥ WP2 | `02xx` (`server/*` and `dlls/ntdll/unix/server.c`), `inproc.c`, `green.c`, the scheduler in `unix-host.mjs`, `tests/wait.c`, `tests/wine/wait.test.mjs` | the `wait` checks |
+| WP3: in-process server (merged, `5122ac2`) | deep-worker | after WP1, ∥ WP2 | `02xx` (`server/*` and `dlls/ntdll/unix/server.c`), `inproc.c`, `green.c`, the scheduler in `unix-host.mjs`, `tests/wait.c`, `tests/wine/wait.test.mjs` | the `wait` checks |
 | WP4: boot | deep-worker | after WP2 and WP3 | `03xx` (`loader.c`, `env.c`, `system.c`, `process.c`, `thread.c`), `boot.c`, `signal_wasm64.c`, `overlay.reg`, the boot set in `unix-host.mjs`, `tests/boot.c`, `tests/section.c` and their Node tests | the `boot` and `section` checks |
 | WP5: CI and prepare (merged, `c8d0cf2`) | builder | after WP1, ∥ the others | `tests/wine/prepare.sh`, `tests/wine/kuser-dump.c`, `.github/workflows/wine-unix.yml`, `docs/dev/commands.md` | run locally under the job's shell first; green on the PR branch, with `wine-unix-<sha7>` published |
 
