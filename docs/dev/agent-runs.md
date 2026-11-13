@@ -11,7 +11,7 @@ We judge workflow decisions (effort levels, caps, agent rules) by data, at almos
 - **The run's setup:** date, milestone, task, agent, model (the one that served the requests) and effort.
 - **Quality:**
   - `rework`: follow-up messages needed before the result passed the coordinator's verification (0 means right the first time);
-  - `findings`: valid review findings in the run's own diff, filled in at milestone close-out.
+  - `findings`: valid review findings in the run's own diff, filled in at milestone close-out. A finding counts for the run whose commit introduced the line (`git log -S`). A defect in a contract doc, or in the coordinator's own change, counts for no run; neither do notes.
 - **`kind`** (optional): `"diverge"` for a bug hunt run through `/diverge` (trial 5).
 
 **Not a cost measure:** the token count in a completion notice. It is the context size of the run's last request. It fell from 172,549 to 158,912 between two notices of one run, and WP4's 161,269 hid 44.2M cache-read tokens. Cache reads, the context re-read at every request, are most of a run's cost. Until 2026-11-06 the ledger recorded the notice's count; on that day every line was rebuilt from the transcripts (`source: transcript`), keeping the quality fields and the efforts that were recorded.
@@ -95,7 +95,7 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 |---|---|---|
 | At most 3 subagents, none spawning its own | never blocked planned work | kept |
 | Subagents without a set effort at `high` | the M6 spec review cost 1.06M against M5's 2.57M at `max`, and found two real blockers | kept |
-| deep-worker `medium` (WP3a, WP4) against `high` (WP2, WP3b) | median 3.29M against 3.53M (−7 %); rework 1 against 0 | not adopted; `high` stays |
+| deep-worker `medium` (WP3a, WP4) against `high` (WP2, WP3b) | median 3.29M against 3.53M (−7 %); rework 1 against 0; findings 4 against 0 (added 2026-11-13: the close-out had left them empty, and they point the same way) | not adopted; `high` stays |
 | Read a file once; wait on backgrounded commands | builder index per request 18-27k, against 25k before; no rework traced to it | kept |
 | 1. The prune of the always-loaded files | no rework traced to content that moved behind a pointer | kept |
 | 4. The merge-danger line | the owner's verdict at the M6 merge | open |
