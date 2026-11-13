@@ -186,7 +186,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
 
 ## 9. Blocking and threads (M2: one thread)
 - **`green.c`:**
-  - `green_block` is the only switch point. Around it, C saves and restores the spike's save set (`abi.md` v5, "Green threads").
+  - `green_block` is the only switch point. Around it, C saves and restores the spike's save set (`abi.md` v5, "Green threads"); `depth` joins the set in M3, once translated code runs.
   - It provides sleeping until a deadline, yielding, and a wake queue.
   - Wine's blocking libc calls are routed there: `select` and `usleep` sleeps, `sched_yield`, `poll` on the server's pipes and the waits of section 7. A blocking call that green.c doesn't handle stops loudly.
 - **`green_pthread.c`**, the single-thread part of the green pthread layer. The `-ww` libc that `-sSHARED_MEMORY` links without `-pthread` has no pthread functions at all (`research.md`, 2026-11-13), so this is needed from the first link:

@@ -314,7 +314,7 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
   - wasm64, importing that same memory, with `GLOBAL_BASE=0x80000000`;
   - its C function pointers use its own table, which is not `env.table`;
   - built without Emscripten pthreads, with wasm exception handling.
-  - The flags (Emscripten 6.0.12, proven by the spike): `-m64 -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH -sINITIAL_MEMORY=<bytes> -sMAXIMUM_MEMORY=16GB -sGLOBAL_BASE=2GB -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=node,worker`, plus `-sEXPORTED_FUNCTIONS=_malloc,_emscripten_stack_set_limits,__emscripten_stack_restore`. `-sSHARED_MEMORY` without pthreads enables atomics and bulk memory. `INITIAL_MEMORY` must cover `GLOBAL_BASE` plus the static data, stack and initial heap (the spike: 2 GiB + 64 MiB), and JS creates the memory with at least that many pages: the import's minimum is `INITIAL_MEMORY`, its maximum 262144 pages.
+  - The flags (Emscripten 6.0.12, proven by the spike): `-m64 -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH -sINITIAL_MEMORY=<bytes> -sMAXIMUM_MEMORY=16GB -sGLOBAL_BASE=2GB -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=node,worker`, plus `-sEXPORTED_FUNCTIONS=_malloc,_emscripten_stack_set_limits,__emscripten_stack_restore`. `-sSHARED_MEMORY` without pthreads enables atomics and bulk memory. `INITIAL_MEMORY` must cover `GLOBAL_BASE` plus the static data, stack and heap; from M2 it is 4 GiB, the whole host region ("Memory growth"), and JS creates the memory with at least that many pages: the import's minimum is `INITIAL_MEMORY`, its maximum 262144 pages.
   - **Not `-sJSPI`.** JS wraps the raw exports in `WebAssembly.promising` and the blocking imports in `WebAssembly.Suspending` itself; Emscripten's JSPI support (which wraps every export and import listed in `JSPI_EXPORTS`/`JSPI_IMPORTS` in its glue) isn't needed.
   - **Raw exports past the glue:** the `instantiateWasm` hook (`Module.instantiateWasm(imports, receive)`). JS passes the memory as `Module.wasmMemory`. In the hook it replaces the imports the Unix side declares (in a `--js-library` whose stub bodies never run) with the real ones, instantiates, keeps `instance.exports` as the raw exports and hands the instance to `receive`. The glue's own copy of the exports converts pointers to Numbers, so it is never used for `env.table` or `promising`. Plain imports that need the glue's scope (`memory_grown`) stay library functions.
 - **Translated modules** are as in v4. Built with `Options::shared_memory` (`x64wasm-cli translate --shared`).
@@ -351,7 +351,8 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
 - **`green_block` is the only switch point.** The suspending thread saves, and after resuming restores, in C around the call:
   - `__stack_pointer`, plus the stack base and end;
   - `errno`, which is one global without pthreads;
-  - the current state-block pointer.
+  - the current state-block pointer;
+  - `depth` (`env.depth`), from M3, when translated code runs. It counts the running thread's guest frames, so a value another thread left behind moves the depth guard: it unwinds too early or too late. It is restored in C after `green_block` returns, on the resumed stack like the rest, never in `green_block`'s JS continuation, which can run before another woken thread resumes. A new thread starts with 0. M4's test with two threads checks it (found by M2's WP0).
 - **A new thread's stack pointer and limits** are set by JS through the exported stack functions, immediately before its `promising` entry. `thread_main` itself must not run on another thread's stack region.
   - The region comes from the raw `malloc` export (the spike: 64 KiB). Then `emscripten_stack_set_limits(top, bottom)` (Emscripten's names: base = the high end, end = the low end) and `_emscripten_stack_restore(top)`, both raw exports of compiler-rt's stack functions, which use no shadow stack themselves. A C wrapper that sets them would have its own frame and restore the old pointer on return.
   - The save in C: `emscripten_stack_get_current`, `emscripten_stack_get_base` and `emscripten_stack_get_end` before `green_block`; after it, `emscripten_stack_set_limits` and `_emscripten_stack_restore` with the saved values, then `errno` and the current-thread pointer. The spike checks that the save set is needed: without the restores, the first thread resumes on the second thread's stack pointer with its `errno` and state pointer.
@@ -409,6 +410,7 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
 The Emscripten runtime's own imports are listed, each with a reason, in `native/wine/imports.txt`; the build fails on any import not listed there.
 
 ### Not fixed yet (M3)
+- how C reads and writes `env.depth` for the green-thread save set (an imported global or a pair of plain imports; "Green threads");
 - the dispatcher addresses;
 - whether a raw `syscall` instruction exits or stops;
 - the Unix side's exit reasons for thread exit, process exit and callback return.
