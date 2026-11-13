@@ -49,12 +49,18 @@ wine_bin="$out/native/opt/wine-11.0/bin"
 x86_64-w64-mingw32-gcc -O2 -static -Wall -Wextra -o "$out/hello.exe" tests/native/hello.c
 x86_64-w64-mingw32-gcc -O2 -static -Wall -Wextra -o "$out/kuser-dump.exe" tests/wine/kuser-dump.c
 
-# 3. KUSER_SHARED_DATA as native Wine 11 lays it out.
+# 3. KUSER_SHARED_DATA as native Wine 11 lays it out. Native Wine runs on a
+# copy of the prefix: it rewrites user.reg and system.reg for the user it runs
+# as (the shell folders, the version keys), and the boot test reads the prefix
+# as fetched, made for the user runner.
 rm -f "$out/kuser.bin"
+rm -rf "$out/kuser-prefix"
+cp -a "$out/wine-prefix" "$out/kuser-prefix"
 rc=0
-WINEPREFIX="$out/wine-prefix" WINEDEBUG=-all TZ=UTC \
+WINEPREFIX="$out/kuser-prefix" WINEDEBUG=-all TZ=UTC \
   "$wine_bin/wine" "$out/kuser-dump.exe" "$out/kuser.bin" || rc=$?
-"$wine_bin/wineserver" -k 2>/dev/null || true
+WINEPREFIX="$out/kuser-prefix" "$wine_bin/wineserver" -k 2>/dev/null || true
+rm -rf "$out/kuser-prefix"
 if [ "$rc" != 0 ] || [ "$(stat -c %s "$out/kuser.bin" 2>/dev/null || echo 0)" != 4096 ]; then
   echo "prepare.sh: kuser-dump.exe under native Wine failed (exit $rc) or wrote no 4096-byte kuser.bin" >&2
   exit 1

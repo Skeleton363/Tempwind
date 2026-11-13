@@ -7,6 +7,7 @@ name: wine-unix
 on:
   workflow_dispatch:
   push:
+    branches: [main, "claude/**"]
     paths:
       - "native/wine/**"
       - "runtime/src/wine/**"
