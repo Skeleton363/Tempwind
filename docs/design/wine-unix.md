@@ -92,6 +92,7 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
   3. Otherwise `map_view` searches top-down for relocated DLLs, as Wine does. For an image based above 4 GiB, the search runs first in the image range [0x1_0000_0000, 0x1_7000_0000), then in the whole guest regions. Wine's own first range ends at `limit_high`, 16 GiB, so a top-down search there would grow the memory to 16 GiB (found by M2's WP2).
   - **The server's ranges** (`server/mapping.c` `init_memory`, L271-276): `ranges64` is [0x1_0000_0000, 0x1_7000_0000), assigned top-down, so the first slot ends just below ntdll's base and the memory stays small. `ranges32` stays [0x6000_0000, 0x7c00_0000).
   - **The same files in the same load order land at the same addresses.** Nothing is randomized.
+- **`MEM_TOP_DOWN` with no limit** (only guest code asks for it, through `NtAllocateVirtualMemory`) is meant to start from a ceiling just above the highest image (`guest-memory.md`). That ceiling comes in M3, when guest code first runs. In M2 such a search starts at 16 GiB. Wine's Unix side uses top-down only for images (above) and for the PEB and TEB block below 2 GiB (`virtual.c` L4055), so the M2 boot never reaches it (found by M2's WP2).
   - This differs from native Wine, which moves every `ImageDynamicallyRelocated` DLL into its ASLR range (`research.md`, 2026-11-13). M3 decides with the translator's evidence whether the closure DLLs are rebased to unique bases when packaged.
 
 ## 5. Memory growth
@@ -158,7 +159,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
 
   Then it sets `server_start_time` as `main_loop` does, creates the process and its first thread as `master_socket_poll_event` does (`server/request.c` L543), and the client receives the request fd from the queue.
 - **KUSER:** the server's `user_shared_data` pointer is 0x7ffe0000 (`server/mapping.c` L1502).
-- **Not in-process:** the master socket, the lock file, daemonizing, signal handling and `main_loop`. An fd event that only `main_loop` would deliver stops loudly: a partial reply write (`POLLOUT`), a read of `msg_fd` (`receive_fd`), and `main_loop` itself.
+- **Not in-process:** the master socket, the lock file, daemonizing, signal handling and `main_loop`. Neither is `server_connect`'s `setup_config_dir` (`unix/server.c` L1322): nothing creates the prefix, its `drive_c` or its `dosdevices` links, or checks who owns it. The boot set brings the prefix (section 8). `initial_cwd`, the launch directory's fd that it returns, stays -1, so `server_init_process_done` skips its removable-media check. An fd event that only `main_loop` would deliver stops loudly: a partial reply write (`POLLOUT`), a read of `msg_fd` (`receive_fd`), and `main_loop` itself.
 - **Signals to threads** (`send_thread_signal`, `server/ptrace.c`): SIGQUIT is the exit path below. Any other signal (SIGUSR1, which suspends a running thread or brings it a system APC) stops loudly until M4.
 - **Time:** `set_current_time` runs at every request and at every green switch.
 - **Kills:** the SIGQUIT kill of a thread (`server/thread.c` ~L1627) becomes an exit path that ends the green thread (M2: the process, with `exit(0)`, as Wine's `quit_handler` and `abort_thread(0)` end the last thread).

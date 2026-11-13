@@ -171,9 +171,9 @@ How to read it:
 | 0x0_7ffe_0000-0x0_7ffe_ffff | KUSER_SHARED_DATA (0x7ffe_0000) and the syscall-dispatcher slot at 0x7ffe_1000. Fixed by Windows ABI and Wine's thunks. |
 | 0x0_7fff_0000-0x0_7fff_ffff | No-access gap, as on Windows. |
 | 0x0_8000_0000-0x0_ffff_ffff | **Host region**, 2 GiB, reported to the guest as reserved. It belongs to the Emscripten Unix side's allocator (`GLOBAL_BASE=0x80000000`; static data, the 1 MiB stack, then the heap, capped below 4 GiB by the `sbrk` wrapper). The translator's runtime data (CPU state blocks, block lookup tables, green-thread stacks) comes from that heap, and the Unix side allocates the page-state table there (1 byte per 4 KiB page = 4 MiB). `wine-unix.md`, sections 4 and 5. |
-| 0x1_0000_0000-0x3_ffff_ffff | Guest high region, 12 GiB. Images at their preferred base when it lies here and is free (MSVC 0x1_4000_0000/0x1_8000_0000, Wine 0x1_7000_0000 and up, MinGW DLLs 0x2_xxxx_xxxx-0x3_xxxx_xxxx). A relocated DLL whose base is taken gets a slot from the server's range [0x1_0000_0000, 0x1_7000_0000), top-down below ntdll, which replaces 0x6000_0000_0000 and keeps the memory small (M2). MEM_TOP_DOWN allocations start from a ceiling just above the highest image, not from 16 GiB, so the memory stays small. |
+| 0x1_0000_0000-0x3_ffff_ffff | Guest high region, 12 GiB. Images at their preferred base when it lies here and is free (MSVC 0x1_4000_0000/0x1_8000_0000, Wine 0x1_7000_0000 and up, MinGW DLLs 0x2_xxxx_xxxx-0x3_xxxx_xxxx). A relocated DLL whose base is taken gets a slot from the server's range [0x1_0000_0000, 0x1_7000_0000), top-down below ntdll, which replaces 0x6000_0000_0000 and keeps the memory small (M2). MEM_TOP_DOWN allocations start from a ceiling just above the highest image, not from 16 GiB, so the memory stays small (M3; `wine-unix.md`, section 4). |
 
-`user_space_limit` = `address_space_limit` = 0x4_0000_0000 (16 GiB). For non-LAA processes it is 0x7fff_0000.
+`user_space_limit` = `address_space_limit` = 0x4_0000_0000 (16 GiB), for every EXE: 64-bit Wine never lowers it for an EXE without `LARGE_ADDRESS_AWARE` (`virtual_set_large_address_space`), and neither do we (`wine-unix.md`, section 4).
 
 Why the host region sits at 2-4 GiB:
 

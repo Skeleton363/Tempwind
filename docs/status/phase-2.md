@@ -340,6 +340,32 @@ The owner paused at 19:08 UTC ("M2 progress (paused 2026-11-13)" below). WP2 and
     - `imports.txt` keeps a line for `__syscall_poll`, which no module imports now. Gate 2 only checks a subset, so it does no harm.
     - For WP4: `virtual_map_user_shared_data` must keep the KUSER page that the server writes.
 - **Checkpoint (trial 6):** 175,787 tokens (17.6 %) at the start of the turn before WP3's merge. The previous reading was 32.3 %, and no `/compact` ran in between: the reading's boundary marker had changed.
+- **WP2 part 2, with the `section` checks (merged, `ff7d5b3`):**
+  - **`0102-ntdll-image-placement.patch`:** every image tries its preferred base first. Only then does a relocated DLL ask the server for a slot. After that comes the image range above 4 GiB, then anywhere.
+  - **`0103-ntdll-virtual-checks.patch`:**
+    - `PAGE_WATCH` follows `VPROT_WRITEWATCH`;
+    - queries report the NULL region, the gap and the host region as reserved;
+    - KUSER is written in place (`virtual_map_user_shared_data` maps nothing);
+    - the three `__TRY` sites check the pages against the views: a checked write records itself on write-watched pages, and a buffer wholly in the host region passes.
+
+    The contract part came first (`77ba740`, section 6).
+  - **The `section` harness** (moved from WP4):
+    - hello.exe maps at 0x1_4000_0000;
+    - `sas.dll` maps at its preferred base, 0x1_8000_0000;
+    - `softpub.dll`, whose base is taken, gets the first `ranges64` slot, 0x1_6ffe_0000;
+    - a third view comes from the image-range search;
+    - a writable shared file view is written back on flush and unmap.
+
+    The `virtual` harness has 12 checks, plus `second_writable_view` run alone (a loud stop).
+  - **On the merge:** the three gates pass, 78 imports, in 19 s. `wine-unix.wasm` is 926,806 bytes (337,476 gzipped). `npm run test:wine` passes 10 of 10 in 0.5 s. The review found no defects.
+  - **Found for later:**
+    - A view at the server's slot returns `STATUS_SUCCESS`, because the server compares against `map_addr` (Wine's ASLR semantics). So once a mapping has a slot, a later view at its preferred base returns `STATUS_IMAGE_NOT_AT_BASE`.
+    - A checked write to a write-copy page doesn't turn it into a written page, as the fault would. Neither do translated code's writes (M3).
+    - `MEM_TOP_DOWN` with no limit starts at 16 GiB. The ceiling from `guest-memory.md` is M3, and `wine-unix.md` section 4 now says so. `guest-memory.md`'s non-LAA sentence is corrected to match section 4.
+  - **For WP4:**
+    - `virtual_init_user_shared_data` stays untested until `do_cpuid` takes the CPU profile; it still stops loudly.
+    - The in-process start skips `server_connect`'s `setup_config_dir` (now in section 7), so the boot set must bring `dosdevices`.
+- **Checkpoint (trial 6):** 247,562 tokens (24.8 %) at the start of the turn, before WP2 part 2's merge.
 
 ### Work packages
 At most two deep-workers at once and three subagents in all. Each brief names its files, the contract sections and the tests that decide "done", and a WIP track `m2-wpN-wip`. Agents commit their own paths only and use their own `--out` directories.
@@ -348,7 +374,7 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 |---|---|---|---|---|
 | WP0: boundary items (merged, `f0c0827`) | deep-worker | ∥ WP1 | `gen-header` and `abi.h`, with the drift test; the CPUID table and the other new constants in `abi.rs`; `run` keeping the caller's `depth` (`emit.rs`, L5 snapshots regenerated); the spike at 4 GiB with `--wrap=sbrk` | cargo tests pass; a spike check shows `depth` equal before and after a nested run, and fails on the old `run`; a spike check shows `malloc` returning NULL at the cap after growth; `wine-boundary` passes in Node and in the Chromium Worker; the time to create the 4 GiB memory is measured |
 | WP1: build skeleton (merged, `7d55b61`) | deep-worker | first | `build.sh`, `config.h`, `imports.txt`, `rename-server.h`, `00xx`, `src/` skeletons (`green_pthread.c` working; `stubs.c`, `version.c`, `library.js`; `signal_wasm64.c`, `green.c`, `inproc.c`, `boot.c` and `virtual_wasm.c` with `grow_to` and `__wrap_sbrk`), `tests/harness.h`, `runtime/src/wine/unix-host.mjs` (memory, raw exports, imports, `preRun` ENV, the stdio devices, MEMFS), `tests/wine/link.test.mjs`, `npm run test:wine` | everything compiles and links with the three gates; the `link` test passes |
-| WP2: virtual backend (part 1 merged, `4f1e0d1`) | deep-worker | after WP1 | `01xx`, `virtual_wasm.c`, `tests/virtual.c`, `tests/wine/virtual.test.mjs`; from WP3's merge, `tests/section.c` and `tests/wine/section.test.mjs` (moved from WP4: image placement through the server is `virtual.c`'s behavior) | the `virtual` and `section` checks (`wine-unix.md`, section 10). Its base maps (`virtual_init`, the first TEB, reserve, commit and free) come first and are merged early, since the wait harness needs them |
+| WP2: virtual backend (merged, `4f1e0d1` and `ff7d5b3`) | deep-worker | after WP1 | `01xx`, `virtual_wasm.c`, `tests/virtual.c`, `tests/wine/virtual.test.mjs`; from WP3's merge, `tests/section.c` and `tests/wine/section.test.mjs` (moved from WP4: image placement through the server is `virtual.c`'s behavior) | the `virtual` and `section` checks (`wine-unix.md`, section 10). Its base maps (`virtual_init`, the first TEB, reserve, commit and free) come first and are merged early, since the wait harness needs them |
 | WP3: in-process server (merged, `5122ac2`) | deep-worker | after WP1, ∥ WP2 | `02xx` (`server/*` and `dlls/ntdll/unix/server.c`), `inproc.c`, `green.c`, the scheduler in `unix-host.mjs`, `tests/wait.c`, `tests/wine/wait.test.mjs` | the `wait` checks |
 | WP4: boot | deep-worker | after WP2 and WP3 | `03xx` (`loader.c`, `env.c`, `system.c`, `process.c`, `thread.c`), `boot.c`, `signal_wasm64.c`, `overlay.reg`, the boot set in `unix-host.mjs`, `tests/boot.c` and its Node test | the `boot` checks |
 | WP5: CI and prepare (merged, `c8d0cf2`) | builder | after WP1, ∥ the others | `tests/wine/prepare.sh`, `tests/wine/kuser-dump.c`, `.github/workflows/wine-unix.yml`, `docs/dev/commands.md` | run locally under the job's shell first; green on the PR branch, with `wine-unix-<sha7>` published |
