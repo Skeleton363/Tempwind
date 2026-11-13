@@ -134,6 +134,8 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
   - `virtual_check_buffer_for_read` (L4807): every page is committed and readable, not a guard page;
   - `virtual_check_buffer_for_write` (L4841): every page is committed and writable or write-copy;
   - `NtReadVirtualMemory` (L6693): the same read check on the source.
+  - a write check that passes records the write on the write-watched pages it covers, as the fault it replaces would;
+  - a buffer wholly in the host region passes: it is the Unix side's own memory, and Wine's Unix side calls these checks on its own buffers too.
 
 ## 7. The in-process server
 The server is linked into the module and runs on the calling thread. `02xx` and `src/inproc.c`.
