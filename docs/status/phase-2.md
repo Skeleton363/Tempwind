@@ -1,8 +1,8 @@
 # Phase 2 status: Wine underneath
 
-**Phase 2 is planned (2026-11-06). M1, "Wine in CI, and the boundary spike", is done (2026-11-13). M2 starts in a new session ("Next step"):**
-- WP1 (the Wine CI build), WP2 (the census, fixtures and translation of Wine's DLL closure) and WP3 (the boundary spike) are done;
-- the draft PR is "[Phase 2] Wine in CI, and the boundary spike".
+**Phase 2 is planned (2026-11-06). M1, "Wine in CI, and the boundary spike", is done (2026-11-13, merged as skeleton363/tempwind#10 and #11). M2, "Wine's Unix side boots", is in progress (session 2, from 2026-11-13): its contracts are committed and its work packages are under "M2" below.**
+- M1: WP1 (the Wine CI build), WP2 (the census, fixtures and translation of Wine's DLL closure) and WP3 (the boundary spike) are done.
+- M2's PR will be "[Phase 2] Wine's Unix side boots".
 
 The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pass is in `docs/dev/research.md`, "2026-11-06: Phase 2, Wine underneath". A new session starts only with a new milestone (the owner, 2026-11-07).
 
@@ -11,6 +11,7 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - the owner decided on one session per milestone and on a basic raise path in Phase 2;
   - M1: the spike, then the Wine CI build. Paused overnight, resumed in the same session.
 - **The same session, resumed 2026-11-13:** WP2's review follow-up, then the M1 close.
+- **Session 2 (from 2026-11-13), M2 only:** the research pass and the plan (three Explore runs and a Plan-agent review), a compaction at the plan's approval (trial 6), then the contracts and the work packages.
 
 ## Decisions taken when planning (2026-11-06)
 
@@ -86,7 +87,7 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - wineboot's per-boot volatile keys come from a generated `.reg` overlay loaded with the prefix: the computer name, the hardware description from our CPUID profile, and the volatile environment.
 - **Startup details:**
   - fds 0-2 are custom non-tty byte devices. Emscripten's defaults are line-buffered ttys, which would start conhost and break `7z -so`.
-  - `dladdr`-based path discovery is replaced by constant paths: `/wine/lib/wine/x86_64-windows`, `/wine/share/wine` (NLS, `wine.inf`), and `$WINEPREFIX=/prefix`.
+  - `dladdr`-based path discovery is replaced by constant paths: `/wine/lib/wine/x86_64-windows`, `/wine/share/wine` (NLS, `wine.inf`), and `$WINEPREFIX`. M2's contract sets it to the path the prefix was made at, `/home/runner/wine-prefix`, since the `.reg` files hold it (`wine-unix.md`, section 8).
   - `sbrk` is capped below 0x1_0000_0000.
   - `memory.grow` has one owner, the virtual backend. It grows through an import that refreshes every view, Emscripten's and the runtime's.
 - **Time is real time,** as in Wine; Phase 1's logical timeouts (`runtime.md`, "Timeouts") don't carry over.
@@ -135,7 +136,7 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
     - makes a nested guest call;
     - grows memory, and JS and translated code see the growth.
   - **M2:** the Unix side builds in CI and locally with no undefined symbols beyond the documented imports. It boots to `LdrInitializeThunk` in Node without running guest code:
-    - ntdll.dll, apisetschema and hello.exe mapped at their bases;
+    - ntdll.dll and hello.exe mapped at their preferred bases, and apisetschema's API set mapped (`PEB->ApiSetMap`), since apisetschema is data;
     - registry and overlay loaded;
     - NLS loaded and KUSER filled;
     - the main thread's state block at `LdrInitializeThunk`.
@@ -255,6 +256,37 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - So `wine.lock` stays at `wine-4c6ec0d`.
 - **The retro** is in `docs/dev/agent-runs.md`, "Retro: Phase 2 M1".
 
+## M2: Wine's Unix side boots (in progress)
+
+Session 2 (from 2026-11-13) started fresh from M1's hand-off. The research pass is in `docs/dev/research.md`, "2026-11-13: Phase 2 M2, Wine's Unix side". The contracts are `docs/design/wine-unix.md` v1 and `abi.md` v5's M2 parts ("Trampoline", and under "Wine boundary": memory growth, the host region, the C header, the host entries).
+
+### Decisions taken when planning M2
+- **Emscripten stays 6.0.12.** 6.0.13 and 7.0.0 change no default we use, and 7.0.0 caps pipes at 64 KiB, which the in-process server's replies would hit. Revisit at M6.
+- **The spike's first open item, `sbrk`:** `INITIAL_MEMORY` is 4 GiB and `sbrk` is wrapped to refuse a break past 0x1_0000_0000, so the heap never grows the memory and the virtual backend is the only grower (`wine-unix.md`, section 5).
+- **The spike's second open item, `depth`:** `run` keeps the caller's `depth` and restores it on return and after an unwind, so the depth guard bounds the wasm stack across nested runs (`abi.md`, "Trampoline").
+- **The green pthread layer's single-thread part moves into M2's build skeleton.** The `-ww` libc that `-sSHARED_MEMORY` links has no pthread functions at all. Threads stay M4.
+- **The transport keeps Wine's pipes.** After writing a request, the client calls the server's `read_request` synchronously; waits block in `green_block` (`wine-unix.md`, section 7).
+- **Images:** the preferred base when it is free, otherwise a deterministic slot from the server's `ranges64`, now [0x1_0000_0000, 0x1_7000_0000) top-down. M3 still decides rebasing the closure DLLs.
+- **KUSER is one page** that the guest and the in-process server share; the wineboot skip writes wineboot's seven fields. The oracle is a dump of KUSER from native Wine 11 (`kuser-dump.exe`), compared except the clock's fields and the CPU profile's.
+- **The prefix runs at its recorded path,** `/home/runner/wine-prefix`, with `HOME=/home/runner` and `USER=runner`.
+- **Image placement and section views are tested through the server,** in the `section` harness after the virtual and wait packages merge, since `NtCreateSection` needs the server. The virtual harness tests the backend without it.
+- **Context checkpoints (the owner's change, trial 6 in `docs/dev/agent-runs.md`):** planning filled 483,687 of 1,000,000 tokens before any work, so the coordinator reads `context_usage` at each checkpoint and asks for `/compact` above 35 %.
+
+### Work packages
+At most two deep-workers at once and three subagents in all. Each brief names its files, the contract sections and the tests that decide "done", and a WIP track `m2-wpN-wip`. Agents commit their own paths only and use their own `--out` directories.
+
+| WP | Agent | When | Owns | Done when |
+|---|---|---|---|---|
+| WP0: boundary items | deep-worker | ∥ WP1 | `gen-header` and `abi.h`, with the drift test; the CPUID table and the other new constants in `abi.rs`; `run` keeping the caller's `depth` (`emit.rs`, L5 snapshots regenerated); the spike at 4 GiB with `--wrap=sbrk` | cargo tests pass; a spike check shows `depth` equal before and after a nested run, and fails on the old `run`; a spike check shows `malloc` returning NULL at the cap after growth; `wine-boundary` passes in Node and in the Chromium Worker; the time to create the 4 GiB memory is measured |
+| WP1: build skeleton | deep-worker | first | `build.sh`, `config.h`, `imports.txt`, `rename-server.h`, `00xx`, `src/` skeletons (`green_pthread.c` working; `stubs.c`, `version.c`, `library.js`; `signal_wasm64.c`, `green.c`, `inproc.c`, `boot.c` and `virtual_wasm.c` with `grow_to` and `__wrap_sbrk`), `tests/harness.h`, `runtime/src/wine/unix-host.mjs` (memory, raw exports, imports, `preRun` ENV, the stdio devices, MEMFS), `tests/wine/link.test.mjs`, `npm run test:wine` | everything compiles and links with the three gates; the `link` test passes |
+| WP2: virtual backend | deep-worker | after WP1 | `01xx`, `virtual_wasm.c`, `tests/virtual.c`, `tests/wine/virtual.test.mjs` | the `virtual` checks (`wine-unix.md`, section 10). Its base maps (`virtual_init`, the first TEB, reserve, commit and free) come first and are merged early, since the wait harness needs them |
+| WP3: in-process server | deep-worker | after WP1, ∥ WP2 | `02xx` (`server/*` and `dlls/ntdll/unix/server.c`), `inproc.c`, `green.c`, the scheduler in `unix-host.mjs`, `tests/wait.c`, `tests/wine/wait.test.mjs` | the `wait` checks |
+| WP4: boot | deep-worker | after WP2 and WP3 | `03xx` (`loader.c`, `env.c`, `system.c`, `process.c`, `thread.c`), `boot.c`, `signal_wasm64.c`, `overlay.reg`, the boot set in `unix-host.mjs`, `tests/boot.c`, `tests/section.c` and their Node tests | the `boot` and `section` checks |
+| WP5: CI and prepare | builder | after WP1, ∥ the others | `tests/wine/prepare.sh`, `tests/wine/kuser-dump.c`, `.github/workflows/wine-unix.yml`, `docs/dev/commands.md` | run locally under the job's shell first; green on the PR branch, with `wine-unix-<sha7>` published |
+
+- **Hand-offs:** a `src/` skeleton or a Wine file passes from WP1 to its area's owner when WP1 merges, and `unix-host.mjs` passes from WP1 to WP3 to WP4. `00xx` is frozen once WP1 merges: a later header fix goes in a new patch in the fixing package's range. `config.h`, `stubs.c`, `imports.txt` and `rename-server.h` take appended lines from any package, each with its reason.
+- **The coordinator:** reviews each diff, merges each track into the PR branch with a context checkpoint after the merge, sets `tests/targets/wine-unix.lock`, then runs `/milestone-close`.
+
 ## What works
 
 | Item | Evidence |
@@ -302,7 +334,8 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
 
 ## Known issues and risks
 - **The Unix-side port is the bulk:** about 100k lines in M2-M3, and 106k more with win32u in M4. The hard parts are the machine layer, the virtual backend and the server transport (Phase 0's risks 2, 4 and 6 in `native/README.md`).
-- **Wine's DLLs overlap at one default base** (the measurements above). In a process, Wine keeps the first DLL mapped at 0x1_8000_0000 and relocates the others, so an AOT module translated for the preferred base would miss for almost every DLL.
+- **Wine's DLLs overlap at one default base** (the measurements above). So in a process most of them can't load at their preferred base, and an AOT module translated for that base would miss.
+  - **Corrected in M2's research** (`research.md`, 2026-11-13): native Wine doesn't keep the first DLL at 0x1_8000_0000. It moves every DYNAMIC_BASE DLL that has relocations (`ImageDynamicallyRelocated`) into its ASLR range, ntdll included (0x6FFF_FFC0_0000 in `hello.exe__run.log`). Our port maps an image at its preferred base when it is free and otherwise at a deterministic slot in [0x1_0000_0000, 0x1_7000_0000) (`wine-unix.md`, section 4).
   - **To decide in M3's contract, with evidence:** rebase the closure DLLs to unique, packed bases when packaging (from 0x1_8000_0000 up, which keeps the memory near 6 GiB), or translate at the observed, deterministic base (`translate-pe --base`).
   - The observed base depends on each program's load order, which argues for rebasing.
   - The guest memory at boot is not a problem: about 6 GiB, well below 16.

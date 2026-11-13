@@ -6,7 +6,7 @@ This is the contract between the translator (`crates/x64wasm`, `crates/x64wasm-r
 - **v2 (M1)** made one wasm function per guest function, with guest calls and returns mapped to wasm calls and returns. The design is in `translator.md`.
 - **v3 (M2)** links modules together. Several modules (the AOT translation of an image, and translations made at run time) share one funcref table, one call-depth counter and one block lookup table in guest memory, so control passes between them without leaving wasm. Host functions (the Win32 shim, `runtime.md`) sit in the same table and are called like guest functions. The state block, the statuses and the trampoline are as in v2.
 - **v4 (M4)** adds the floating-point helper module: translated modules import the soft-float functions they use from the `fp` namespace ("Floating-point helper module" below). Everything else is as in v3.
-- **v5 (Phase 2, draft)** puts Wine's Unix side, an Emscripten wasm64 instance, on the other side of the host functions ("Wine boundary" below). Translated modules are unchanged so far. M1's spike tests the draft, and M2-M3 finalize it.
+- **v5 (Phase 2)** puts Wine's Unix side, an Emscripten wasm64 instance, on the other side of the host functions ("Wine boundary" below). M1's spike tested the draft. M2 fixes the C header generated from `abi.rs`, the Unix side's host entries, the owner of the host region and `depth` across nested runs (the one change to translated modules: `run` keeps the caller's `depth`). M3 fixes the remaining constants.
 
 ## Module shape
 
@@ -115,14 +115,16 @@ A caller that gets a status other than 0 from a call stores nothing further and 
 
 ## Trampoline (`run`)
 
-1. Initialize the lazy flag record from RFLAGS: `cc_op = 0` (materialized), `cc_a = rflags`. Set `depth = 0`.
+1. Initialize the lazy flag record from RFLAGS: `cc_op = 0` (materialized), `cc_a = rflags`. Keep the entry value of `depth` as `d0` (v5; v4 set `depth = 0`).
 2. Loop:
    - Probe the lookup table for `state.rip`. On a miss, the exit reason is `EXIT_LEFT_CODE`.
    - Otherwise, call the slot's function through the table with its entry and `ret = NO_RET`.
-   - `STATUS_UNWIND`: set `depth = 0` and continue the loop.
-   - `STATUS_RETURNED`: only possible if the guest returned to `NO_RET` itself. Set `state.rip = NO_RET` and continue; the probe then misses.
+   - `STATUS_UNWIND`: set `depth = d0` and continue the loop.
+   - `STATUS_RETURNED`: only possible if the guest returned to `NO_RET` itself. Set `state.rip = NO_RET` and `depth = d0`, and continue; the probe then misses.
    - `STATUS_EXIT`: the reason is in `state.exit`.
-3. Materialize RFLAGS: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a, cc_b, cc_r)`. Store the exit reason in `state.exit` and return it.
+3. Materialize RFLAGS: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a, cc_b, cc_r)`. Set `depth = d0`, store the exit reason in `state.exit` and return it.
+
+**`depth` across nested runs (v5).** A host starts `depth` at 0, so a top-level `run` behaves as in v4. A `run` entered from a host function while guest frames are live (a nested guest call: "Wine boundary", "Who calls whom", item 5) counts on from the outer frames, so the depth guard bounds the wasm stack across all nested runs, and the outer guest code continues with its own count when the nested `run` returns.
 
 `NO_RET = 0xFFFF_FFFF_FFFF_FFFF`, a non-canonical address that no `call` can push. Every module's `run` behaves the same, so a host may use any of them.
 
@@ -301,7 +303,7 @@ The functions are pure apart from the stored status. `x64wasm-fp` checks them na
 
 ## Wine boundary (v5 draft, Phase 2)
 
-Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The boundary"), tested by M1's boundary spike (`native/spike/boundary/`, below) in Node 24 and in a Chromium Worker. M2 adds the C header generated from `abi.rs` and the Unix-side entries; M3 fixes the constants. Until then, nothing in Phase 1's code depends on it.
+Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The boundary"), tested by M1's boundary spike (`native/spike/boundary/`, below) in Node 24 and in a Chromium Worker. M2 fixes the C header, the Unix side's host entries, the host region and `depth` across nested runs (below, and `wine-unix.md` v1). M3 fixes the remaining constants.
 
 ### Instances
 - **Shared per Windows process:**
@@ -353,22 +355,63 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
 - **A new thread's stack pointer and limits** are set by JS through the exported stack functions, immediately before its `promising` entry. `thread_main` itself must not run on another thread's stack region.
   - The region comes from the raw `malloc` export (the spike: 64 KiB). Then `emscripten_stack_set_limits(top, bottom)` (Emscripten's names: base = the high end, end = the low end) and `_emscripten_stack_restore(top)`, both raw exports of compiler-rt's stack functions, which use no shadow stack themselves. A C wrapper that sets them would have its own frame and restore the old pointer on return.
   - The save in C: `emscripten_stack_get_current`, `emscripten_stack_get_base` and `emscripten_stack_get_end` before `green_block`; after it, `emscripten_stack_set_limits` and `_emscripten_stack_restore` with the saved values, then `errno` and the current-thread pointer. The spike checks that the save set is needed: without the restores, the first thread resumes on the second thread's stack pointer with its `errno` and state pointer.
-- **The green library replaces Emscripten's no-pthread stubs:** mutexes, condition variables, `pthread_once` and keys. A thread that suspends while holding a mutex is a bug, and the library asserts on it.
+- **The green library provides the pthread functions:** mutexes, condition variables, `pthread_once` and keys. With `-sSHARED_MEMORY` and no `-pthread`, Emscripten links the `-ww` libc, which has no pthread functions at all, not even stubs (`wine-unix.md`, section 9). A thread that suspends while holding a mutex is a bug, and the library asserts on it.
 
 ### Memory growth
 - **One owner:** the Unix side's virtual backend calls `memory.grow`.
 - **Then** it calls the plain import `memory_grown`. JS refreshes its views, the runtime's and Emscripten's glue's.
   - With `-sSHARED_MEMORY` and `-sALLOW_MEMORY_GROWTH` the glue already checks `wasmMemory.buffer` before every heap access (`growMemViews`), so its views refresh themselves; `memory_grown`, a library function, calls `updateMemoryViews()` anyway and then the runtime's callback.
+- **The heap never grows the memory (M2).** `INITIAL_MEMORY` is 4 GiB, which covers the host region, and `sbrk` is wrapped (`-Wl,--wrap=sbrk`) so that it refuses a break past 0x1_0000_0000 (`wine-unix.md`, section 5). Emscripten's `emscripten_resize_heap` never runs, and the memory above the host region is the backend's alone. This settles the spike's first open item.
 - **Translated code** needs nothing.
 
-### Not fixed yet
-- **Constants (M3):**
-  - the dispatcher addresses;
-  - whether a raw `syscall` instruction exits or stops;
-  - the Unix side's exit reasons for thread exit, process exit and callback return.
-- **The C header for the state block and the lookup** (M2), generated from `abi.rs`.
-- **Who else grows memory (M2).** Emscripten's `sbrk` grows memory too, through `emscripten_resize_heap`, and assumes everything above its break is its own. Memory the virtual backend grows past the end would become heap once `sbrk` reaches it. M2 decides how the two share the top of memory (the backend allocating through `sbrk`, or `malloc` confined to a fixed arena).
-- **`depth` in nested guest calls.** `run` sets `env.depth = 0` on entry, so a nested loop loses the outer count, and the outer guest code continues with the nested call's count. The guard still bounds the wasm stack per `run`, not across nested runs. The Unix side would need the global (an import of `env.depth`) to save and restore it.
+### The host region (M2)
+- **[0x8000_0000, 0x1_0000_0000) belongs to the Unix side's allocator:** Emscripten's static data from `GLOBAL_BASE`, the 1 MiB stack, then the heap.
+- **JS allocates the runtime's data there through the raw `malloc` export:** state blocks, the lookup header and slots, and green-thread stacks (M4). The Unix side allocates the page-state table itself (`tw_page_flags()`).
+- **Nothing maps guest memory there.** Wine reports the range as reserved (`wine-unix.md`, section 4).
+
+### The C header (`x64wasm-cli gen-header`, M2)
+- **The command:** `x64wasm-cli gen-header [--out FILE]` writes `native/wine/include/tempwind/abi.h` (the default `FILE`) from `crates/x64wasm/src/abi.rs`. The file is committed. A cargo test renders it and fails if the committed file differs, naming the command.
+- **One definition:** every constant is defined once in `abi.rs`; the header and the translator use that definition. (`runtime/src/abi.mjs` mirrors `abi.rs` by hand, as before.)
+- **Contents,** each name with the `TW_` prefix:
+  - the state block: the `TW_STATE_<FIELD>` offsets, `TW_STATE_GPR(i)` and `TW_STATE_SIZE`;
+  - the statuses `TW_STATUS_RETURNED`, `TW_STATUS_UNWIND` and `TW_STATUS_EXIT`; the exit reasons `TW_EXIT_*`; the fault kinds `TW_FAULT_*`;
+  - the page flags `TW_PAGE_CODE` and `TW_PAGE_WATCH`, and `TW_PAGE_FLAGS_SHIFT`;
+  - the lookup: the header offsets, the slot size, `TW_LOOKUP_HASH_MUL`, `TW_LOOKUP_HASH_SHIFT`, and an inline `tw_lookup_hash(key, mask)` equal to `abi::lookup_hash`;
+  - `TW_NO_RET`, `TW_SENTINEL_RET`, `TW_NULL_LIMIT` and `TW_MAX_MEMORY_PAGES`;
+  - the CPU profile: `TW_CPUID_LEAVES`, an initializer of `{ leaf, eax, ebx, ecx, edx }` rows from the table the translator's `cpuid` returns (`instruction-scope.md`, "`cpuid` results"), with `TW_CPUID_LEAF_COUNT`; `TW_MXCSR_MASK`, the value the translator's `fxsave` stores (0xFFFF); `TW_XCR0` (3);
+  - `TW_NO_DISPATCHER` = 0xDEAD_0000_0000_0000, the non-canonical poison value for the host-pointer slots in ntdll.dll (`wine-unix.md`, section 8). A guest call through it misses the lookup, and translating a non-canonical address stops loudly.
+
+### Host entries of the Unix side (M2)
+**Raw exports** (`instance.exports`), called by JS:
+
+| Export | Type | Use |
+|---|---|---|
+| `boot` | `(argc i32, argv i64, flags i32) -> i32` | Entered through `promising` (`wine-unix.md`, section 8). `BOOT_STOP_AT_ENTRY` = 1. Returns 0 once stopped at the entry. |
+| `malloc`, `free` | `(size i64) -> i64`, `(ptr i64) -> ()` | The host heap. |
+| `tw_page_flags` | `() -> i64` | The page-state table's address. |
+| `tw_main_state` | `() -> i64` | The main thread's state block, once `boot` has stopped at the entry. |
+| `tw_next_timeout` | `() -> i64` | Milliseconds until the earliest thread wait or server timer, rounded up; 0 if one is due; -1 if there is none. It ignores the server's KUSER tick and its registry save. |
+| `tw_run_timeouts` | `() -> ()` | Runs the expired server timeouts and wakes the threads whose deadline has passed. |
+| `emscripten_stack_set_limits`, `_emscripten_stack_restore` | as in the spike | A new green thread's stack (M4). |
+| `tw_test_main` | `() -> i32` | Harness modules only (`wine-unix.md`, section 10), entered through `promising`. |
+
+`tw_next_timeout`, `tw_run_timeouts` and the queries never block, so JS calls them directly. While a thread is suspended, they run on the shadow stack below its frames and return before it resumes.
+
+**Imports** (`env`), declared in `native/wine/src/library.js`:
+
+| Import | Type | Use |
+|---|---|---|
+| `green_block` | `(thread i32) -> i64` | `WebAssembly.Suspending`, the only switch point. It resumes with the value JS passes (0 in M2). |
+| `green_wake` | `(thread i32) -> ()` | Plain. C has made the thread runnable; JS resumes its `green_block` after the current call into the module returns. |
+| `memory_grown` | `() -> ()` | Plain, as in the spike. |
+| `tw_run` | `(state i64) -> i32` | Plain. In M2 a stub that stops loudly, since boot stops before guest code; M3 links a translated module's `run` here. |
+
+The Emscripten runtime's own imports are listed, each with a reason, in `native/wine/imports.txt`; the build fails on any import not listed there.
+
+### Not fixed yet (M3)
+- the dispatcher addresses;
+- whether a raw `syscall` instruction exits or stops;
+- the Unix side's exit reasons for thread exit, process exit and callback return.
 
 ### The spike (M1)
 

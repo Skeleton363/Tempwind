@@ -42,7 +42,7 @@ Translation is function-level: the translator discovers functions from the entry
 
 ### Elsewhere
 - `tests/`: `pe` and `native` (programs and expected output), `node` (shim and runtime tests), `browser` (Playwright), `sevenzip` (138-step command matrix), `bench`, `targets` (7-Zip and CoreMark pins).
-- `native/`: Wine's Unix side with Emscripten (Phase 2+). `web/`: desktop shell (Phase 3+).
+- `native/`: Wine's Unix side with Emscripten (Phase 2+). `native/wine/` (LGPL): `build.sh`, the patch series against the wine-11.0 tarball, our new files in `src/` (the memory backend, the in-process server transport, green threads, boot), the generated `include/tempwind/abi.h` and the C harnesses in `tests/`. `native/spike/boundary/` is M1's boundary spike. `runtime/src/wine/` is the JS host for the Unix side; `tests/wine/` its Node tests. `web/`: desktop shell (Phase 3+).
 - `tools/`, `scripts/`, `.github/workflows/`: environment setup, artifact fetching, CI.
 
 ## Contracts
@@ -56,8 +56,9 @@ Translation is function-level: the translator discovers functions from the entry
 | Process, load plan, host calls, shim | `docs/design/runtime.md` |
 | Guest address map | `docs/design/guest-memory.md` |
 | Wine build, release layout, DLL closure, prefix, conformance baselines (Phase 2) | `docs/design/wine-build.md` |
+| Wine's Unix side with Emscripten: build, patches, memory backend, in-process server, startup, green threads (Phase 2) | `docs/design/wine-unix.md` |
 
-Contracts are committed before the code that uses them. The ABI is versioned; both Rust (`abi.rs`) and JS (`abi.mjs`) change with it.
+Contracts are committed before the code that uses them. The ABI is versioned; both Rust (`abi.rs`) and JS (`abi.mjs`) change with it, and from v5 the C header `native/wine/include/tempwind/abi.h`, which `x64wasm-cli gen-header` generates from `abi.rs`.
 
 ## Test levels
 
