@@ -78,6 +78,7 @@ The set of PE modules that a Phase 2 run may load. It is the scope of the census
     "data_files": [ "share/wine/nls/locale.nls", "share/wine/wine.inf", "…" ] }
   ```
 
+  - `path` is relative to the tree (`tests/kernel32_test.exe`), however `--root` names a root inside it; a root outside the tree keeps the path it was given (`roots/basic.exe`), and `census --closure` matches such roots to its FILES by file name.
   - `overlaps` lists the pairs whose `[base, base + size)` ranges intersect.
   - `highest_end` is the largest `base + size`.
   - `memory_bytes` is the guest memory that loading every module at its preferred base implies, rounded up to 64 KiB.
