@@ -220,6 +220,28 @@ impl Closure {
     }
 }
 
+/// A root's `path` in `closure.json`: relative to the tree when the root is
+/// inside it (`tests/kernel32_test.exe`), with `/` separators; otherwise as
+/// given (`wine-build.md`, "The DLL closure").
+fn root_path(tree: &Path, root: &Path) -> String {
+    let rel = root
+        .strip_prefix(tree)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            let (tree, root) = (tree.canonicalize().ok()?, root.canonicalize().ok()?);
+            root.strip_prefix(tree).ok().map(Path::to_path_buf)
+        });
+    match rel {
+        Some(rel) => rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+        None => root.to_string_lossy().into_owned(),
+    }
+}
+
 fn hex(v: u64) -> String {
     format!("{v:#x}")
 }
@@ -266,7 +288,7 @@ pub fn run(args: &Args) -> Result<()> {
             .context("root without a file name")?
             .to_string_lossy()
             .to_ascii_lowercase();
-        let info = load_info(r, r.to_string_lossy().into_owned())?;
+        let info = load_info(r, root_path(&args.tree, r))?;
         cl.infos.insert(name.clone(), info);
         root_names.push(name);
     }
@@ -422,6 +444,34 @@ mod tests {
         let hosts = &m["api-ms-win-core-foo-l1-1"];
         assert!(hosts.contains("kernelbase.dll") && hosts.contains("kernel32.dll"));
         assert!(m["ext-ms-win-x-l1-1"].contains("ntdll.dll"));
+    }
+
+    #[test]
+    fn root_paths_are_tree_relative() {
+        let tree = Path::new("tree");
+        assert_eq!(
+            root_path(tree, Path::new("tree/tests/kernel32_test.exe")),
+            "tests/kernel32_test.exe"
+        );
+        assert_eq!(
+            root_path(Path::new("/x/tree/"), Path::new("/x/tree/tests/a.exe")),
+            "tests/a.exe"
+        );
+        // Outside the tree: as given.
+        assert_eq!(
+            root_path(tree, Path::new("roots/basic.exe")),
+            "roots/basic.exe"
+        );
+        // The tree named another way (`..`) is matched through the
+        // canonical paths.
+        let dir = std::env::temp_dir().join(format!("closure-roots-{}", std::process::id()));
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(dir.join("tests/b.exe"), b"").unwrap();
+        assert_eq!(
+            root_path(&dir.join("tests/.."), &dir.join("tests/b.exe")),
+            "tests/b.exe"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
