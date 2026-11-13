@@ -84,7 +84,7 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
 `guest-memory.md`, "Address map of one process", is the layout. What it means for Wine's code:
 - **Wine allocates only in the guest regions.** The preloader's reserve list becomes a static list: [0x10000, 0x7ffe_0000), [0x7ffe_0000, 0x7fff_0000) for KUSER and the syscall slot, and [0x1_0000_0000, 0x4_0000_0000). The NULL region, the gap, the host region and everything above 16 GiB are outside it, so `NtQueryVirtualMemory` reports them as reserved.
 - **Limits:** `address_space_limit`, `user_space_limit`, `working_set_limit` and `host_addr_space_limit` are 0x4_0000_0000 (`virtual.c` L191-199). `user_space_limit` drops to 0x7fff_0000 for an EXE without `LARGE_ADDRESS_AWARE`, as in Wine. `address_space_start` is 0x110000, Wine's x86 value, which keeps the DOS area clear.
-- **Wine's own bookkeeping lives in the host heap:** the virtual heap (`alloc_virtual_heap`, L3600), `pages_vprot` and the view tree. None of it is in a guest region.
+- **Wine's own bookkeeping lives in the host heap:** the virtual heap (`alloc_virtual_heap`, L3600), `pages_vprot` and the view tree. None of it is in a guest region. `anon_mmap_alloc`, which allocates it (and `server.c`'s fd cache and `sync.c`'s cache), takes zeroed memory from the host heap.
 - **The host region** [0x8000_0000, 0x1_0000_0000) belongs to the Unix side's allocator: Emscripten's static data from `GLOBAL_BASE`, the 1 MiB stack, then the heap up to 0x1_0000_0000. The runtime's data in it (state blocks, the lookup table, the page-state table) comes from the raw `malloc` export.
 - **Images:**
   1. An image maps at its preferred base when [base, base + size) is free and inside a guest region. `map_image_view` tries the preferred base first for every image.
@@ -110,7 +110,10 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
   - a map at no fixed address takes a free range in the guest regions;
   - Wine's decommit is a fixed map, so a recommitted page reads zero;
   - `mprotect` is bookkeeping only. Wine keeps the protections itself, and nothing faults;
-  - `munmap` marks the range free; the memory never shrinks.
+  - `munmap` marks the range free; the memory never shrinks;
+  - the guest regions start mapped with no access, as the preloader's reservation would be: a try-fixed map there fails until Wine unmaps part of them, and `map_view`'s own map at no fixed address (not `anon_mmap_alloc`) finds only what Wine unmapped;
+  - a map outside the guest regions fails: `EEXIST` for a try-fixed map, `ENOMEM` for a fixed one;
+  - a fixed map zeroes only the pages that may hold nonzero bytes (mapped or `mprotect`ed accessible, or copied from a file), since grown memory is zero.
 
   The backend keeps its own record of mapped ranges, in the host heap.
 - **File views are copies.**
