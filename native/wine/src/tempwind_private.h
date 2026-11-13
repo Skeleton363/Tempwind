@@ -39,7 +39,13 @@ extern struct green_thread *green_current;
 
 /* green.c (section 9). */
 int64_t green_switch( void );  /* the only switch point, around green_block */
-struct green_queue { int waiters; };
+struct green_waiter;
+struct green_queue             /* all zero is an empty queue */
+{
+    int waiters;
+    struct green_waiter *head, *tail;
+    const char *what;          /* for the deadlock report; NULL: a condition variable */
+};
 int green_wait( struct green_queue *queue, const struct timespec *abs_deadline, int clock );
 void green_wake_queue( struct green_queue *queue, int all );
 
