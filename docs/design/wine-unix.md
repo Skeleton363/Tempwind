@@ -48,6 +48,7 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
    - `-sSTACK_SIZE=1MB -sSTACK_OVERFLOW_CHECK=2`: with `GLOBAL_BASE` the layout is data, then the stack, then the heap, so the stack grows down into Wine's globals;
    - `-Wl,--wrap=sbrk` (section 5);
    - `-Wl,--fatal-warnings`;
+   - `-Wl,--no-gc-sections`: every compiled function stays in the module, so gate 1 covers all of Wine's code. With section GC, wasm-ld drops what the entries don't reach and doesn't report the undefined symbols of dead code; while `boot` and the server's entry are skeletons, that is nearly all of Wine (the first link: a 19 KB module).
    - `-sEXPORTED_RUNTIME_METHODS=FS,ENV`;
    - `-sEXPORTED_FUNCTIONS=` the host entries of `abi.md` v5;
    - `--js-library native/wine/src/library.js`.
