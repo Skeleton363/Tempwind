@@ -135,6 +135,7 @@ mk="$out/obj/build.mk"
   done
   echo "OBJS := ${objs[*]}"
   echo "SERVER_OBJS := \$(filter \$(O)/server/%,\$(OBJS))"
+  echo "objs: \$(OBJS)$(for t in $tests; do printf ' $(O)/tests/%s.o' "$t"; done)"
   echo "all: $rel/wine-unix.mjs$(for t in $tests; do printf ' %s/test-%s.mjs' "$rel" "$t"; done)"
   printf '%s/wine-unix.mjs: $(OBJS) $(W)/src/library.js $(MK)\n\temcc $(LDFLAGS) -sEXPORTED_FUNCTIONS=_boot,%s -o $@ $(OBJS)\n' "$rel" "$exports_common"
   for t in $tests; do
@@ -149,22 +150,58 @@ mk="$out/obj/build.mk"
 cmp -s "$mk.new" "$mk" && rm "$mk.new" || mv "$mk.new" "$mk"
 
 nsrc=$(( $(echo $ntdll_srcs | wc -w) + $(echo $server_srcs | wc -w) + $(echo $own_srcs | wc -w) ))
-log "compiling $nsrc sources and linking with $jobs jobs (log: $rel/obj/make.log)"
-set +e
-"$emcc_sh" make --no-print-directory -k -j"$jobs" -f "$rel/obj/build.mk" > "$out/obj/make.log" 2>&1
-st=$?
-set -e
-if [ $st -ne 0 ]; then
+run_make() { # TARGET: make inside the Emscripten container, logged to obj/make.log
+  set +e
+  "$emcc_sh" make --no-print-directory -k -j"$jobs" -f "$rel/obj/build.mk" "$1" >> "$out/obj/make.log" 2>&1
+  local st=$?
+  set -e
+  return $st
+}
+: > "$out/obj/make.log"
+log "compiling $nsrc sources with $jobs jobs (log: $rel/obj/make.log)"
+if ! run_make objs; then
+  grep -E 'error' "$out/obj/make.log" | head -n 60 >&2 || true
+  die "compile failed (full log: $rel/obj/make.log)"
+fi
+
+# ---- 5. Gates ----------------------------------------------------------------
+# Gate 3, before the link (which would only report a duplicate symbol):
+# global symbols defined both in the server's objects and in ntdll's (with
+# src/). rename-server.h renames NAME to wineserver_NAME, so the server's
+# original names are recovered by stripping that prefix.
+"$emcc_sh" emnm -g --defined-only "$obj"/server/*.o > "$out/obj/server.nm" 2>/dev/null
+"$emcc_sh" emnm -g --defined-only "$obj"/ntdll/*.o "$obj"/own/*.o > "$out/obj/ntdll.nm" 2>/dev/null
+syms() { awk 'NF==3 && $2 != "U" {print $3}' "$1" | sort -u; }
+syms "$out/obj/server.nm" > "$out/obj/server.syms"
+syms "$out/obj/ntdll.nm" > "$out/obj/ntdll.syms"
+sed 's/^wineserver_//' "$out/obj/server.syms" | sort -u > "$out/obj/server.orig"
+comm -12 "$out/obj/server.orig" "$out/obj/ntdll.syms" > "$out/obj/collisions.txt"
+comm -12 "$out/obj/server.syms" "$out/obj/ntdll.syms" > "$out/obj/unrenamed.txt"
+if [ $census -eq 1 ]; then
+  log "census: $(wc -l < "$out/obj/collisions.txt") global symbols defined by both the server and ntdll (with src/):"
+  cat "$out/obj/collisions.txt"
+fi
+if [ -s "$out/obj/unrenamed.txt" ]; then
+  echo "build.sh: gate 3 (collisions) failed: these globals are defined by the server and by ntdll;" \
+    "rename them in native/wine/rename-server.h (--census lists all):" >&2
+  sed 's/^/  /' "$out/obj/unrenamed.txt" >&2
+  exit 1
+fi
+log "gate 3: $(wc -l < "$out/obj/collisions.txt") collisions, all renamed by rename-server.h"
+
+# Gate 1: the link keeps ERROR_ON_UNDEFINED_SYMBOLS=1, with no section GC.
+log "linking"
+if ! run_make all; then
   grep -E 'error|undefined symbol' "$out/obj/make.log" | head -n 60 >&2 || true
   if grep -q 'undefined symbol' "$out/obj/make.log"; then
     echo "build.sh: gate 1 (no undefined symbols) failed: implement each symbol where wine-unix.md says," \
       "or give it a stub in native/wine/src/stubs.c (section 2)" >&2
   fi
-  die "compile or link failed (full log: $rel/obj/make.log)"
+  die "link failed (full log: $rel/obj/make.log)"
 fi
 log "gate 1: linked with no undefined symbols"
 
-# ---- 5. Gates 2 and 3 ---------------------------------------------------------
+# Gate 2: every import is listed.
 modules=("$out/wine-unix.wasm")
 for t in $tests; do modules+=("$out/test-$t.wasm"); done
 node --input-type=module - "$wn/imports.txt" "${modules[@]}" > "$out/obj/imports.json" <<'EOF'
@@ -188,29 +225,6 @@ if (bad) process.exit(1);
 console.log(JSON.stringify([...all].sort()));
 EOF
 log "gate 2: $(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).length)' "$out/obj/imports.json") imports, all listed in imports.txt"
-
-# Gate 3: global symbols defined both in the server's objects and in ntdll's
-# (with src/). rename-server.h renames NAME to wineserver_NAME, so the server's
-# original names are recovered by stripping that prefix.
-"$emcc_sh" emnm -g --defined-only "$obj"/server/*.o > "$out/obj/server.nm" 2>/dev/null
-"$emcc_sh" emnm -g --defined-only "$obj"/ntdll/*.o "$obj"/own/*.o > "$out/obj/ntdll.nm" 2>/dev/null
-syms() { awk 'NF==3 && $2 != "U" {print $3}' "$1" | sort -u; }
-syms "$out/obj/server.nm" > "$out/obj/server.syms"
-syms "$out/obj/ntdll.nm" > "$out/obj/ntdll.syms"
-sed 's/^wineserver_//' "$out/obj/server.syms" | sort -u > "$out/obj/server.orig"
-comm -12 "$out/obj/server.orig" "$out/obj/ntdll.syms" > "$out/obj/collisions.txt"
-comm -12 "$out/obj/server.syms" "$out/obj/ntdll.syms" > "$out/obj/unrenamed.txt"
-if [ $census -eq 1 ]; then
-  log "census: $(wc -l < "$out/obj/collisions.txt") global symbols defined by both the server and ntdll (with src/):"
-  cat "$out/obj/collisions.txt"
-fi
-if [ -s "$out/obj/unrenamed.txt" ]; then
-  echo "build.sh: gate 3 (collisions) failed: these globals are defined by the server and by ntdll;" \
-    "rename them in native/wine/rename-server.h (--census lists all):" >&2
-  sed 's/^/  /' "$out/obj/unrenamed.txt" >&2
-  exit 1
-fi
-log "gate 3: $(wc -l < "$out/obj/collisions.txt") collisions, all renamed by rename-server.h"
 
 # ---- 6. build-info.json -------------------------------------------------------
 emver="$("$emcc_sh" emcc --version 2>/dev/null | head -n 1)"

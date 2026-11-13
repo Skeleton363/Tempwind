@@ -1,8 +1,12 @@
 ntdll Unix part for wasm64 (docs/design/wine-unix.md, sections 2 and 3).
 
-The guest is AMD64: guest branches of __x86_64__ take __wasm64__; host-CPU
-branches (inline asm, cpuid, xgetbv, fxsave, signal contexts) get a wasm64
-path or a stub that stops loudly.
+The guest is AMD64, so these guest branches take __wasm64__:
+current_machine (unix_private.h), the x86 CPU-information block and
+PROCESSOR_ARCHITECTURE_AMD64 (system.c), the stub syscall's Rip
+(loader.c), address_space_start 0x110000 (virtual.c, section 4).
+Host-CPU instructions get a wasm64 path: do_cpuid and do_xgetbv stop
+loudly until the CPU profile replaces them (section 3, WP4). The LDT and
+.so-DLL branches stay x86-only (no WoW64, no dlopen).
 
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 index cb700dd..31994fe 100644

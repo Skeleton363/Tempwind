@@ -1,10 +1,13 @@
 Headers for wasm64 (docs/design/wine-unix.md, sections 2 and 3).
 
-The module is wasm64; the Windows it describes is AMD64. _WIN64 is defined
-for __wasm64__ as for __x86_64__ (basetsd.h, minwindef.h), and the guest
-branches (CONTEXT, DISPATCHER_CONTEXT) take __wasm64__. Host-CPU branches
-(inline asm, barriers) keep their generic paths. WINE_UNIX_LIB already
-makes the calling conventions empty.
+The module is wasm64; the Windows it describes is AMD64.
+- _WIN64 is defined for __wasm64__ as for __x86_64__ (basetsd.h,
+  minwindef.h).
+- Guest branches take __wasm64__: CONTEXT and its flags, DISPATCHER_CONTEXT
+  (winnt.h).
+- Host-CPU branches keep their generic paths (barriers, interlocked
+  functions); __fastfail traps on wasm. WINE_UNIX_LIB already makes the
+  calling conventions empty and leaves NtCurrentTeb to ntdll.
 
 diff --git a/include/basetsd.h b/include/basetsd.h
 index b3587da..981c406 100644
@@ -33,7 +36,7 @@ index 0e386ad..965e812 100644
  #endif
  
 diff --git a/include/winnt.h b/include/winnt.h
-index a7261cf..bc169ce 100644
+index a7261cf..0fd3f71 100644
 --- a/include/winnt.h
 +++ b/include/winnt.h
 @@ -1417,7 +1417,7 @@ typedef struct DECLSPEC_ALIGN(16) _AMD64_CONTEXT {
@@ -63,3 +66,12 @@ index a7261cf..bc169ce 100644
  
  typedef struct _DISPATCHER_CONTEXT
  {
+@@ -7542,6 +7542,8 @@ static FORCEINLINE DECLSPEC_NORETURN void __fastfail(unsigned int code)
+ #elif defined(__arm__)
+     register ULONG_PTR val __asm__("r0") = code;
+     for (;;) __asm__ __volatile__( "udf #0xfb" :: "r" (val) : "memory" );
++#elif defined(__wasm__)
++    for (;;) __builtin_trap();  /* the host CPU is wasm: unreachable traps */
+ #endif
+ }
+ 
