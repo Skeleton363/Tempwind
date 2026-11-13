@@ -42,7 +42,7 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
    - the server: the `SOURCES` of `server/Makefile.in`, with `-include rename-server.h`;
    - `src/*.c`.
 
-   The flags: `-m64 -O2 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -DWINE_UNIX_LIB -include native/wine/config.h`, the defines Wine's makefiles give each directory (`EXTRADEFS`), and Wine's include paths, with `native/wine/include` first.
+   The flags: `-m64 -O2 -sSHARED_MEMORY -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -DWINE_UNIX_LIB -include native/wine/config.h`, the defines Wine's makefiles give each directory (`EXTRADEFS`), and Wine's include paths, with `native/wine/include` first. `-sSHARED_MEMORY` at compile time turns on atomics and bulk memory, which the shared-memory link requires of every object (wasm-ld refuses an object without them).
 4. **Link** `DIR/wine-unix.mjs` and `DIR/wine-unix.wasm` with the spike's flags (`abi.md` v5, "Instances") and these:
    - `-sINITIAL_MEMORY=4GB` (section 5);
    - `-sSTACK_SIZE=1MB -sSTACK_OVERFLOW_CHECK=2`: with `GLOBAL_BASE` the layout is data, then the stack, then the heap, so the stack grows down into Wine's globals;
