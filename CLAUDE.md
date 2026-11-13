@@ -21,7 +21,7 @@ Core verification. The oracle, census, 7-Zip matrix, benchmarks, profiling and r
 - Done = all CI checks green, the test summary in your final message, and docs/status/phase-N.md updated (what works, measurements, decisions, known issues, next step).
 - Sessions don't share memory: record every decision in docs/status/.
 - Judge what we do by our own evidence. A change, to code or to the workflow, starts from a problem we saw or a measured opportunity. It names how we'll know it worked, and that evidence decides whether it is kept, reshaped or reverted. A source recommending something is a lead, not a reason. Workflow trials: `docs/dev/agent-runs.md`.
-- Commit and push work in progress at least every 30 minutes; the cloud sandbox can reset. WIP goes to a side branch (`git push origin HEAD:refs/heads/<track>-wip`); the PR branch gets only commits that pass. The pre-push hook (`tools/git-hooks`) refuses a WIP head or unformatted Rust there.
+- Commit and push work in progress at least every 30 minutes; the cloud sandbox can reset. WIP goes to a side branch (`git push origin HEAD:refs/heads/<track>-wip`); the PR branch gets only commits that pass. A coordinator whose agent pushes to the PR branch snapshots WIP without moving HEAD (`docs/dev/commands.md`). The pre-push hook (`tools/git-hooks`) refuses a WIP head or unformatted Rust there.
 - If something you need is missing (a tool, a domain, a secret, a decision), say exactly what and stop. Don't mock it, work around it or guess.
 - Never weaken, skip or delete a test to get CI green; never hand-edit recorded fixtures.
 - Ask before merging, changing branch rules, or adding any paid service.

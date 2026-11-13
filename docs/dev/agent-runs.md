@@ -100,3 +100,49 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 | 1. The prune of the always-loaded files | no rework traced to content that moved behind a pointer | kept |
 | 4. The merge-danger line | the owner's verdict at the M6 merge | open |
 | 2, 3, 5 | not due | running |
+
+## Retro: Phase 2 M1 (2026-11-13)
+
+**Avoidable costs, worst first:**
+- **4 of the 6 `wine` runs on the PR branch failed or published wrong data.** Each cost a 14-60 min round trip:
+  - run 42306869519, red: `basic.exe` exits 42 by design, and the step's shell was `bash -e`;
+  - runs 42353561868 and 42355029562: the unit list was parsed from stdout and stderr together, so under Wine the `+loaddll` lines became 176 bogus units per exe. The first run was also red from a transient 403 at publish, which `release-publish.sh` now retries;
+  - run 42356976933, red: `| head` closed a pipe early under `pipefail`.
+
+  The three script bugs are of one kind: shell steps whose first run was in CI. Two more of that kind, `find | sort` on a missing directory and a quote inside a `${VAR:?}` message, were caught by a local dry run with stub tools before any push. So was the code review's `.sha256` fix.
+- **Contract drift: 7 of the spec review's 9 items.** WP1 built `wine.yml` and `closure.rs` differently from `wine-build.md` and didn't update the contract:
+  - the baselines' wrapper;
+  - `closure.json`'s extra fields;
+  - where `data_files` come from;
+  - the note's field;
+  - the prefix path;
+  - `+loaddll` during the baseline;
+  - the status rules;
+  - plus one count in `instruction-scope.md`.
+
+  The releases are immutable, so the contract now documents the published data.
+- **1 rework round:** WP2's popfq dropped TF and AC silently, and the review sent it back. Unmodelled behaviour should stop loudly, as unsupported paths do elsewhere.
+- **The code review's 5 findings,** all latent:
+  - 4 fixed with tests. Two of them were errors read as something else: the closure skipped a PE image whose tables didn't parse, and the delay IAT was read as names;
+  - 1 recorded as a known issue.
+- **2 branch reconciliations:** the coordinator committed WIP on the PR branch while an agent pushed there. Since then, the coordinator's WIP goes to a side branch through a temporary index, and HEAD doesn't move.
+- **Escalations:** none.
+
+**Changes from this retro:**
+- **Workflow scripts (a rule where the writer reads it):** the builder's fixed rules now say that a changed workflow step or CI script runs locally before the push:
+  - under the job's shell, with stub tools on a recorded input;
+  - with the three failure patterns named.
+
+  No static check catches these bugs: shellcheck and actionlint don't model designed exit codes, SIGPIPE or mixed streams.
+- **Contract drift:** the builder's fixed rules now say that code which must differ from its contract changes the doc first, in its own commit, and the report says so.
+- **Silent drops:** `.claude/rules/translator.md` now says that behaviour the translator doesn't model exits with `EXIT_UNSUPPORTED` before any side effect, and is never dropped.
+- **Coordinator WIP:** the temporary-index snapshot is in `docs/dev/commands.md`, and `CLAUDE.md`'s WIP line points to it.
+
+**Trials:**
+
+| Trial | Result | Verdict |
+|---|---|---|
+| 2. The retro as step 5 | M1: 3 red runs and 1 run with wrong data, all in the new `wine.yml`; 1 rework. The pre-push hook kept every PR head lint-clean. | due at M2's close |
+| 3. The hand-off | M2 is the first milestone to start fresh, from this hand-off. The baseline is this session, which held planning and M1: $91.93, 239.0M cache reads, 913k output (`main` line of 2026-11-13). | due at M2's close |
+| 4. The merge-danger line | no verdict was recorded at the M6 merge (PR #9); asked again at PR #10's merge | open |
+| 5. `/diverge` gates | no bug hunt in M1 | running |

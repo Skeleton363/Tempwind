@@ -249,7 +249,11 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
     - `run-baseline.mjs` rejects an `--env` without `=`.
   - **A comment:** the census classes `int imm8` by Code, `CD 03` included.
   - **Documented:** native Wine's 8-bit exit status (Known issues).
-- **After the fixes:** fmt, clippy, the new and affected tests, and `npm run test:node` (261 of 261) pass. Their push starts a new `wine` run, and CI runs on the PR.
+- **After the fixes:** fmt, clippy, the new and affected tests, and `npm run test:node` (261 of 261) pass.
+- **CI on the PR is green** at `8a39380`: `ci`, `bench`, `targets` and `wine`.
+  - The `wine` run published `wine-8a39380`, built with the stricter closure code. Its `closure.json` lists the same modules, paths, bases, sizes and edges as `wine-4c6ec0d`'s.
+  - So `wine.lock` stays at `wine-4c6ec0d`.
+- **The retro** is in `docs/dev/agent-runs.md`, "Retro: Phase 2 M1".
 
 ## What works
 
@@ -323,7 +327,9 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
 
 ## Next step: M2, "Wine's Unix side boots", in a new session
 
-Start from `docs/plan.md` ("Phase 2 milestones": the M2 row and the M2-M6 outline), this note and `ARCHITECTURE.md`. The starter message is in M1's hand-off.
+Start from `docs/plan.md` ("Phase 2 milestones": the M2 row and the M2-M6 outline), this note and `ARCHITECTURE.md`.
+
+Branch from `main` once the owner has merged M1's PR (skeleton363/tempwind#10). While it is still open, ask the owner before branching from its branch, `claude/gifted-bardeen-a0hot6`.
 
 1. **The research pass** for M2, logged in `docs/dev/research.md`. Its topics:
    - Emscripten 6.0.x for wasm64 with an imported shared memory and `GLOBAL_BASE`;
