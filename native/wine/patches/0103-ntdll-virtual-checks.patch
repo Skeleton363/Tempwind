@@ -1,0 +1,282 @@
+ntdll virtual memory on wasm64: write-watch, queries, KUSER and pointer
+validation (docs/design/wine-unix.md, sections 4 and 6).
+
+- PAGE_WATCH in the page-state table follows VPROT_WRITEWATCH: set_page_vprot,
+  set_page_vprot_bits and set_page_vprot_exec_write_protect tell the backend
+  (tw_page_watch), since translated code checks writes against the table.
+- NtQueryVirtualMemory reports what lies outside the guest regions (the NULL
+  region, the gap, the host region) as reserved, as Wine does on i386
+  outside its reserved areas; a free region ends where the guest regions do.
+- KUSER is one page: virtual_map_user_shared_data maps nothing, and
+  virtual_init_user_shared_data writes 0x7ffe0000 in place, with no USD
+  section.
+- A bad guest pointer doesn't fault, so the three __TRY sites
+  (virtual_check_buffer_for_read, virtual_check_buffer_for_write and
+  NtReadVirtualMemory) check the pages against the views instead.
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -101,6 +101,7 @@
+ int tw_mprotect( void *addr, size_t len, int prot );
+ int tw_madvise( void *addr, size_t len, int advice );
+ int tw_msync( void *addr, size_t len, int flags );
++void tw_page_watch( const void *addr, size_t size, int on );
+ #define mmap tw_mmap
+ #define munmap tw_munmap
+ #define mprotect tw_mprotect
+@@ -1226,6 +1227,9 @@
+ #else
+     memset( pages_vprot + idx, vprot, end - idx );
+ #endif
++#ifdef __wasm64__  /* PAGE_WATCH follows VPROT_WRITEWATCH (wine-unix.md, section 6) */
++    tw_page_watch( addr, size, vprot & VPROT_WRITEWATCH );
++#endif
+ }
+ 
+ 
+@@ -1248,6 +1252,9 @@
+ #else
+     for ( ; idx < end; idx++) pages_vprot[idx] = (pages_vprot[idx] & ~clear) | set;
+ #endif
++#ifdef __wasm64__  /* PAGE_WATCH follows VPROT_WRITEWATCH (wine-unix.md, section 6) */
++    if ((set | clear) & VPROT_WRITEWATCH) tw_page_watch( addr, size, set & VPROT_WRITEWATCH );
++#endif
+ }
+ 
+ 
+@@ -1268,6 +1275,9 @@
+         BYTE *ptr = pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask);
+         if (!is_vprot_exec_write( *ptr )) continue;
+         *ptr |= VPROT_WRITEWATCH;
++#ifdef __wasm64__  /* PAGE_WATCH follows VPROT_WRITEWATCH (wine-unix.md, section 6) */
++        tw_page_watch( (void *)(idx << page_shift), 1, 1 );
++#endif
+         ret = TRUE;
+     }
+ #endif
+@@ -4526,14 +4536,21 @@
+ }
+ 
+ 
++#ifndef __wasm64__  /* wasm64: no USD section (wine-unix.md, section 6) */
+ static const WCHAR shared_data_nameW[] = {'\\','K','e','r','n','e','l','O','b','j','e','c','t','s',
+                                           '\\','_','_','w','i','n','e','_','u','s','e','r','_','s','h','a','r','e','d','_','d','a','t','a',0};
++#endif
+ 
+ /***********************************************************************
+  *           virtual_map_user_shared_data
+  */
+ void virtual_map_user_shared_data(void)
+ {
++#ifdef __wasm64__
++    /* wine-unix.md, section 6: the guest and the in-process server share the
++     * one page at 0x7ffe0000, which virtual_alloc_first_teb committed */
++}
++#else
+     UNICODE_STRING name_str = RTL_CONSTANT_STRING( shared_data_nameW );
+     OBJECT_ATTRIBUTES attr = { sizeof(attr), 0, &name_str };
+     unsigned int status;
+@@ -4554,6 +4571,7 @@
+     if (needs_close) close( fd );
+     NtClose( section );
+ }
++#endif
+ 
+ 
+ /******************************************************************
+@@ -4563,10 +4581,14 @@
+  */
+ void virtual_init_user_shared_data(void)
+ {
+-    UNICODE_STRING name_str = RTL_CONSTANT_STRING( shared_data_nameW );
+-    OBJECT_ATTRIBUTES attr = { sizeof(attr), 0, &name_str };
+     SYSTEM_BASIC_INFORMATION info;
+     KUSER_SHARED_DATA *data;
++#ifdef __wasm64__
++    /* wine-unix.md, section 6: written in place, not through a second mapping */
++    data = user_shared_data;
++#else
++    UNICODE_STRING name_str = RTL_CONSTANT_STRING( shared_data_nameW );
++    OBJECT_ATTRIBUTES attr = { sizeof(attr), 0, &name_str };
+     unsigned int status;
+     HANDLE section;
+     int res, fd, needs_close;
+@@ -4584,6 +4606,7 @@
+     }
+     if (needs_close) close( fd );
+     NtClose( section );
++#endif
+ 
+     virtual_get_system_info( &info, FALSE );
+ 
+@@ -4604,7 +4627,9 @@
+     }
+ 
+     init_shared_data_cpuinfo( data );
++#ifndef __wasm64__
+     munmap( data, sizeof(*data) );
++#endif
+ }
+ 
+ 
+@@ -4936,6 +4961,54 @@
+ }
+ 
+ 
++#ifdef __wasm64__
++/***********************************************************************
++ *           check_guest_buffer
++ *
++ * wine-unix.md, section 6: a bad guest pointer doesn't fault, so the
++ * buffer checks look at the views. Every page must be committed and not a
++ * guard page, readable for a read, writable or write-copy for a write. A
++ * write records itself on write-watched pages, as the fault would. A buffer
++ * in the host region is the Unix side's own memory and passes.
++ */
++static BOOL check_guest_buffer( const void *ptr, SIZE_T size, BOOL write )
++{
++    const char *end = (const char *)ptr + size;
++    char *page;
++    BOOL ret = TRUE;
++
++    if (end < (const char *)ptr) return FALSE;
++    if ((ULONG_PTR)ptr >= 0x80000000 && (ULONG_PTR)end <= 0x100000000) return TRUE;
++
++    mutex_lock( &virtual_mutex );
++    for (page = ROUND_ADDR( ptr, page_mask ); page < end; page += page_size)
++    {
++        struct file_view *view = find_view( page, 0 );
++        BYTE vprot = get_page_vprot( page );
++
++        if (!view || !(vprot & VPROT_COMMITTED) || (vprot & VPROT_GUARD) ||
++            !(get_unix_prot( vprot & ~VPROT_WRITEWATCH ) & (write ? PROT_WRITE : PROT_READ)))
++        {
++            ret = FALSE;
++            break;
++        }
++    }
++    if (ret && write)
++    {
++        for (page = ROUND_ADDR( ptr, page_mask ); page < end; page += page_size)
++        {
++            struct file_view *view = find_view( page, 0 );
++
++            if ((view->protect & VPROT_WRITEWATCH) && (get_page_vprot( page ) & VPROT_WRITEWATCH))
++                set_page_vprot_bits( page, page_size, 0, VPROT_WRITEWATCH );
++        }
++    }
++    mutex_unlock( &virtual_mutex );
++    return ret;
++}
++#endif
++
++
+ /***********************************************************************
+  *           virtual_check_buffer_for_read
+  *
+@@ -4946,6 +5019,9 @@
+     if (!size) return TRUE;
+     if (!ptr) return FALSE;
+ 
++#ifdef __wasm64__
++    return check_guest_buffer( ptr, size, FALSE );
++#else
+     __TRY
+     {
+         volatile const char *p = ptr;
+@@ -4967,6 +5043,7 @@
+     }
+     __ENDTRY
+     return TRUE;
++#endif
+ }
+ 
+ 
+@@ -4980,6 +5057,9 @@
+     if (!size) return TRUE;
+     if (!ptr) return FALSE;
+ 
++#ifdef __wasm64__
++    return check_guest_buffer( ptr, size, TRUE );
++#else
+     __TRY
+     {
+         volatile char *p = ptr;
+@@ -5000,6 +5080,7 @@
+     }
+     __ENDTRY
+     return TRUE;
++#endif
+ }
+ 
+ 
+@@ -5712,6 +5793,41 @@
+             return view;
+         }
+     }
++#ifdef __wasm64__
++    {
++        /* wine-unix.md, section 4: what lies outside the guest regions (the
++         * NULL region, the gap, the host region) reads as reserved; a free
++         * region ends where the guest regions do. */
++        const struct preload_info *area, *a;
++        char *prev_end = NULL;
++
++        for (area = tw_reserve_list; area->size; area++)
++        {
++            char *area_start = area->addr, *area_end = area_start + area->size;
++
++            if (base >= area_end)
++            {
++                prev_end = area_end;
++                continue;
++            }
++            if (base >= area_start)
++            {
++                /* adjacent areas form one span */
++                for (a = area; a > tw_reserve_list && (char *)a[-1].addr + a[-1].size == area_start; a--)
++                    area_start = a[-1].addr;
++                for (a = area; a[1].size && a[1].addr == area_end; a++) area_end += a[1].size;
++                if (*region_start < area_start) *region_start = area_start;
++                if (*region_end > area_end) *region_end = area_end;
++                return NULL;
++            }
++            break;
++        }
++        /* base lies in a gap: reserved from the previous area to the next */
++        if (prev_end && *region_start < prev_end) *region_start = prev_end;
++        if (area->size && *region_end > (char *)area->addr) *region_end = area->addr;
++        *fake_reserved = TRUE;
++    }
++#endif
+ #ifdef __i386__
+     {
+         struct reserved_area *area;
+@@ -6832,6 +6948,18 @@
+     }
+     else if (process == GetCurrentProcess())
+     {
++#ifdef __wasm64__  /* the source is checked against the views (wine-unix.md, section 6) */
++        if (check_guest_buffer( addr, size, FALSE ))
++        {
++            memmove( buffer, addr, size );
++            status = STATUS_SUCCESS;
++        }
++        else
++        {
++            status = STATUS_PARTIAL_COPY;
++            size = 0;
++        }
++#else
+         __TRY
+         {
+             memmove( buffer, addr, size );
+@@ -6843,6 +6971,7 @@
+             size = 0;
+         }
+         __ENDTRY
++#endif
+     }
+     else
+     {
