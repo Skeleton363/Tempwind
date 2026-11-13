@@ -104,7 +104,8 @@ mk="$out/obj/build.mk"
   echo "T := $treerel"
   echo "O := $obj"
   echo "W := $wn"
-  echo "CFLAGS := -m64 -O2 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -DWINE_UNIX_LIB -include \$(W)/config.h -MMD -MP"
+  echo "MK := $obj/build.mk"
+  echo "CFLAGS := -m64 -O2 -sSHARED_MEMORY -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -DWINE_UNIX_LIB -include \$(W)/config.h -MMD -MP"
   # The defines Wine's makefiles give each directory (makedep: -D__WINESRC__,
   # then EXTRADEFS; loader.c and unicode.c get the install paths, which are
   # wine-unix.md section 8's constant paths).
@@ -115,35 +116,37 @@ mk="$out/obj/build.mk"
   echo "LDFLAGS := -m64 -O2 -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH -sINITIAL_MEMORY=4GB \\"
   echo "  -sMAXIMUM_MEMORY=16GB -sGLOBAL_BASE=2GB -fwasm-exceptions -sSUPPORT_LONGJMP=wasm \\"
   echo "  -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=node,worker --no-entry \\"
-  echo "  -sSTACK_SIZE=1MB -sSTACK_OVERFLOW_CHECK=2 -Wl,--wrap=sbrk -Wl,--fatal-warnings \\"
+  echo "  -sSTACK_SIZE=1MB -sSTACK_OVERFLOW_CHECK=2 -Wl,--wrap=sbrk -Wl,--fatal-warnings -Wl,--no-gc-sections -Wl,--error-limit=0 \\"
   echo "  -sEXPORTED_RUNTIME_METHODS=FS,ENV --js-library \$(W)/src/library.js"
   objs=()
   for f in $ntdll_srcs; do
     o="\$(O)/ntdll/${f%.c}.o"; objs+=("$o")
     extra=""; [ "$f" = loader.c ] && extra=" \$(PATHS)"
-    printf '%s: $(T)/dlls/ntdll/unix/%s\n\temcc $(CFLAGS) $(NTDLL)%s -c -o $@ $<\n' "$o" "$f" "$extra"
+    printf '%s: $(T)/dlls/ntdll/unix/%s $(MK)\n\temcc $(CFLAGS) $(NTDLL)%s -c -o $@ $<\n' "$o" "$f" "$extra"
   done
   for f in $server_srcs; do
     o="\$(O)/server/${f%.c}.o"; objs+=("$o")
     extra=""; [ "$f" = unicode.c ] && extra=" \$(PATHS)"
-    printf '%s: $(T)/server/%s\n\temcc $(CFLAGS) $(SERVER)%s -c -o $@ $<\n' "$o" "$f" "$extra"
+    printf '%s: $(T)/server/%s $(MK)\n\temcc $(CFLAGS) $(SERVER)%s -c -o $@ $<\n' "$o" "$f" "$extra"
   done
   for f in $own_srcs; do
     o="\$(O)/own/${f%.c}.o"; objs+=("$o")
-    printf '%s: $(W)/src/%s\n\temcc $(CFLAGS) $(OWN) -c -o $@ $<\n' "$o" "$f"
+    printf '%s: $(W)/src/%s $(MK)\n\temcc $(CFLAGS) $(OWN) -c -o $@ $<\n' "$o" "$f"
   done
   echo "OBJS := ${objs[*]}"
   echo "SERVER_OBJS := \$(filter \$(O)/server/%,\$(OBJS))"
   echo "all: $rel/wine-unix.mjs$(for t in $tests; do printf ' %s/test-%s.mjs' "$rel" "$t"; done)"
-  printf '%s/wine-unix.mjs: $(OBJS) $(W)/src/library.js\n\temcc $(LDFLAGS) -sEXPORTED_FUNCTIONS=_boot,%s -o $@ $(OBJS)\n' "$rel" "$exports_common"
+  printf '%s/wine-unix.mjs: $(OBJS) $(W)/src/library.js $(MK)\n\temcc $(LDFLAGS) -sEXPORTED_FUNCTIONS=_boot,%s -o $@ $(OBJS)\n' "$rel" "$exports_common"
   for t in $tests; do
-    printf '$(O)/tests/%s.o: $(W)/tests/%s.c\n\temcc $(CFLAGS) $(OWN) -I$(W)/tests -c -o $@ $<\n' "$t" "$t"
-    printf '%s/test-%s.mjs: $(OBJS) $(O)/tests/%s.o $(W)/src/library.js\n\temcc $(LDFLAGS) -sEXPORTED_FUNCTIONS=_tw_test_main,%s -o $@ $(OBJS) $(O)/tests/%s.o\n' \
+    printf '$(O)/tests/%s.o: $(W)/tests/%s.c $(MK)\n\temcc $(CFLAGS) $(OWN) -I$(W)/tests -c -o $@ $<\n' "$t" "$t"
+    printf '%s/test-%s.mjs: $(OBJS) $(O)/tests/%s.o $(W)/src/library.js $(MK)\n\temcc $(LDFLAGS) -sEXPORTED_FUNCTIONS=_tw_test_main,%s -o $@ $(OBJS) $(O)/tests/%s.o\n' \
       "$rel" "$t" "$t" "$exports_common" "$t"
   done
   echo "-include \$(OBJS:.o=.d) \$(wildcard \$(O)/tests/*.d)"
   echo ".DEFAULT_GOAL := all"
-} > "$mk"
+} > "$mk.new"
+# Rewritten only when it changes: every object depends on it (the flags).
+cmp -s "$mk.new" "$mk" && rm "$mk.new" || mv "$mk.new" "$mk"
 
 nsrc=$(( $(echo $ntdll_srcs | wc -w) + $(echo $server_srcs | wc -w) + $(echo $own_srcs | wc -w) ))
 log "compiling $nsrc sources and linking with $jobs jobs (log: $rel/obj/make.log)"
