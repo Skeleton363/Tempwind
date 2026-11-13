@@ -138,26 +138,28 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
 ## 7. The in-process server
 The server is linked into the module and runs on the calling thread. `02xx` and `src/inproc.c`.
 - **Wine's pipes and fd bookkeeping stay**, over Emscripten's pipes.
-  - After `send_request` (`dlls/ntdll/unix/server.c` L183) writes a request, the client calls the server's `read_request` (`server/request.c` L328) for its own thread, synchronously. The handler runs, and `send_reply` writes the reply to the pipe.
+  - After `send_request` (`dlls/ntdll/unix/server.c` L183) writes a request, the client calls the server's `read_request` (`server/request.c` L328) for its own thread, synchronously: the server thread whose request pipe holds data. One request is pending at a time, since the client reads its reply before it sends another. The handler runs, and `send_reply` writes the reply to the pipe.
   - The client reads the reply as Wine does (`wait_reply`, L276).
 - **Waits:**
   - a `wait_fd` read that gets `EAGAIN` blocks in `green_block` until the thread is woken;
   - `send_thread_wakeup` (`server/thread.c` L1196) also wakes the green thread.
 - **fds:**
-  - `thread_get_inflight_fd` `dup()`s the client's fd, since each side closes its own copy;
+  - `wine_server_send_fd` sends nothing, since the client and the server share one fd table. `thread_get_inflight_fd` `dup()`s the client's fd by its number, since each side closes its own copy;
   - `send_client_fd` puts a `dup` of the fd on a queue, and `wine_server_receive_fd` takes it from there;
-  - `create_process` gets one end of a pipe for `msg_fd`.
+  - `create_process` gets the read end of a pipe for `msg_fd`; the client keeps the write end as `fd_socket`. Nothing is written to it.
 - **Start:** `server_init_process` starts the server in place of `server_connect`, after KUSER is committed. It runs what the server's `main` would:
+  - `create_server_dir`, which `open_master_socket` runs: the config directory's fd and the server directory, under MEMFS's `/tmp`;
   - `set_current_time`;
   - `init_memory`, with the page size 0x1000 and the ranges of section 4;
   - `init_directories(load_intl_file())`, with `l_intl.nls` from the constant path of section 8;
   - `init_threading` and `init_registry`.
 
-  Then it creates the process and its first thread as `master_socket_poll_event` does (`server/request.c` L543), and the client receives the request fd from the queue.
+  Then it sets `server_start_time` as `main_loop` does, creates the process and its first thread as `master_socket_poll_event` does (`server/request.c` L543), and the client receives the request fd from the queue.
 - **KUSER:** the server's `user_shared_data` pointer is 0x7ffe0000 (`server/mapping.c` L1502).
-- **Not in-process:** the master socket, the lock file, daemonizing, signal handling and `main_loop`. An fd event that only `main_loop` would deliver stops loudly.
+- **Not in-process:** the master socket, the lock file, daemonizing, signal handling and `main_loop`. An fd event that only `main_loop` would deliver stops loudly: a partial reply write (`POLLOUT`), a read of `msg_fd` (`receive_fd`), and `main_loop` itself.
+- **Signals to threads** (`send_thread_signal`, `server/ptrace.c`): SIGQUIT is the exit path below. Any other signal (SIGUSR1, which suspends a running thread or brings it a system APC) stops loudly until M4.
 - **Time:** `set_current_time` runs at every request and at every green switch.
-- **Kills:** the SIGQUIT kill of a thread (`server/thread.c` ~L1627) becomes an exit path that ends the green thread (M2: the process).
+- **Kills:** the SIGQUIT kill of a thread (`server/thread.c` ~L1627) becomes an exit path that ends the green thread (M2: the process, with `exit(0)`, as Wine's `quit_handler` and `abort_thread(0)` end the last thread).
 - **Registry saves** go to MEMFS as in Wine (on its timer and at exit). MEMFS is not persisted in M2.
 
 ## 8. Startup
@@ -194,6 +196,10 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - `green_block` is the only switch point. Around it, C saves and restores the spike's save set (`abi.md` v5, "Green threads"); `depth` joins the set in M3, once translated code runs.
   - It provides sleeping until a deadline, yielding, and a wake queue.
   - Wine's blocking libc calls are routed there: `select` and `usleep` sleeps, `sched_yield`, `poll` on the server's pipes and the waits of section 7. A blocking call that green.c doesn't handle stops loudly.
+    - green.c defines `select`, `poll`, `usleep`, `nanosleep` and `sched_yield` in place of libc's.
+    - `select` with no fds, `usleep` and `nanosleep` sleep until their deadline; `poll` with no fds too. `poll` with a zero timeout probes (`__syscall_poll_nonblocking`). A `poll` or `select` that would block on fds stops loudly.
+    - `sched_yield` lets the runnable green threads run first; with none, it returns at once.
+    - The waits of section 7 wait on one wake queue, the server's wakeup pipes'. `send_thread_wakeup` wakes all of it; a woken thread reads its own pipe and waits again if it is empty.
 - **`green_pthread.c`**, the single-thread part of the green pthread layer. The `-ww` libc that `-sSHARED_MEMORY` links without `-pthread` has no pthread functions at all (`research.md`, 2026-11-13), so this is needed from the first link:
   - mutexes (recursive ones included), condition variables, `pthread_once`, keys, `pthread_self`, `pthread_sigmask` and the attribute functions;
   - keys are per green thread. `NtCurrentTeb()` (`thread.c`) reads `teb_key`, so it follows the running green thread;
@@ -201,8 +207,8 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - a condition wait goes through `green.c` (a wait that nothing can end is the scheduler's deadlock);
   - `pthread_create` stops loudly until M4.
 - **The JS scheduler** (`runtime/src/wine/`): when no green thread is runnable, it calls `tw_next_timeout()`, then `setTimeout` for that long, then `tw_run_timeouts()`, and resumes the woken threads.
-  - `tw_next_timeout` counts thread waits and timers only. It ignores the server's KUSER tick (16 ms, `server/fd.c` L898) and its 30 s registry save.
-  - Nothing runnable and no timeout is a deadlock: the scheduler stops loudly with each thread's wait.
+  - `tw_next_timeout` counts thread waits and timers only. It ignores the server's KUSER tick (16 ms, `server/fd.c` L898) and its 30 s registry save (`save_timeout_user`, `server/registry.c`).
+  - Nothing runnable and no timeout is a deadlock: the scheduler stops loudly with each thread's wait. When `tw_next_timeout` returns -1 it prints each waiting green thread's wait on stderr (`tempwind: green: thread N waits on WHAT with no deadline`); the scheduler then makes that thread's `green_block` throw an `Error` whose message starts with `tempwind: green: deadlock`, so its `promising` entry rejects.
 
 ## 10. Tests
 - **C harnesses:** `native/wine/tests/NAME.c` defines `int tw_test_main(void)`, entered through `promising` by the JS host. It reports through `native/wine/tests/harness.h`: one line per check on stdout, `ok NAME` or `not ok NAME: detail`, and a last line `done PASSED/TOTAL`.

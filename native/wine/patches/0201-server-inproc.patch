@@ -1,0 +1,466 @@
+The in-process server (docs/design/wine-unix.md, section 7; section 9 for
+its timeouts).
+
+The server runs in the client's thread, inside the one wasm64 module.
+Wine's pipes and fd bookkeeping stay; the socket, the lock, the daemon,
+the signals and main_loop don't run.
+- Transport (ntdll unix/server.c, server/thread.c): after send_request,
+  the client calls inproc_server_request, which reads the request of the
+  one server thread whose request pipe holds data (read_request); the
+  client then reads the reply as Wine does. An empty reply pipe is a
+  server bug.
+- Waits (unix/server.c, server/thread.c): a wait_fd read that gets
+  EAGAIN waits in green.c (inproc_wait_wakeup); send_thread_wakeup wakes
+  the waiters after its write.
+- fds (unix/server.c, server/request.c, server/thread.c):
+  wine_server_send_fd sends nothing, since both sides share the fd table;
+  thread_get_inflight_fd dup()s the client's fd by number;
+  send_client_fd queues a dup that wine_server_receive_fd takes.
+- Start (unix/server.c, server/request.c): server_init_process calls
+  inproc_server_start in place of server_connect; inproc_server_init runs
+  create_server_dir, set_current_time, init_memory, init_directories,
+  init_threading and init_registry, sets server_start_time as main_loop
+  does, and creates the process (msg_fd: a pipe's read end) and its first
+  thread as master_socket_poll_event does.
+- Memory (server/mapping.c): init_memory uses 4 KiB pages and ranges64
+  [0x1_0000_0000, 0x1_7000_0000) (section 4); the server's KUSER pointer
+  is 0x7ffe0000.
+- Timeouts (server/fd.c, server/registry.c): inproc_server_next_timeout
+  and inproc_server_run_timeouts for the scheduler's entries; the next
+  timeout skips the registry's periodic save.
+- Loud stops: main_loop, receive_fd (only main_loop reads msg_fd), a
+  partial reply write (only main_loop would deliver POLLOUT), and
+  send_thread_signal of anything but SIGQUIT, which exits (M2: one
+  thread, as quit_handler's abort_thread(0) of the last thread).
+- The declarations shared by the server and Tempwind's src/ are at the
+  end of server/file.h.
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -106,6 +106,16 @@
+ static pid_t server_pid;
+ pthread_mutex_t fd_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
++#ifdef __EMSCRIPTEN__
++/* Tempwind: the server inside the process (docs/design/wine-unix.md,
++ * section 7). native/wine/src/inproc.c: */
++extern int inproc_server_start( void );
++extern int inproc_client_fd_pop( obj_handle_t *handle );
++extern void inproc_wait_wakeup( void );
++/* the server's (server/thread.c): */
++extern void inproc_server_request( void );
++#endif
++
+ /* atomically exchange a 64-bit value */
+ static inline LONG64 interlocked_xchg64( LONG64 *dest, LONG64 val )
+ {
+@@ -261,6 +271,11 @@
+         if (!ret) break;
+         if (errno == EINTR) continue;
+         if (errno == EPIPE) break;
++#ifdef __EMSCRIPTEN__
++        /* Tempwind: the server handled the request synchronously, so its reply
++         * is in the pipe; an empty pipe is a server bug (section 7). */
++        if (errno == EAGAIN) server_protocol_error( "in-process server: no reply in the reply pipe\n" );
++#endif
+         server_protocol_perror("read");
+     }
+     /* the server closed the connection; time to die... */
+@@ -291,6 +306,10 @@
+     unsigned int ret;
+ 
+     if ((ret = send_request( req ))) return ret;
++#ifdef __EMSCRIPTEN__
++    /* Tempwind: the in-process server reads and handles it now (section 7). */
++    inproc_server_request();
++#endif
+     return wait_reply( req );
+ }
+ 
+@@ -375,6 +394,15 @@
+         }
+         if (ret >= 0) server_protocol_error( "partial wakeup read %d\n", ret );
+         if (errno == EINTR) continue;
++#ifdef __EMSCRIPTEN__
++        /* Tempwind: Emscripten's pipes never block a read; the green thread
++         * waits until send_thread_wakeup wakes it (section 7). */
++        if (errno == EAGAIN)
++        {
++            inproc_wait_wakeup();
++            continue;
++        }
++#endif
+         server_protocol_perror("wakeup read");
+     }
+ }
+@@ -948,6 +976,11 @@
+     struct cmsghdr *cmsg;
+     int ret;
+ 
++#ifdef __EMSCRIPTEN__
++    /* Tempwind: the in-process server shares the fd table and dups the fd by
++     * number when a request names it (section 7), so nothing is sent. */
++    return;
++#endif
+     msghdr.msg_name    = NULL;
+     msghdr.msg_namelen = 0;
+     msghdr.msg_iov     = &vec;
+@@ -992,6 +1025,14 @@
+     char cmsg_buffer[256];
+     int ret, fd = -1;
+ 
++#ifdef __EMSCRIPTEN__
++    /* Tempwind: the in-process server queued a dup of the fd (section 7). It
++     * has handled the request already, so an empty queue is a server bug. */
++    if ((fd = inproc_client_fd_pop( handle )) == -1)
++        server_protocol_error( "in-process server: no fd in the queue\n" );
++    fcntl( fd, F_SETFD, FD_CLOEXEC );
++    return fd;
++#endif
+     msghdr.msg_name    = NULL;
+     msghdr.msg_namelen = 0;
+     msghdr.msg_iov     = &vec;
+@@ -1603,6 +1644,16 @@
+     DWORD pid, tid;
+ 
+     server_pid = -1;
++#ifdef __EMSCRIPTEN__
++    /* Tempwind: the server starts in this thread (section 7); fd_socket is the
++     * write end of the pipe that is its msg_fd, and nothing is written to it. */
++    (void)env_socket;
++    if (is_win64 && arch && !strcmp( arch, "win32" ))
++        fatal_error( "WINEARCH is set to 'win32' but this is not supported in wow64 mode.\n" );
++    if (arch && strcmp( arch, "win32" ) && strcmp( arch, "win64" ) && strcmp( arch, "wow64" ))
++        fatal_error( "WINEARCH set to invalid value '%s', it must be win32, win64, or wow64.\n", arch );
++    fd_socket = inproc_server_start();
++#else
+     if (env_socket)
+     {
+         fd_socket = atoi( env_socket );
+@@ -1621,6 +1672,7 @@
+ 
+         fd_socket = server_connect();
+     }
++#endif
+ 
+     /* setup the signal mask */
+     sigemptyset( &server_block_set );
+diff --git a/server/fd.c b/server/fd.c
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -969,6 +969,50 @@
+     return ret;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/* Tempwind: the scheduler's entries (wine-unix.md, section 9; abi.md,
++ * "Host entries of the Unix side"). Nothing polls the server's fds in the
++ * process; its timeouts run from the JS scheduler. */
++
++/* Ticks until the earliest timeout, 0 if one is due, -1 if none. It ignores
++ * the KUSER tick (set_current_time runs at every request and green switch)
++ * and the registry's periodic save. */
++timeout_t inproc_server_next_timeout(void)
++{
++    timeout_t ret = -1, diff;
++    struct timeout_user *timeout;
++
++    LIST_FOR_EACH_ENTRY( timeout, &abs_timeout_list, struct timeout_user, entry )
++    {
++        if (inproc_is_registry_save( timeout )) continue;
++        diff = timeout->when - current_time;
++        ret = diff < 0 ? 0 : diff;
++        break;
++    }
++    LIST_FOR_EACH_ENTRY( timeout, &rel_timeout_list, struct timeout_user, entry )
++    {
++        if (inproc_is_registry_save( timeout )) continue;
++        diff = -timeout->when - monotonic_time;
++        if (diff < 0) diff = 0;
++        if (ret == -1 || diff < ret) ret = diff;
++        break;
++    }
++    return ret;
++}
++
++/* Runs the expired timeouts, as main_loop does before each poll. */
++void inproc_server_run_timeouts(void)
++{
++    set_current_time();
++    get_next_timeout( NULL );
++}
++
++void main_loop(void)
++{
++    tw_unsupported( "the wineserver's main_loop (in-process, the server has no poll loop)" );
++}
++#else
++
+ /* server main poll() loop */
+ void main_loop(void)
+ {
+@@ -1002,6 +1046,7 @@
+         }
+     }
+ }
++#endif /* __EMSCRIPTEN__ */
+ 
+ 
+ /****************************************************************/
+diff --git a/server/file.h b/server/file.h
+--- a/server/file.h
++++ b/server/file.h
+@@ -304,4 +304,21 @@
+ #define FILE_MAPPING_WRITE  0x40000000  /* set for writable shared mappings */
+ #define FILE_MAPPING_ACCESS 0x20000000  /* set for all mappings */
+ 
++#ifdef __EMSCRIPTEN__
++/* Tempwind: the server inside the process (native/wine/src/inproc.c;
++ * docs/design/wine-unix.md, section 7). */
++
++/* defined here, in the server */
++extern void inproc_server_init( int msg_fd );
++extern void inproc_server_request( void );
++extern timeout_t inproc_server_next_timeout( void );
++extern void inproc_server_run_timeouts( void );
++extern int inproc_is_registry_save( struct timeout_user *user );
++
++/* defined by Tempwind's src/ */
++extern void inproc_client_fd_push( int fd, obj_handle_t handle );
++extern void inproc_wake_waiters( void );
++extern void tw_unsupported( const char *what ) __attribute__((noreturn));
++#endif
++
+ #endif  /* __WINE_SERVER_FILE_H */
+diff --git a/server/mapping.c b/server/mapping.c
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -270,9 +270,17 @@
+ 
+ void init_memory(void)
+ {
++#ifdef __EMSCRIPTEN__
++    /* Tempwind (wine-unix.md, sections 4 and 7): the guest's 4 KiB pages, not
++     * wasm's 64 KiB ones; ranges64 is [0x1_0000_0000, 0x1_7000_0000). */
++    host_page_mask = 0xfff;
++    free_map_addr( 0x60000000, 0x1c000000 );
++    free_map_addr( 0x100000000, 0x70000000 );
++#else
+     host_page_mask = sysconf( _SC_PAGESIZE ) - 1;
+     free_map_addr( 0x60000000, 0x1c000000 );
+     free_map_addr( 0x600000000000, 0x100000000000 );
++#endif
+ }
+ 
+ static void ranges_dump( struct object *obj, int verbose )
+@@ -1499,8 +1507,15 @@
+ 
+     if (!(mapping = create_mapping( root, name, attr, sizeof(KUSER_SHARED_DATA),
+                                     SEC_COMMIT, 0, FILE_READ_DATA | FILE_WRITE_DATA, sd ))) return NULL;
++#ifdef __EMSCRIPTEN__
++    /* Tempwind (wine-unix.md, section 7): one KUSER page, the guest's, which
++     * the server shares in the same memory. */
++    (void)ptr;
++    user_shared_data = (void *)0x7ffe0000;
++#else
+     ptr = mmap( NULL, mapping->size, PROT_WRITE, MAP_SHARED, get_unix_fd( mapping->fd ), 0 );
+     if (ptr != MAP_FAILED) user_shared_data = ptr;
++#endif
+     return &mapping->obj;
+ }
+ 
+diff --git a/server/ptrace.c b/server/ptrace.c
+--- a/server/ptrace.c
++++ b/server/ptrace.c
+@@ -255,6 +255,18 @@
+ {
+     int ret = -1;
+ 
++#ifdef __EMSCRIPTEN__
++    /* Tempwind (wine-unix.md, section 7): no Unix signals in-process. SIGQUIT
++     * ends the thread, as the client's quit_handler does with abort_thread(0);
++     * M2 has one thread, so the process exits. Any other signal stops. */
++    if (sig == SIGQUIT)
++    {
++        if (debug_level) fprintf( stderr, "%04x: *killed* by SIGQUIT: the process exits\n", thread->id );
++        exit( 0 );
++    }
++    tw_unsupported( "send_thread_signal of a signal other than SIGQUIT (in-process server, M4)" );
++#endif
++
+     if (thread->unix_tid != -1)
+     {
+         ret = tkill( thread->unix_pid, thread->unix_tid, sig );
+diff --git a/server/registry.c b/server/registry.c
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -2135,6 +2135,14 @@
+     set_periodic_save_timer();
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/* Tempwind: the scheduler's next timeout ignores the save timer (wine-unix.md, section 9). */
++int inproc_is_registry_save( struct timeout_user *user )
++{
++    return user == save_timeout_user;
++}
++#endif
++
+ /* start the periodic save timer */
+ static void set_periodic_save_timer(void)
+ {
+diff --git a/server/request.c b/server/request.c
+--- a/server/request.c
++++ b/server/request.c
+@@ -61,6 +61,9 @@
+ #include "security.h"
+ #include "handle.h"
+ #include "request_handlers.h"
++#ifdef __EMSCRIPTEN__
++#include "unicode.h"
++#endif
+ 
+ /* Some versions of glibc don't define this */
+ #ifndef SCM_RIGHTS
+@@ -269,6 +272,10 @@
+ 
+         if ((current->reply_towrite = current->reply_size - (ret - sizeof(*reply))))
+         {
++#ifdef __EMSCRIPTEN__
++            /* Tempwind: only main_loop would deliver the POLLOUT (wine-unix.md, section 7). */
++            tw_unsupported( "a partial reply write (in-process, no main_loop to finish it)" );
++#endif
+             /* couldn't write it all, wait for POLLOUT */
+             set_fd_events( current->reply_fd, POLLOUT );
+             set_fd_events( current->request_fd, 0 );
+@@ -382,6 +389,11 @@
+     char cmsg_buffer[256];
+     int fd = -1, ret;
+ 
++#ifdef __EMSCRIPTEN__
++    /* Tempwind: the client sends no fds (wine-unix.md, section 7); only
++     * main_loop would read msg_fd. */
++    tw_unsupported( "receive_fd (in-process, nothing is sent on msg_fd)" );
++#endif
+     msghdr.msg_name    = NULL;
+     msghdr.msg_namelen = 0;
+     msghdr.msg_iov     = &vec;
+@@ -462,6 +474,22 @@
+     struct cmsghdr *cmsg;
+     int ret;
+ 
++#ifdef __EMSCRIPTEN__
++    /* Tempwind (wine-unix.md, section 7): the client takes a dup of the fd
++     * from a queue in wine_server_receive_fd. M2 has one process. */
++    if (debug_level)
++        fprintf( stderr, "%04x: *fd* %04x -> %d\n", current ? current->id : process->id, handle, fd );
++    if ((ret = dup( fd )) == -1)
++    {
++        fprintf( stderr, "Protocol error: process %04x: ", process->id );
++        perror( "dup" );
++        kill_process( process, 1 );
++        return -1;
++    }
++    inproc_client_fd_push( ret, handle );
++    return 0;
++#endif
++
+     msghdr.msg_name    = NULL;
+     msghdr.msg_namelen = 0;
+     msghdr.msg_iov     = &vec;
+@@ -839,6 +867,32 @@
+ }
+ 
+ /* open the master server socket and start waiting for new clients */
++#ifdef __EMSCRIPTEN__
++/* Tempwind (wine-unix.md, section 7): what main and open_master_socket would
++ * run, without the socket, the lock, the daemon and the signals; then the
++ * first process and thread, as master_socket_poll_event creates them.
++ * msg_fd is the read end of a pipe that nothing writes to. */
++void inproc_server_init( int msg_fd )
++{
++    struct process *process;
++
++    server_dir = create_server_dir( 1 );
++    set_current_time();
++    init_memory();
++    init_directories( load_intl_file() );
++    init_threading();
++    init_registry();
++    set_current_time();
++    server_start_time = current_time;  /* as main_loop does */
++
++    if (!(process = create_process( msg_fd, NULL, 0, NULL, NULL, NULL, 0, NULL )))
++        fatal_error( "in-process server: create_process failed\n" );
++    if (!create_thread( -1, process, NULL ))
++        fatal_error( "in-process server: create_thread failed\n" );
++    release_object( process );
++}
++#endif
++
+ void open_master_socket(void)
+ {
+     int fd, pid, status, sync_pipe[2];
+diff --git a/server/thread.c b/server/thread.c
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -1214,7 +1214,14 @@
+     reply.cookie   = cookie;
+     reply.signaled = signaled;
+     if ((ret = write( get_unix_fd( thread->wait_fd ), &reply, sizeof(reply) )) == sizeof(reply))
++    {
++#ifdef __EMSCRIPTEN__
++        /* Tempwind: wake the green threads that wait on their wakeup pipes
++         * (wine-unix.md, section 7). */
++        inproc_wake_waiters();
++#endif
+         return 0;
++    }
+     if (ret >= 0)
+         fatal_protocol_error( thread, "partial wakeup write %d\n", ret );
+     else if (errno == EPIPE)
+@@ -1589,6 +1596,15 @@
+ 
+     if (client == -1) return -1;
+ 
++#ifdef __EMSCRIPTEN__
++    /* Tempwind (wine-unix.md, section 7): the client and the server share one
++     * fd table and the client sends nothing, so the server takes its own copy
++     * of the client's fd by number; each side closes its own. */
++    (void)i;
++    (void)ret;
++    return dup( client );
++#endif
++
+     do
+     {
+         for (i = 0; i < MAX_INFLIGHT_FDS; i++)
+@@ -1604,6 +1620,27 @@
+     return -1;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/* Tempwind (wine-unix.md, section 7): after the client wrote a request, read
++ * and handle it. One request is pending at a time: the client reads its
++ * reply before it sends another, so it is in the one request pipe that holds
++ * data. */
++void inproc_server_request( void )
++{
++    struct thread *thread;
++
++    set_current_time();
++    LIST_FOR_EACH_ENTRY( thread, &thread_list, struct thread, entry )
++    {
++        if (!thread->request_fd || thread->state == TERMINATED) continue;
++        if (!check_fd_events( thread->request_fd, POLLIN )) continue;
++        read_request( thread );
++        return;
++    }
++    tw_unsupported( "a request in no server thread's request pipe (in-process server)" );
++}
++#endif
++
+ /* kill a thread on the spot */
+ void kill_thread( struct thread *thread, int violent_death )
+ {

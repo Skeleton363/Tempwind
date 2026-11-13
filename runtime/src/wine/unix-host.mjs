@@ -13,10 +13,15 @@
 // - sets ENV in preRun: wine-unix.md section 8's defaults, then the caller's;
 // - makes fds 0-2 non-tty character devices that hand bytes to callbacks;
 // - exposes MEMFS (`FS`) and the glue's Module;
-// - enters a raw export through WebAssembly.promising (`call`).
+// - enters a raw export through WebAssembly.promising (`call`);
+// - schedules the green threads (wine-unix.md, section 9): it resumes the
+//   threads C woke; when none is runnable it waits tw_next_timeout()
+//   milliseconds, runs tw_run_timeouts() and looks again; with nothing
+//   runnable and no timeout it stops the waiting threads with a deadlock
+//   error.
 //
-// Hooks for later packages: the scheduler (WP3) passes `greenBlock` and
-// `onGreenWake`; the boot set (WP4) writes into `host.FS` before `call('boot')`.
+// Hooks for later packages: the boot set (WP4) writes into `host.FS` before
+// `call('boot')`. A test may replace the scheduler with `greenBlock`.
 // Host-neutral: the caller passes the glue's factory and the compiled module.
 
 import { createMemory64 } from '../memory.mjs';
@@ -48,8 +53,8 @@ const STDIO_MAJOR = 200;
  * @param {(bytes: Uint8Array) => void} [opts.stdout]  bytes written to fd 1
  * @param {(bytes: Uint8Array) => void} [opts.stderr]  bytes written to fd 2 (and the glue's own messages)
  * @param {(max: number) => Uint8Array|null} [opts.stdin]  bytes for fd 0; null = end of file
- * @param {(thread: number) => Promise<bigint>|bigint} [opts.greenBlock]  green_block (the scheduler, WP3)
- * @param {(thread: number) => void} [opts.onGreenWake]  green_wake
+ * @param {(thread: number) => Promise<bigint>|bigint} [opts.greenBlock]  green_block in place of the scheduler (tests)
+ * @param {(thread: number) => void} [opts.onGreenWake]  green_wake with opts.greenBlock
  * @param {(state: bigint) => number} [opts.run]  tw_run: a translated module's raw `run` (M3)
  * @param {() => void} [opts.onMemoryGrown]  after the module grew the memory
  * @param {WebAssembly.Memory} [opts.memory]  the process's memory, if it exists already
@@ -65,14 +70,17 @@ export async function createUnixHost(opts) {
   const stdin = opts.stdin ?? (() => null);
   const encoder = new TextEncoder();
 
-  const greenBlock = opts.greenBlock ?? ((thread) => {
-    throw new Error(`green_block(${thread}): no scheduler in this host (WP3)`);
-  });
+  let raw = null;
+  const scheduler = opts.greenBlock ? null : createScheduler(() => raw, stderr, encoder);
+  const greenBlock = opts.greenBlock ?? scheduler.block;
+  const greenWake = scheduler ? scheduler.wake : (thread) => {
+    if (!opts.onGreenWake) throw new Error(`green_wake(${thread}): no scheduler in this host`);
+    opts.onGreenWake(thread);
+  };
   const run = opts.run ?? ((state) => {
     throw new Error(`tw_run(0x${BigInt.asUintN(64, state).toString(16)}): no translated module (M3)`);
   });
 
-  let raw = null;
   const Module = {
     wasmMemory: memory,
     noFSInit: true, // the stdio devices replace FS.init's (preRun below)
@@ -93,10 +101,7 @@ export async function createUnixHost(opts) {
       Object.assign(Module.ENV, env);
       createStdio(Module.FS, { stdin, stdout, stderr });
     }],
-    onGreenWake: (thread) => {
-      if (!opts.onGreenWake) throw new Error(`green_wake(${thread}): no scheduler in this host (WP3)`);
-      opts.onGreenWake(thread);
-    },
+    onGreenWake: greenWake,
     onMemoryGrown: () => opts.onMemoryGrown?.(),
   };
   await factory(Module);
@@ -117,7 +122,100 @@ export async function createUnixHost(opts) {
         if (typeof raw[name] !== 'function') throw new Error(`no raw export ${name}`);
         promised.set(name, WebAssembly.promising(raw[name]));
       }
-      return promised.get(name)(...args);
+      if (!scheduler) return promised.get(name)(...args);
+      return scheduler.enter(() => promised.get(name)(...args));
+    },
+  };
+}
+
+// The green-thread scheduler (wine-unix.md, section 9; abi.md v5, "Host
+// entries of the Unix side"). A green thread is a promising entry in flight;
+// it is running unless it is blocked in green_block. C calls green_wake for a
+// thread it made runnable; the scheduler resumes it after the current call
+// into the module returns, in the order of the wakes. Only when every entry
+// in flight is blocked and none was woken does it ask C for the next timeout
+// (tw_next_timeout and tw_run_timeouts never block, so they run on the
+// shadow stack below the blocked threads' frames).
+function createScheduler(getRaw, stderr, encoder) {
+  const blocked = new Map(); // thread -> { resolve, reject }
+  const woken = new Set();   // in the order of the wakes
+  let entries = 0;           // promising entries in flight
+  let queued = false;
+  let timer = null;
+
+  const schedule = () => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(dispatch); // after the suspension or the return completes
+  };
+
+  function dispatch() {
+    queued = false;
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    let resumed = false;
+    for (const thread of woken) {
+      const b = blocked.get(thread);
+      if (!b) continue; // woken while running (a yield): it blocks next
+      woken.delete(thread);
+      blocked.delete(thread);
+      b.resolve(0n);
+      resumed = true;
+    }
+    if (resumed || blocked.size === 0 || entries > blocked.size) return; // a thread runs
+    const raw = getRaw();
+    let ms;
+    try {
+      ms = Number(raw.tw_next_timeout());
+    } catch (e) {
+      return stop(e);
+    }
+    if (ms < 0) {
+      const threads = [...blocked.keys()].join(', ');
+      const msg = `tempwind: green: deadlock: nothing is runnable and no timeout is pending (waiting: thread ${threads})`;
+      stderr(encoder.encode(msg + '\n'));
+      return stop(new Error(msg));
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      try {
+        raw.tw_run_timeouts();
+      } catch (e) {
+        return stop(e);
+      }
+      schedule();
+    }, ms);
+  }
+
+  // Throws err into every blocked thread: its green_block throws, and its
+  // promising entry rejects.
+  function stop(err) {
+    for (const [thread, b] of blocked) {
+      blocked.delete(thread);
+      b.reject(err);
+    }
+  }
+
+  return {
+    block(thread) {
+      return new Promise((resolve, reject) => {
+        blocked.set(thread, { resolve, reject });
+        schedule();
+      });
+    },
+    wake(thread) {
+      woken.add(thread);
+      schedule();
+    },
+    enter(start) {
+      entries++;
+      let p;
+      try {
+        p = start();
+      } catch (e) {
+        entries--;
+        throw e;
+      }
+      return p.finally(() => { entries--; schedule(); });
     },
   };
 }
