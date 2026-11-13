@@ -415,15 +415,15 @@ The Emscripten runtime's own imports are listed, each with a reason, in `native/
 
 ### The spike (M1)
 
-`native/spike/boundary/build.sh` writes `target/wine-spike/`: `boundary.c` built with the flags above, and `guest_a.S`/`guest_b.S` assembled flat and translated with `x64wasm-cli translate --shared`. `driver.mjs` runs it; `tests/node/wine-boundary.test.mjs` and `tests/browser/wine-boundary.spec.mjs` (a Worker) check it. It shows:
+`native/spike/boundary/build.sh` writes `target/wine-spike/`: `boundary.c` built with the flags above and M2's (`-sINITIAL_MEMORY=4GB`, `-Wl,--wrap=sbrk`, `-Inative/wine/include`), and `guest_a.S`/`guest_b.S` assembled flat and translated with `x64wasm-cli translate --shared`. `boundary.c` takes the ABI's constants from the generated `tempwind/abi.h`, so the spike checks the header against real translated modules. `driver.mjs` creates the memory with 65536 initial pages (4 GiB) and runs it; `tests/node/wine-boundary.test.mjs` and `tests/browser/wine-boundary.spec.mjs` (a Worker) check it. It shows:
 1. `WebAssembly.promising(thread_main)`; C's loop calls the translated module's raw `run` as an import and handles `EXIT_LEFT_CODE` (a plain `bnd_translate` import links a second, prebuilt module) and `EXIT_HOST`.
-2. Translated code calls the raw export `host_dispatch` through `env.table` and lookup slots (entry = the host function's id), with the arguments from the state block, the guest's `ret` performed and statuses returned.
+2. Translated code calls the raw export `host_dispatch` through `env.table` and lookup slots (entry = the host function's id), with the arguments from the state block, the guest's `ret` performed and statuses returned. C finds the same slots with the header's lookup layout and `tw_lookup_hash` (`lookup_entry`).
 3. Two green threads block in C through `green_block`, each with its own state block and shadow stack; both finish with correct results, and each keeps an address-taken local (in its own stack region), `errno`, its stack pointer and limits and its state pointer across the suspension.
-4. A nested guest call: a host function runs the loop on a guest callback, whose `ret` reaches a host function that returns `STATUS_EXIT` with a spike-local reason (0x100); the outer guest call completes.
-5. C's `memory.grow` and `memory_grown`: JS's views, the glue (`UTF8ToString`) and translated code read what C wrote past the old end.
+4. A nested guest call: a host function runs the loop on a guest callback, whose `ret` reaches a host function that returns `STATUS_EXIT` with a spike-local reason (0x100); the outer guest call completes. `env.depth`, read through a plain import before and after the nested loop, is the same nonzero value (M2: `run` keeps the caller's `depth`); with v4's `run` the check fails (1 before, 0 after).
+5. C's `memory.grow` past 4 GiB and `memory_grown`: JS's views, the glue (`UTF8ToString`) and translated code read what C wrote past the old end. Then the heap's cap (`wine-unix.md`, section 5): a `malloc` larger than the whole heap below 0x1_0000_0000 returns NULL with `ENOMEM`, and neither the break nor the memory's size moves (`__wrap_sbrk`; without it, `sbrk` would grow the memory).
 6. The negative test above.
 
-Measured (this container, Node 24.22 / Chromium 153 headless): creating the shared memory64 of 2 GiB + 64 MiB takes 0.3-1.4 ms (the pages are reserved, not committed); compiling and instantiating the Unix side through the glue 3-4 ms; a `green_block` suspend/resume round trip that resumes at once, 1.2 µs in Node and 0.2 µs in Chromium (10000 rounds).
+Measured (this container, Node 24.22 / Chromium 153 headless): creating the shared memory64 of 4 GiB (maximum 16 GiB) takes a median 0.3 ms in Node (0.26-0.52 ms, 12 fresh processes) and 1.0 ms in the Chromium Worker (0.57-7.6 ms, 5 runs): the pages are reserved, not committed. Compiling and instantiating the Unix side through the glue takes 2-4 ms once warm (the first run after a build, 23-380 ms); a `green_block` suspend/resume round trip that resumes at once, 1.4 µs in Node and 0.2 µs in Chromium (10000 rounds).
 
 ## Test hosts
 
