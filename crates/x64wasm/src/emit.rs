@@ -65,8 +65,8 @@ use crate::Options;
 use crate::abi::{self, FpFunc, FpVal};
 use crate::func::Partition;
 use crate::ir::{
-    BinOp, Block, CC_EAGER, CallTarget, Op, Program, Temp, Term, UnOp, VTemp, Value, Width,
-    reg_name,
+    BinOp, Block, CC_EAGER, CallTarget, Op, Program, Temp, Term, UNSUPPORTED, UnOp, VTemp, Value,
+    Width, reg_name,
 };
 use crate::link::{BlockEntry, encode_blocks};
 use crate::sync::{self, ChunkSync, FLAGS, Set};
@@ -451,6 +451,12 @@ impl ChunkEmitter<'_> {
                 f.i64_extend_i32_u();
                 self.set_temp(f, dst);
             }
+            Op::ReadFlags { dst } => {
+                self.current_flags(f);
+                f.i64_const(abi::flags::STATUS as i64);
+                f.i64_and();
+                self.set_temp(f, dst);
+            }
             Op::Flags {
                 op,
                 width,
@@ -526,7 +532,11 @@ impl ChunkEmitter<'_> {
                 f.i64_ne();
                 f.if_(BlockType::Empty);
                 self.labels.push(Label::If);
-                self.fault(f, kind, self.cur_addr);
+                if kind == UNSUPPORTED {
+                    self.exit(f, abi::EXIT_UNSUPPORTED, self.cur_addr);
+                } else {
+                    self.fault(f, kind, self.cur_addr);
+                }
                 f.end();
                 self.labels.pop();
             }
@@ -1449,6 +1459,7 @@ fn defined(op: &Op) -> Option<Temp> {
         | Op::Load { dst, .. }
         | Op::LoadState { dst, .. }
         | Op::Cond { dst, .. }
+        | Op::ReadFlags { dst }
         | Op::VExtract { dst, .. } => Some(dst),
         _ => None,
     }
@@ -1530,6 +1541,7 @@ fn operands(op: &Op) -> [Option<Value>; 4] {
         | Op::SseToInt { .. }
         | Op::SseComi { .. }
         | Op::Cond { .. }
+        | Op::ReadFlags { .. }
         | Op::VLoad { .. }
         | Op::VStore { .. }
         | Op::VBin { .. }

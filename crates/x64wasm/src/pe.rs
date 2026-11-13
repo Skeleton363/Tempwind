@@ -79,6 +79,7 @@ pub mod dir {
     pub const EXCEPTION: usize = 3;
     pub const BASERELOC: usize = 5;
     pub const TLS: usize = 9;
+    pub const DELAY_IMPORT: usize = 13;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -478,35 +479,80 @@ impl<'a> Pe<'a> {
             let name_rva = u32::from_le_bytes([b[12], b[13], b[14], b[15]]);
             let iat = u32::from_le_bytes([b[16], b[17], b[18], b[19]]);
             let name = self.read_cstr(name_rva)?;
-            let lookup = if ilt != 0 { ilt } else { iat };
-            let mut functions = Vec::new();
-            for i in 0u32.. {
-                let thunk = self.rva_u64(lookup.wrapping_add(i.wrapping_mul(8)))?;
-                if thunk == 0 {
-                    break;
-                }
-                let iat_rva = iat.wrapping_add(i.wrapping_mul(8));
-                if thunk >> 63 != 0 {
-                    functions.push(ImportedFunction {
-                        name: None,
-                        ordinal_or_hint: (thunk & 0xffff) as u16,
-                        iat_rva,
-                    });
-                } else {
-                    let hint_rva = (thunk & 0x7fff_ffff) as u32;
-                    functions.push(ImportedFunction {
-                        name: Some(self.read_cstr(hint_rva.wrapping_add(2))?),
-                        ordinal_or_hint: self.rva_u16(hint_rva)?,
-                        iat_rva,
-                    });
-                }
-            }
+            let functions = self.thunks(if ilt != 0 { ilt } else { iat }, iat)?;
             dlls.push(ImportDll { name, functions });
             desc = desc
                 .checked_add(20)
                 .ok_or(PeError::Invalid("import table"))?;
         }
         Ok(dlls)
+    }
+
+    /// Delay-load import directory (`ImgDelayDescr`, RVA form): one entry per
+    /// DLL, like [`Pe::imports`]; `iat_rva` is the slot of the delay-load IAT.
+    pub fn delay_imports(&self) -> Result<Vec<ImportDll>> {
+        let d = self.directory(dir::DELAY_IMPORT);
+        if d.rva == 0 {
+            return Ok(Vec::new());
+        }
+        let mut dlls = Vec::new();
+        let mut desc = d.rva;
+        loop {
+            let b = self.read_rva(desc, 32)?;
+            if b.iter().all(|&x| x == 0) {
+                break;
+            }
+            let word = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+            // Attribute bit 0: the fields are RVAs (the only form for PE32+ built by
+            // current linkers); the old VA form is not valid in a 64-bit image.
+            if word(0) & 1 == 0 {
+                return Err(PeError::Invalid("delay import descriptor uses VAs"));
+            }
+            let name = self.read_cstr(word(4))?;
+            let iat = word(12);
+            let int = word(16);
+            // The names are only in the delay import name table. Until it is
+            // bound, the delay IAT holds the VAs of the load thunks, not
+            // hint/name RVAs as an ordinary unbound IAT does, so without a
+            // name table the DLL is known but its functions aren't.
+            let functions = if int != 0 {
+                self.thunks(int, iat)?
+            } else {
+                Vec::new()
+            };
+            dlls.push(ImportDll { name, functions });
+            desc = desc
+                .checked_add(32)
+                .ok_or(PeError::Invalid("delay import table"))?;
+        }
+        Ok(dlls)
+    }
+
+    /// Thunk array at `lookup` (zero-terminated), slots of the address table at `iat`.
+    fn thunks(&self, lookup: u32, iat: u32) -> Result<Vec<ImportedFunction>> {
+        let mut functions = Vec::new();
+        for i in 0u32.. {
+            let thunk = self.rva_u64(lookup.wrapping_add(i.wrapping_mul(8)))?;
+            if thunk == 0 {
+                break;
+            }
+            let iat_rva = iat.wrapping_add(i.wrapping_mul(8));
+            if thunk >> 63 != 0 {
+                functions.push(ImportedFunction {
+                    name: None,
+                    ordinal_or_hint: (thunk & 0xffff) as u16,
+                    iat_rva,
+                });
+            } else {
+                let hint_rva = (thunk & 0x7fff_ffff) as u32;
+                functions.push(ImportedFunction {
+                    name: Some(self.read_cstr(hint_rva.wrapping_add(2))?),
+                    ordinal_or_hint: self.rva_u16(hint_rva)?,
+                    iat_rva,
+                });
+            }
+        }
+        Ok(functions)
     }
 
     /// Export directory, or `None` if the image has none.

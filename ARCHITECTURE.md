@@ -55,6 +55,7 @@ Translation is function-level: the translator discovers functions from the entry
 | Instruction scope and the "all fixtures pass" rule | `docs/design/instruction-scope.md` |
 | Process, load plan, host calls, shim | `docs/design/runtime.md` |
 | Guest address map | `docs/design/guest-memory.md` |
+| Wine build, release layout, DLL closure, prefix, conformance baselines (Phase 2) | `docs/design/wine-build.md` |
 
 Contracts are committed before the code that uses them. The ABI is versioned; both Rust (`abi.rs`) and JS (`abi.mjs`) change with it.
 

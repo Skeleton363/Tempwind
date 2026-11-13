@@ -15,7 +15,8 @@ Core verification. The oracle, census, 7-Zip matrix, benchmarks, profiling and r
 ## How we work
 - One phase at a time, in order. Before starting, read docs/plan.md and the latest docs/status/ note.
 - Each milestone's planning starts with a short research pass over official and community sources for its domain and our workflow, logged in `docs/dev/research.md`.
-- Branch from main. One draft PR per milestone, titled "[Phase N] <what>"; a session covers a phase.
+- Branch from main. One draft PR per milestone, titled "[Phase N] <what>".
+- A session covers one milestone. It starts from docs/plan.md, the latest status note and ARCHITECTURE.md, and ends with `/milestone-close` (or `/pause`) and its hand-off.
 - Commits: author and committer `Skeleton363 <46569584+Skeleton363@users.noreply.github.com>`, unsigned. The SessionStart hook sets this in cloud sessions; check `git config user.email` before the first commit. Commit messages and PR descriptions carry no `Co-Authored-By`, `Claude-Session` or "Generated with Claude Code" lines. Post PR comments only where required.
 - Done = all CI checks green, the test summary in your final message, and docs/status/phase-N.md updated (what works, measurements, decisions, known issues, next step).
 - Sessions don't share memory: record every decision in docs/status/.

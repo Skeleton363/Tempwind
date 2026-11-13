@@ -9,7 +9,7 @@ disable-model-invocation: true
 2. `git status --short`. Group the uncommitted paths by the agent or track that owns them.
 3. Commit each group as a pathspec WIP checkpoint: `git commit -m "WIP: <track>: <state>" -- <paths>`. Never `git add -A`. Identity: `Skeleton363 <46569584+Skeleton363@users.noreply.github.com>` (check `git config user.email`); no attribution lines.
 4. Cancel pending check-ins this session created (`delete_trigger` with each trigger id; `list_triggers` finds them).
-5. In `docs/status/phase-1.md`, add or refresh a section `## Mn progress (paused YYYY-MM-DD)` with:
+5. In the current phase's note, `docs/status/phase-N.md` (the highest N there), add or refresh a section `## Mn progress (paused YYYY-MM-DD)` with:
    - what is committed (commit ids, tests that pass);
    - what is in progress (agent, files, state);
    - how to resume, written for a fresh session without this conversation: per track, its side branch and head, where its brief is (the decisions section), what is left, the first command. "Message agent X" is only a shortcut for the same session. Point at artifacts instead of repeating them.

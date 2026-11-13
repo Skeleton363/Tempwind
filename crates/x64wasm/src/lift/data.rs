@@ -11,6 +11,11 @@ impl Lower<'_> {
         if self.insn.op_count() != 2 {
             return Err(Unsupported);
         }
+        if self.insn.op_kind(1) == OpKind::Register
+            && self.insn.op_register(1).is_segment_register()
+        {
+            return self.mov_from_sreg();
+        }
         let w = self.width_of(0)?;
         let v = self.read(1, w)?;
         self.write(0, w, v)?;

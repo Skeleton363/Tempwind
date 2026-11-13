@@ -6,6 +6,7 @@ This is the contract between the translator (`crates/x64wasm`, `crates/x64wasm-r
 - **v2 (M1)** made one wasm function per guest function, with guest calls and returns mapped to wasm calls and returns. The design is in `translator.md`.
 - **v3 (M2)** links modules together. Several modules (the AOT translation of an image, and translations made at run time) share one funcref table, one call-depth counter and one block lookup table in guest memory, so control passes between them without leaving wasm. Host functions (the Win32 shim, `runtime.md`) sit in the same table and are called like guest functions. The state block, the statuses and the trampoline are as in v2.
 - **v4 (M4)** adds the floating-point helper module: translated modules import the soft-float functions they use from the `fp` namespace ("Floating-point helper module" below). Everything else is as in v3.
+- **v5 (Phase 2, draft)** puts Wine's Unix side, an Emscripten wasm64 instance, on the other side of the host functions ("Wine boundary" below). Translated modules are unchanged so far. M1's spike tests the draft, and M2-M3 finalize it.
 
 ## Module shape
 
@@ -297,6 +298,89 @@ Every translated block appears exactly once.
 Translated code keeps the x87 stack itself: TOP, the tags, push and pop, stack overflow and underflow, and the moves that can't raise an exception (`translator.md`).
 
 The functions are pure apart from the stored status. `x64wasm-fp` checks them natively against the CPU (inline `asm!` on x86-64, every function, edge pairs and random cases under every rounding mode, FTZ/DAZ and precision control), and `tests/node/fp.test.mjs` checks the wasm build against vectors that the native build writes.
+
+## Wine boundary (v5 draft, Phase 2)
+
+Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The boundary"), tested by M1's boundary spike (`native/spike/boundary/`, below) in Node 24 and in a Chromium Worker. M2 adds the C header generated from `abi.rs` and the Unix-side entries; M3 fixes the constants. Until then, nothing in Phase 1's code depends on it.
+
+### Instances
+- **Shared per Windows process:**
+  - JS creates one shared memory64, `env.memory` (maximum 262144 pages);
+  - one funcref table, `env.table`;
+  - the lookup header and slots, the `depth` global and the page-state table, which live in the host region (`guest-memory.md`).
+- **The Unix side** is one Emscripten instance:
+  - wasm64, importing that same memory, with `GLOBAL_BASE=0x80000000`;
+  - its C function pointers use its own table, which is not `env.table`;
+  - built without Emscripten pthreads, with wasm exception handling.
+  - The flags (Emscripten 6.0.12, proven by the spike): `-m64 -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH -sINITIAL_MEMORY=<bytes> -sMAXIMUM_MEMORY=16GB -sGLOBAL_BASE=2GB -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=node,worker`, plus `-sEXPORTED_FUNCTIONS=_malloc,_emscripten_stack_set_limits,__emscripten_stack_restore`. `-sSHARED_MEMORY` without pthreads enables atomics and bulk memory. `INITIAL_MEMORY` must cover `GLOBAL_BASE` plus the static data, stack and initial heap (the spike: 2 GiB + 64 MiB), and JS creates the memory with at least that many pages: the import's minimum is `INITIAL_MEMORY`, its maximum 262144 pages.
+  - **Not `-sJSPI`.** JS wraps the raw exports in `WebAssembly.promising` and the blocking imports in `WebAssembly.Suspending` itself; Emscripten's JSPI support (which wraps every export and import listed in `JSPI_EXPORTS`/`JSPI_IMPORTS` in its glue) isn't needed.
+  - **Raw exports past the glue:** the `instantiateWasm` hook (`Module.instantiateWasm(imports, receive)`). JS passes the memory as `Module.wasmMemory`. In the hook it replaces the imports the Unix side declares (in a `--js-library` whose stub bodies never run) with the real ones, instantiates, keeps `instance.exports` as the raw exports and hands the instance to `receive`. The glue's own copy of the exports converts pointers to Numbers, so it is never used for `env.table` or `promising`. Plain imports that need the glue's scope (`memory_grown`) stay library functions.
+- **Translated modules** are as in v4. Built with `Options::shared_memory` (`x64wasm-cli translate --shared`).
+
+### Who calls whom
+1. **JS → Unix side.** Only through `WebAssembly.promising` around a raw export: `boot`, and `thread_main` once per green thread. JS may call a raw export directly only if it never blocks (queries such as reading the exit code).
+2. **Unix side → translated code.** The Unix side imports `run: (state i64) -> i32` from a translated module instance, wasm to wasm. The run loop is C:
+   ```
+   for (;;) switch (run(state)) {
+     case EXIT_LEFT_CODE:   translate(state->rip); continue;   // import: translate and link
+     case EXIT_HOST:        return;                            // the host function recorded why
+     case EXIT_FAULT:       raise or stop (M5);                // until M5: stop loudly
+     case EXIT_UNSUPPORTED: stop loudly;
+   }
+   ```
+   Phase 1's JS run loop (`process.mjs`) doesn't apply to Wine processes.
+3. **Translated code → Unix side.**
+   - Host functions in `env.table` are **raw Unix-side exports** of the guest-function type `(state i64, entry i32, ret i64) -> i32`. They follow "Host functions" above: read the arguments, perform the guest's `ret`, return a status.
+   - JS installs them with `table.set(i, instance.exports.f)`. An Emscripten JS wrapper (memory64 BigInt conversion) must never go there: it would be a JS frame.
+   - Lookup slots map guest addresses to them:
+     - the syscall-dispatcher address the Unix side stores at `0x7ffe1000`;
+     - the address stored in ntdll's `__wine_unix_call_dispatcher`.
+   - The addresses are fixed in M3.
+4. **Unix side → JS.**
+   - Plain imports for work that returns without blocking: translate and link, image map and unmap, output, memory growth.
+   - `Suspending` imports for the only blocking point, `green_block`.
+5. **Nested guest calls** (`KeUserModeCallback`, later APCs) run the same C loop recursively, after saving the caller's registers. The callee ends through a host function that returns `STATUS_EXIT` with a reason the loop knows. No JS is involved.
+
+**The rule:** no JS frame between a `promising` entry and a `Suspending` import. V8 cannot suspend JS frames. A plain import that has returned before the suspension is not on the stack, so it is fine.
+- **Observed (the spike's negative test):** a JS function in `env.table` that calls the raw host function makes the `Suspending` call throw `WebAssembly.SuspendError: trying to suspend JS frames`, which unwinds the thread's wasm stack and rejects its `promising` Promise. Node 24.22 (V8 13.6) first calls the import's JS function and drops the Promise it returns; Chromium 153 throws before calling it. So a blocking import must not commit side effects that only make sense if the suspension happens.
+
+### Green threads
+- **What one is:** a `promising` entry (`thread_main`), a CPU state block, and a region for the Emscripten shadow stack (Wine's kernel stack for that thread).
+- **`green_block` is the only switch point.** The suspending thread saves, and after resuming restores, in C around the call:
+  - `__stack_pointer`, plus the stack base and end;
+  - `errno`, which is one global without pthreads;
+  - the current state-block pointer.
+- **A new thread's stack pointer and limits** are set by JS through the exported stack functions, immediately before its `promising` entry. `thread_main` itself must not run on another thread's stack region.
+  - The region comes from the raw `malloc` export (the spike: 64 KiB). Then `emscripten_stack_set_limits(top, bottom)` (Emscripten's names: base = the high end, end = the low end) and `_emscripten_stack_restore(top)`, both raw exports of compiler-rt's stack functions, which use no shadow stack themselves. A C wrapper that sets them would have its own frame and restore the old pointer on return.
+  - The save in C: `emscripten_stack_get_current`, `emscripten_stack_get_base` and `emscripten_stack_get_end` before `green_block`; after it, `emscripten_stack_set_limits` and `_emscripten_stack_restore` with the saved values, then `errno` and the current-thread pointer. The spike checks that the save set is needed: without the restores, the first thread resumes on the second thread's stack pointer with its `errno` and state pointer.
+- **The green library replaces Emscripten's no-pthread stubs:** mutexes, condition variables, `pthread_once` and keys. A thread that suspends while holding a mutex is a bug, and the library asserts on it.
+
+### Memory growth
+- **One owner:** the Unix side's virtual backend calls `memory.grow`.
+- **Then** it calls the plain import `memory_grown`. JS refreshes its views, the runtime's and Emscripten's glue's.
+  - With `-sSHARED_MEMORY` and `-sALLOW_MEMORY_GROWTH` the glue already checks `wasmMemory.buffer` before every heap access (`growMemViews`), so its views refresh themselves; `memory_grown`, a library function, calls `updateMemoryViews()` anyway and then the runtime's callback.
+- **Translated code** needs nothing.
+
+### Not fixed yet
+- **Constants (M3):**
+  - the dispatcher addresses;
+  - whether a raw `syscall` instruction exits or stops;
+  - the Unix side's exit reasons for thread exit, process exit and callback return.
+- **The C header for the state block and the lookup** (M2), generated from `abi.rs`.
+- **Who else grows memory (M2).** Emscripten's `sbrk` grows memory too, through `emscripten_resize_heap`, and assumes everything above its break is its own. Memory the virtual backend grows past the end would become heap once `sbrk` reaches it. M2 decides how the two share the top of memory (the backend allocating through `sbrk`, or `malloc` confined to a fixed arena).
+- **`depth` in nested guest calls.** `run` sets `env.depth = 0` on entry, so a nested loop loses the outer count, and the outer guest code continues with the nested call's count. The guard still bounds the wasm stack per `run`, not across nested runs. The Unix side would need the global (an import of `env.depth`) to save and restore it.
+
+### The spike (M1)
+
+`native/spike/boundary/build.sh` writes `target/wine-spike/`: `boundary.c` built with the flags above, and `guest_a.S`/`guest_b.S` assembled flat and translated with `x64wasm-cli translate --shared`. `driver.mjs` runs it; `tests/node/wine-boundary.test.mjs` and `tests/browser/wine-boundary.spec.mjs` (a Worker) check it. It shows:
+1. `WebAssembly.promising(thread_main)`; C's loop calls the translated module's raw `run` as an import and handles `EXIT_LEFT_CODE` (a plain `bnd_translate` import links a second, prebuilt module) and `EXIT_HOST`.
+2. Translated code calls the raw export `host_dispatch` through `env.table` and lookup slots (entry = the host function's id), with the arguments from the state block, the guest's `ret` performed and statuses returned.
+3. Two green threads block in C through `green_block`, each with its own state block and shadow stack; both finish with correct results, and each keeps an address-taken local (in its own stack region), `errno`, its stack pointer and limits and its state pointer across the suspension.
+4. A nested guest call: a host function runs the loop on a guest callback, whose `ret` reaches a host function that returns `STATUS_EXIT` with a spike-local reason (0x100); the outer guest call completes.
+5. C's `memory.grow` and `memory_grown`: JS's views, the glue (`UTF8ToString`) and translated code read what C wrote past the old end.
+6. The negative test above.
+
+Measured (this container, Node 24.22 / Chromium 153 headless): creating the shared memory64 of 2 GiB + 64 MiB takes 0.3-1.4 ms (the pages are reserved, not committed); compiling and instantiating the Unix side through the glue 3-4 ms; a `green_block` suspend/resume round trip that resumes at once, 1.2 µs in Node and 0.2 µs in Chromium (10000 rounds).
 
 ## Test hosts
 

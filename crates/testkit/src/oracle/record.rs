@@ -113,6 +113,16 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
                 image[off..off + block.bytes.len()].copy_from_slice(&block.bytes);
             }
             let step = tracee.step(&c.bytes, &image, &c.input).with_context(at)?;
+            // Linux leaves TF to a traced popf (`is_setting_trap_flag` in
+            // arch/x86/kernel/step.c clears TIF_FORCED_TF), and from then on
+            // stops hiding the TF it sets for PTRACE_SINGLESTEP. A fresh
+            // child starts with clean bookkeeping.
+            let m = iced_x86::Decoder::with_ip(64, &c.bytes, 0, x64wasm::DECODER_OPTIONS)
+                .decode()
+                .mnemonic();
+            if matches!(m, iced_x86::Mnemonic::Popf | iced_x86::Mnemonic::Popfq) {
+                tracee = Tracee::spawn()?;
+            }
             ensure!(
                 step.fault.map(|f| f.kind) == c.expect_fault,
                 "{}: the instruction raised {}, the generator expected {}",
@@ -127,12 +137,13 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
                 step.rip,
                 c.expect_rip
             );
-            // Only the status flags and DF may change. TF is the kernel's
-            // single-step flag; RF is set in the RFLAGS image of a fault.
-            let kept = !(flags::STATUS | flags::DF | flags::TF | RF);
+            // Only the status flags, DF and the bits the case compares (NT
+            // and ID for popfq) may change. TF is the kernel's single-step
+            // flag; RF is set in the RFLAGS image of a fault.
+            let kept = !(flags::STATUS | flags::DF | flags::TF | RF | c.flags_mask);
             ensure!(
                 (step.rflags ^ c.input.rflags) & kept == 0,
-                "{}: rflags {:#x} -> {:#x} changed a bit other than the status flags and DF",
+                "{}: rflags {:#x} -> {:#x} changed a bit other than the status flags, DF and `flags_mask`",
                 at(),
                 c.input.rflags,
                 step.rflags

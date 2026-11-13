@@ -29,7 +29,7 @@ const out = resolve(opt('--out', join(root, 'target/bench/images')));
 const exes = (positional.length ? positional : ['target/targets/7zz.exe', 'target/targets/coremark.exe']).map((p) => resolve(root, p));
 const translateFlags = opt('--translate-flags', '').split(/\s+/).filter(Boolean);
 const FP = join(root, 'target/wasm32-unknown-unknown/release/x64wasm_fp.wasm');
-const stem = (exe) => basename(exe).replace(/\.exe$/i, '');
+const stem = (exe) => basename(exe).replace(/\.[^.]+$/, '');
 
 const CONFIGS = {
   default: [],

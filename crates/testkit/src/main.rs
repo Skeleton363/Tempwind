@@ -41,6 +41,8 @@ enum Command {
     },
     /// Instruction and import census of PE files (docs/design/instruction-scope.md).
     Census(testkit::census::Args),
+    /// DLL closure of the Wine build (docs/design/wine-build.md).
+    Closure(testkit::closure::Args),
 }
 
 fn main() -> Result<()> {
@@ -57,5 +59,6 @@ fn main() -> Result<()> {
         Command::Spike { out, bench: false } => testkit::spike::write(&out),
         Command::Spike { out, bench: true } => testkit::spike::bench::write(&out),
         Command::Census(args) => testkit::census::run(&args),
+        Command::Closure(args) => testkit::closure::run(&args),
     }
 }

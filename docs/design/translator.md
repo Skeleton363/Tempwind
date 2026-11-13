@@ -282,7 +282,7 @@ Records are written three ways:
 ### Faults
 
 - **`Term::Fault { kind, rip }`** works like `Exit` with `state.exit = EXIT_FAULT`, the fault kind, fault address 0 and RIP at the instruction. `ud2` lowers to it with `FAULT_INVALID_OPCODE`, and so do invalid encodings (decoder errors other than a truncated instruction), which were `EXIT_UNSUPPORTED` until now: the CPU raises #UD there (open point 3). Discovery still stops at both.
-- **`Op::FaultIf { cond, kind }`:** if cond ≠ 0 the instruction faults. The state must be the one from before the instruction, so the lifter puts every `FaultIf` before the instruction's first side effect (`SetReg`, `Store`, `StoreState`, vector stores, any flag record); only loads and pure computation come before it. Emitted as `if cond { rip = insn; fault kind and address; exit; status = EXIT; br $leave }`, and the shared epilogue stores the untouched registers and flag record. A test checks the order for every faulting form.
+- **`Op::FaultIf { cond, kind }`:** if cond ≠ 0 the instruction faults. The state must be the one from before the instruction, so the lifter puts every `FaultIf` before the instruction's first side effect (`SetReg`, `Store`, `StoreState`, vector stores, any flag record); only loads and pure computation come before it. Emitted as `if cond { rip = insn; fault kind and address; exit; status = EXIT; br $leave }`, and the shared epilogue stores the untouched registers and flag record. A test checks the order for every faulting form. Kind `UNSUPPORTED` (0, `ir::UNSUPPORTED`; the fault kinds start at 1) exits with `EXIT_UNSUPPORTED` instead, RIP at the instruction and nothing written: a value the translator doesn't model (popfq with TF or AC).
 - **div/idiv (#DE):** wasm's `div` traps on a zero divisor and `div_s` on INT64_MIN / −1, so `DivU`/`DivS`/`RemU`/`RemS` only appear after the `FaultIf` that excludes those operands.
   - div r/m8: n = AX; fault if d = 0 or AH ≥ d (the quotient doesn't fit in 8 bits); AL = q, AH = r. div 16/32: n = DX:AX or EDX:EAX in 64 bits; fault if d = 0 or the high half ≥ d; q and r to AX/DX or EAX/EDX (32-bit writes zero-extend RAX and RDX).
   - idiv 8/16/32: n sign-extended to 64 bits (32-bit: (EDX << 32 | EAX) as i64), d sign-extended; fault if d = 0; for 32-bit also if n = INT64_MIN and d = −1 (its quotient doesn't fit anyway); q = n /s d; fault if q ≠ its own sign extension from the width, which covers INT_MIN / −1 at every width (−2^31 / −1 = 2^31); r = n rem_s d, with the dividend's sign.
@@ -428,6 +428,31 @@ MXCSR is loaded from the state block for each instruction that tests it. (M6 can
 ### cpuid
 
 `cpuid` lowers to a lookup of EAX in the table of `instruction-scope.md` ("`cpuid` results"), done at run time, since EAX is usually not a constant. It writes EAX, EBX, ECX and EDX as 32-bit registers and leaves the flags alone. The dedicated test checks every row.
+
+## Wine closure forms (Phase 2, M1)
+
+Status: **decided and implemented in Phase 2's M1** (census of Wine's DLL closure, `instruction-scope.md`, "Wine closure census"). Every form below has L1 fixtures (`testkit record`); replay decides.
+
+### RFLAGS images
+- **`Op::ReadFlags { dst }`:** the six status flags of the current flag record, in their RFLAGS positions, every other bit 0. It is a flag reader (liveness and sync count it like `Op::Cond`).
+- **pushfq:** pushes (state RFLAGS & ¬(status | RF | VM)) | `ReadFlags`. DF, NT, ID and the system bits come from the state's RFLAGS, where they live while code runs; RF and VM are 0 in the image, as the SDM says.
+- **popfq:** loads the image; if it has TF or AC set, the instruction exits with `EXIT_UNSUPPORTED` (`FaultIf` with kind `UNSUPPORTED`, below "Faults"): RIP at the popfq, RSP, RFLAGS and the flag record unchanged. Translated code has no single-step trap and no alignment check, and silently clearing either would hide behaviour the program asked for. Otherwise RSP += 8, then an eager record of the image's status flags (`FlagsUpdate`, clearing all six), and DF, NT and ID into the state's RFLAGS. NT and ID have no effect in 64-bit user mode, so they are plain bits there and a later pushfq pushes them back. Every other bit stays: at CPL 3 with IOPL 0 the CPU ignores IF, IOPL, VIP, VIF, VM, RF and the reserved bits.
+- **lahf:** AH = SF:ZF:0:AF:0:PF:1:CF from `ReadFlags`. **sahf:** SF, ZF, AF, PF and CF from AH (`FlagsUpdate`); OF stays.
+
+### Segment selectors
+`mov r/m16, Sreg` stores the selector a 64-bit Linux process sees: CS 0x33, SS 0x2B, DS, ES, FS and GS 0. These are what native Wine's PE code reads (RtlCaptureContext stores all six), so contexts match the native-Wine baseline, and the oracle records them on any Linux runner. Windows itself has DS = ES = GS = SS = 0x2B and FS = 0x53; the Unix side (M2+) builds contexts with the values above. A memory destination gets 16 bits, and a register with 66h its low 16 bits. A 32- or 64-bit register destination stays unsupported (the SDM leaves its upper bits to the CPU model, and the closure has none), and so do loads of segment registers.
+
+### cmpxchg16b m128
+#GP (`FaultIf`) unless the address is 16-byte aligned, then one memory check of 16 bytes. Equal RDX:RAX: ZF = 1 and m128 = RCX:RBX. Otherwise ZF = 0, RDX:RAX = m128, and m128 is written back with its own value, as the SDM says. The other flags stay (`FlagsUpdate` of ZF). `lock` is accepted (one thread).
+
+### enter imm16, imm8
+Level L = imm8 mod 32. Push RBP; then L − 1 copies of the qwords at RBP − 8, RBP − 16, … (the old RBP), each read before its push; then, if L > 0, the frame pointer (RSP after the first push). RBP = the frame, RSP = RSP after the pushes − imm16. All addresses are computed first, so the memory checks precede the first store. The CPU also checks a write at the final RSP (#PF); translated code doesn't.
+
+### fprem
+`X87::Prem`: the `F80Prem` helper on ST(0) and ST(1) (`x64wasm-fp`, Intel's reduction: a partial step of 32 + (d − 32) mod 32 bits when the exponent difference d is 64 or more, with C2 = 1). ST(0) gets the remainder; C0, C3 and C1 get quotient bits 2, 1 and 0, and C2 is set for a partial reduction. The fixtures mask the result and C0, C1, C3 of a partial reduction, and every condition code when an operand is a NaN, an infinity, unsupported or a zero divisor.
+
+### fxsave m512
+`X87::Save` (no #MF check: fxsave doesn't wait), after a #GP `FaultIf` for an unaligned address and one memory check of 512 bytes. 64-bit layout without REX.W: FCW, FSW, the abridged tag byte (bit p: R[p] not empty), byte 5, FOP, FIP with FCS and FDP with FDS as 0; MXCSR; MXCSR_MASK 0x0000FFFF (DAZ is supported); ST(0)-ST(7) at 32 + 16 × i (the upper 6 bytes of each slot 0); XMM0-XMM15 at 160. Bytes 416-511 are not written. The fixtures mask byte 5, 6-23, MXCSR_MASK, the slot padding and 416-511 (the SDM leaves them reserved or to the CPU).
 
 ### Tests
 
