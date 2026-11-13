@@ -38,6 +38,11 @@ pub const RSP: Gpr = 4;
 pub const RSI: Gpr = 6;
 pub const RDI: Gpr = 7;
 
+/// The [`Op::FaultIf`] kind that exits with `EXIT_UNSUPPORTED` instead of
+/// `EXIT_FAULT`: a value the translator doesn't model (`translator.md`,
+/// "Faults"). The fault kinds start at 1.
+pub const UNSUPPORTED: u32 = 0;
+
 /// Operand width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Width {
@@ -798,7 +803,8 @@ pub enum Op {
         live: bool,
     },
     /// If `cond != 0`, the instruction faults with `kind` (EXIT_FAULT, RIP
-    /// at the instruction, the state from before it).
+    /// at the instruction, the state from before it), or with kind
+    /// [`UNSUPPORTED`] exits with EXIT_UNSUPPORTED the same way.
     FaultIf { cond: Value, kind: u32 },
     /// The M6 memory checks (`translator.md`, "Memory checks") of a guest
     /// access of `len` bytes at `addr`, a store if `write`. With `null`,
@@ -1406,6 +1412,10 @@ impl fmt::Display for Op {
                 )?;
                 when_suffix(f, when, *live)
             }
+            Op::FaultIf {
+                cond,
+                kind: UNSUPPORTED,
+            } => write!(f, "unsupported if {cond}"),
             Op::FaultIf { cond, kind } => write!(f, "fault {kind} if {cond}"),
             Op::MemCheck {
                 addr,

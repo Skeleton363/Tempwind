@@ -137,12 +137,13 @@ fn run_native(families: &[Family]) -> Result<Vec<Fixture>> {
                 step.rip,
                 c.expect_rip
             );
-            // Only the status flags and DF may change. TF is the kernel's
-            // single-step flag; RF is set in the RFLAGS image of a fault.
-            let kept = !(flags::STATUS | flags::DF | flags::TF | RF);
+            // Only the status flags, DF and the bits the case compares (NT
+            // and ID for popfq) may change. TF is the kernel's single-step
+            // flag; RF is set in the RFLAGS image of a fault.
+            let kept = !(flags::STATUS | flags::DF | flags::TF | RF | c.flags_mask);
             ensure!(
                 (step.rflags ^ c.input.rflags) & kept == 0,
-                "{}: rflags {:#x} -> {:#x} changed a bit other than the status flags and DF",
+                "{}: rflags {:#x} -> {:#x} changed a bit other than the status flags, DF and `flags_mask`",
                 at(),
                 c.input.rflags,
                 step.rflags

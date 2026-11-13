@@ -5,13 +5,19 @@ use iced_x86::Code;
 use super::lower::Lower;
 use super::{Flow, Lowered, Unsupported};
 use crate::abi::{self, flags};
-use crate::ir::{BinOp, RSP, Value, Width};
+use crate::ir::{self, BinOp, RSP, Value, Width};
 
 /// RBP (encoding 5).
 const RBP: u8 = 5;
 /// RFLAGS.RF and RFLAGS.VM, which pushfq stores as 0.
 const RF: u64 = 1 << 16;
 const VM: u64 = 1 << 17;
+/// RFLAGS.NT and RFLAGS.ID: plain bits in 64-bit user mode, kept by popfq.
+const NT: u64 = 1 << 14;
+const ID: u64 = 1 << 21;
+/// RFLAGS.AC: with TF, a bit popfq stops at (single-step traps and
+/// alignment checks aren't modelled).
+const AC: u64 = 1 << 18;
 
 impl Lower<'_> {
     pub(super) fn push(&mut self) -> Lowered<Flow> {
@@ -50,18 +56,23 @@ impl Lower<'_> {
         Ok(Flow::Next)
     }
 
-    /// `popfq`: the status flags and DF from the stack; every other bit of
-    /// RFLAGS stays (`translator.md`, "RFLAGS images").
+    /// `popfq`: the status flags, DF, NT and ID from the stack; every other
+    /// bit of RFLAGS stays. An image with TF or AC set exits with
+    /// `EXIT_UNSUPPORTED` before any change (`translator.md`, "RFLAGS
+    /// images").
     pub(super) fn popfq(&mut self) -> Lowered<Flow> {
         let v = self.load(Width::W64, Value::Reg(RSP));
+        let stop = self.bin(BinOp::And, v, Value::Imm(flags::TF | AC));
+        self.fault_if(stop, ir::UNSUPPORTED);
         let sp = self.bin(BinOp::Add, Value::Reg(RSP), Value::Imm(8));
         self.set_reg(RSP, sp);
         let status = self.bin(BinOp::And, v, Value::Imm(flags::STATUS));
         self.flags_update(flags::STATUS, status, 0, None);
+        let loaded = flags::DF | NT | ID;
         let state = self.load_state(Width::W64, abi::STATE_RFLAGS);
-        let kept = self.bin(BinOp::And, state, Value::Imm(!flags::DF));
-        let df = self.bin(BinOp::And, v, Value::Imm(flags::DF));
-        let rflags = self.bin(BinOp::Or, kept, df);
+        let kept = self.bin(BinOp::And, state, Value::Imm(!loaded));
+        let bits = self.bin(BinOp::And, v, Value::Imm(loaded));
+        let rflags = self.bin(BinOp::Or, kept, bits);
         self.store_state(Width::W64, abi::STATE_RFLAGS, rflags);
         Ok(Flow::Next)
     }

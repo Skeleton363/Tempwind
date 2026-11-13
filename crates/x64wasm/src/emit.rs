@@ -65,8 +65,8 @@ use crate::Options;
 use crate::abi::{self, FpFunc, FpVal};
 use crate::func::Partition;
 use crate::ir::{
-    BinOp, Block, CC_EAGER, CallTarget, Op, Program, Temp, Term, UnOp, VTemp, Value, Width,
-    reg_name,
+    BinOp, Block, CC_EAGER, CallTarget, Op, Program, Temp, Term, UNSUPPORTED, UnOp, VTemp, Value,
+    Width, reg_name,
 };
 use crate::link::{BlockEntry, encode_blocks};
 use crate::sync::{self, ChunkSync, FLAGS, Set};
@@ -532,7 +532,11 @@ impl ChunkEmitter<'_> {
                 f.i64_ne();
                 f.if_(BlockType::Empty);
                 self.labels.push(Label::If);
-                self.fault(f, kind, self.cur_addr);
+                if kind == UNSUPPORTED {
+                    self.exit(f, abi::EXIT_UNSUPPORTED, self.cur_addr);
+                } else {
+                    self.fault(f, kind, self.cur_addr);
+                }
                 f.end();
                 self.labels.pop();
             }
