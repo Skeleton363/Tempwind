@@ -1,3 +1,4 @@
 {"commit":"04f44fe","date":"2026-11-04T18:52:17.576Z","node":"v24.22.0","cpu":"AMD EPYC 7763 64-Core Processor","runs":3,"args":"b 2 -mmt1 -md18","translated_mips":1501,"native_mips":5717,"ratio":0.2626}
 {"commit":"e85ab2b","date":"2026-11-06T19:46:21.350Z","node":"v24.22.0","cpu":"AMD EPYC 7763 64-Core Processor","runs":3,"args":"b 2 -mmt1 -md18","translated_mips":2211,"native_mips":5812,"ratio":0.3804}
 {"commit":"88b0328","date":"2026-11-13T08:09:56.558Z","node":"v24.22.0","cpu":"AMD EPYC 7763 64-Core Processor","runs":3,"args":"b 2 -mmt1 -md18","translated_mips":2198,"native_mips":5815,"ratio":0.378}
+{"commit":"d9f3e71","date":"2026-11-13T08:27:57.332Z","node":"v24.22.0","cpu":"INTEL(R) XEON(R) PLATINUM 8573C","runs":3,"args":"b 2 -mmt1 -md18","translated_mips":2156,"native_mips":5366,"ratio":0.4018}
