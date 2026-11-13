@@ -272,6 +272,14 @@ Session 2 (from 2026-11-13) started fresh from M1's hand-off. The research pass 
 - **Image placement and section views are tested through the server,** in the `section` harness after the virtual and wait packages merge, since `NtCreateSection` needs the server. The virtual harness tests the backend without it.
 - **Context checkpoints (the owner's change, trial 6 in `docs/dev/agent-runs.md`):** planning filled 483,687 of 1,000,000 tokens before any work, so the coordinator reads `context_usage` at each checkpoint and asks for `/compact` above 35 %.
 
+### Paused (2026-11-13, the owner's 5-hour limit)
+- **Done:** the research pass, the contracts (`fa05b93`) and the planning records (`56750e6`).
+- **WP0 and WP1 were stopped after about 10 minutes.** Their work is on the side branches:
+  - `m2-wp0-wip` (`2888331`): `abi.rs`'s new constants and `gen-header` with its drift test, committed; the spike at 4 GiB with the `sbrk` cap and `abi.h`, and the depth check, which fails on the old `run` as intended. Next: the trampoline change, the L5 snapshots, then the brief's tests.
+  - `m2-wp1-wip` (`fa891e1`): `build.sh`, `config.h`, three `00xx` patches, the `src/` skeletons, `imports.txt` and `rename-server.h`, before the first full link.
+- **To resume:** restart WP0 and WP1 from their side branches (each in its own worktree: `git worktree add -b NAME DIR origin/m2-wpN-wip`), with briefs written from the WP rows below and `wine-unix.md`. Each agent first reads its branch's diff against `fa05b93`. Parallel agents work in their own worktrees, so their commits don't share a HEAD (M1's two branch reconciliations).
+- The Wine source for reading is unpacked from the pinned tarball (`tests/targets/sources.json`) into the scratchpad; a new container needs it unpacked again.
+
 ### Work packages
 At most two deep-workers at once and three subagents in all. Each brief names its files, the contract sections and the tests that decide "done", and a WIP track `m2-wpN-wip`. Agents commit their own paths only and use their own `--out` directories.
 
