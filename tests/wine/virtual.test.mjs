@@ -42,7 +42,9 @@ async function start(opts = {}) {
 }
 
 // In the harness's order (it runs them in one instance).
-const CHECKS = ['init_first_teb', 'kuser_committed', 'reserve_commit_free', 'fixed_high_grows'];
+const CHECKS = ['init_first_teb', 'kuser_committed', 'reserve_commit_free', 'fixed_high_grows',
+  'zero_on_recommit', 'protect_query', 'write_watch_page_watch', 'guest_regions_only',
+  'heap_cap_after_growth', 'file_view_copy', 'file_view_write_back', 'pointer_validation'];
 
 test('virtual: the harness checks pass', async () => {
   const { host, out } = await start();
@@ -64,3 +66,15 @@ test('virtual: init alone leaves the memory at 4 GiB', async () => {
   assert.equal(out.grown, 0);
   assert.equal(host.memory.buffer.byteLength, FOUR_GIB);
 });
+
+// Each loud stop alone, in a fresh instance (section 10).
+for (const [check, line] of [
+  ['second_writable_view', 'tempwind: unsupported: second writable view'],
+]) {
+  test(`virtual: ${check} stops loudly`, async () => {
+    const { host, out } = await start({ env: { TW_TEST_ONLY: check } });
+    await assert.rejects(host.call('tw_test_main'));
+    assert.ok(out.stderr.split('\n').includes(line), `stderr: ${out.stderr}`);
+    assert.ok(!/^done /m.test(out.stdout), `stdout: ${out.stdout}`);
+  });
+}
