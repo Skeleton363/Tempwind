@@ -11,7 +11,7 @@
   (export "run" (func $run))
   (elem (;0;) (table $table) (global.get $table_base) func $fn_0x1000)
   (func $run (;0;) (type 0) (param $state i64) (result i32)
-    (local $func i32) (local $entry i32) (local $status i32)
+    (local $func i32) (local $entry i32) (local $status i32) (local $d0 i32)
     local.get $state
     i32.const 0
     i32.store offset=148 align=1
@@ -19,8 +19,8 @@
     local.get $state
     i64.load offset=136 align=1
     i64.store offset=152 align=1
-    i32.const 0
-    global.set $depth
+    global.get $depth
+    local.set $d0
     block ;; label = @1
       loop ;; label = @2
         local.get $state
@@ -56,11 +56,13 @@
           i64.const -1
           i64.store offset=128 align=1
         end
-        i32.const 0
+        local.get $d0
         global.set $depth
         br 0 (;@2;)
       end
     end
+    local.get $d0
+    global.set $depth
     local.get $state
     local.get $state
     i64.load offset=136 align=1

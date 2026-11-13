@@ -8,11 +8,14 @@
 //    the Emscripten instance instantiated through the instantiateWasm hook with
 //    the raw `run` of guest_a, a plain `bnd_translate` that links guest_b.wasm
 //    and a Suspending `green_block`; thread_main entered through promising;
-// 2. the raw export host_dispatch placed in env.table behind lookup slots;
+// 2. the raw export host_dispatch placed in env.table behind lookup slots
+//    (C finds them again with abi.h's lookup layout and hash);
 // 3. two green threads that both block in C, each on its own state block and
 //    shadow stack (set through the raw stack exports);
-// 4. a nested guest call (in guest_b) through C's loop;
-// 5. memory.grow in C, then memory_grown;
+// 4. a nested guest call (in guest_b) through C's loop, env.depth unchanged
+//    across it (M2: `run` keeps the caller's depth);
+// 5. memory.grow in C past 4 GiB, then memory_grown; then the heap's cap at
+//    4 GiB (M2: malloc returns NULL, the memory's size is unchanged);
 // 6. a JS function between promising and Suspending (expected to fail).
 
 import { Linker, hostFunction } from '../../../runtime/src/link.mjs';
@@ -33,8 +36,8 @@ export const LAYOUT = {
   codeB: 0x10100000n,
   thunkBase: 0x7ff00000n,
   negThunk: 0x7ff00100n,
-  /** The Emscripten module's INITIAL_MEMORY (build.sh): 2 GiB + 64 MiB. */
-  initialPages: (2112 * 1024 * 1024) / PAGE_SIZE,
+  /** The Emscripten module's INITIAL_MEMORY (build.sh): 4 GiB, the host region's end. */
+  initialPages: 65536,
   maximumPages: 262144,
   shadowStackSize: 64 * 1024,
 };
@@ -52,7 +55,7 @@ const now = () => performance.now();
  * @returns {Promise<object>} what verify() checks, plus timings
  */
 export async function runBoundary({ factory, emWasm, guestA, guestB, rounds = 10000, log = () => {} }) {
-  const out = { timings: {}, events: [], output: [] };
+  const out = { timings: {}, events: [], output: [], depths: [] };
   const L = LAYOUT;
 
   // One shared memory64 for everything (abi.md, "Instances").
@@ -115,6 +118,12 @@ export async function runBoundary({ factory, emWasm, guestA, guestB, rounds = 10
         bnd_run: linkedA.run, // raw wasm export: a wasm-to-wasm call
         bnd_translate: translate,
         green_block: new WebAssembly.Suspending(greenBlock),
+        // Plain: the value of env.depth, the global every translated module imports.
+        bnd_depth: () => {
+          const d = linker.depth.value;
+          out.depths.push(d);
+          return d;
+        },
       });
       const instance = new WebAssembly.Instance(emModule, imports);
       raw = instance.exports;
@@ -142,6 +151,10 @@ export async function runBoundary({ factory, emWasm, guestA, guestB, rounds = 10
   const jsIndex = linker.addHostFunction((s, e, r) => raw.host_dispatch(s, HOST.block, r));
   linker.insert(L.negThunk, jsIndex, HOST.block);
   dv().setBigUint64(L.iat + 8 * HOST.negBlock, L.negThunk, true);
+  // C probes the same slots with abi.h's layout and hash; code B is not linked yet.
+  out.lookup = [HOST.add, HOST.block, HOST.callback, HOST.cbReturn, HOST.exit, HOST.grow, HOST.negBlock]
+    .map((id) => raw.lookup_entry(L.lookupHeader, id === HOST.negBlock ? L.negThunk : L.thunkBase + 16n * BigInt(id)));
+  out.lookup.push(raw.lookup_entry(L.lookupHeader, L.codeB));
 
   out.longjmp = raw.longjmp_check();
 
@@ -206,6 +219,7 @@ export async function runBoundary({ factory, emWasm, guestA, guestB, rounds = 10
     jsValue: views.grown[0] && grownAt + 8 <= views.grown[0].bytes ? views.grown[0].dv.getBigUint64(grownAt, true) : null,
     glueString: views.glue[0] ?? null,
     guestValue: record(3).grow,
+    capCheck: raw.cap_check(),
   };
 
   // The suspend/resume round trip.
@@ -249,7 +263,16 @@ export function verify(r) {
     want(`thread ${tid} add`, th.add, b + 40n);
     want(`thread ${tid} block (0xBAD... = a save-set check failed)`, th.block, wake);
     want(`thread ${tid} rbx`, th.rbx, b * 1000n);
-    want(`thread ${tid} callback`, th.callback, 3n * (b + 5n) + 1n);
+    want(`thread ${tid} callback (0xBADD0000 = depth changed)`, th.callback, 3n * (b + 5n) + 1n);
+  }
+  // env.depth before and after each nested run (one per thread's callback):
+  // `run` keeps the caller's depth (abi.md v5), so equal and nonzero.
+  want('depth reads around nested runs', r.depths.length, 4);
+  for (let i = 0; i + 1 < r.depths.length; i += 2) {
+    const [before, after] = r.depths.slice(i, i + 2);
+    if (before === 0 || after !== before) {
+      problems.push(`nested run ${i / 2}: depth ${before} before, ${after} after; want equal and nonzero`);
+    }
   }
   const g = r.grow;
   const value = 0x600DF00D00000003n;
@@ -260,6 +283,11 @@ export function verify(r) {
   want('value read by JS', g.jsValue, value);
   want('value read by the glue', g.glueString, 'past the old end');
   want('value read by translated code', g.guestValue, value);
+  // boundary.c's cap_check bits: 1 not past 4 GiB, 2 malloc returned memory,
+  // 4 errno not ENOMEM, 8 the memory's size changed, 16 the break moved.
+  want('heap cap at 4 GiB after growth (cap_check)', g.capCheck, 0);
+  want('lookup entries found by C through abi.h', r.lookup.join(','),
+    [HOST.add, HOST.block, HOST.callback, HOST.cbReturn, HOST.exit, HOST.grow, HOST.block, -1].join(','));
   want('bench round trips', r.bench.done, r.bench.rounds);
   want('negative test threw', r.negative.threw, true);
   want('negative test error', `${r.negative.name}: ${r.negative.message}`, 'SuspendError: trying to suspend JS frames');

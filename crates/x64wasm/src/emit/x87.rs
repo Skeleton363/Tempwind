@@ -722,7 +722,7 @@ impl ChunkEmitter<'_> {
     /// image marks non-empty gets its tag from its contents.
     /// fxsave m512 at `addr` (64-bit mode, no REX.W): FCW, FSW, the
     /// abridged tag byte, FOP, the instruction and data pointers and their
-    /// selectors as 0, MXCSR, MXCSR_MASK 0xFFFF (DAZ), ST(0)-ST(7) in
+    /// selectors as 0, MXCSR, [`abi::MXCSR_MASK`] (DAZ), ST(0)-ST(7) in
     /// 16-byte slots (the upper 6 bytes 0) and XMM0-XMM15. Bytes 416-511
     /// are not written. Changes no register; checks no pending exception.
     fn x87_save(&mut self, f: &mut InstructionSink<'_>) {
@@ -777,7 +777,7 @@ impl ChunkEmitter<'_> {
         f.local_get(l.addr);
         f.local_get(P_STATE);
         f.i64_load32_u(mem(abi::STATE_MXCSR));
-        f.i64_const(0xffff << 32);
+        f.i64_const((abi::MXCSR_MASK as i64) << 32);
         f.i64_or();
         f.i64_store(mem(24));
         // ST(i) = R[(TOP + i) & 7].

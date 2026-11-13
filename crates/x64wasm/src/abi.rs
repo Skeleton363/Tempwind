@@ -299,6 +299,204 @@ pub const NO_RET: u64 = u64::MAX;
 /// Return address hosts push so a test function's final `ret` exits to them.
 pub const SENTINEL_RET: u64 = 0x0000_7FFF_FFFF_0000;
 
+/// The brand string of leaves 0x80000002-0x80000004, NUL-padded.
+const CPUID_BRAND: &[u8; 48] =
+    b"Tempwind virtual x86-64 CPU\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+/// `cpuid` results by leaf: EAX, EBX, ECX, EDX (`instruction-scope.md`,
+/// "`cpuid` results"). Other leaves return zeros. The translator's `cpuid`
+/// and the C header's `TW_CPUID_LEAVES` both come from this table.
+pub fn cpuid_leaves() -> [(u32, [u32; 4]); 7] {
+    let brand = |leaf: usize| -> [u32; 4] {
+        core::array::from_fn(|r| {
+            let at = 16 * leaf + 4 * r;
+            u32::from_le_bytes(CPUID_BRAND[at..at + 4].try_into().unwrap())
+        })
+    };
+    [
+        // Highest basic leaf; vendor "TempwindVCPU" in EBX, EDX, ECX.
+        (0, [0x1, 0x706D_6554, 0x5550_4356, 0x646E_6977]),
+        // Family 6; CMPXCHG16B; FPU, CX8, CMOV, MMX, FXSR, SSE, SSE2.
+        (1, [0x600, 0, 0x2000, 0x0780_8101]),
+        (0x8000_0000, [0x8000_0004, 0, 0, 0]),
+        // LAHF/SAHF; SYSCALL, NX, LM.
+        (0x8000_0001, [0, 0, 0x1, 0x2010_0800]),
+        (0x8000_0002, brand(0)),
+        (0x8000_0003, brand(1)),
+        (0x8000_0004, brand(2)),
+    ]
+}
+
+/// The MXCSR_MASK `fxsave` stores (bytes 28-31 of its image): every MXCSR
+/// bit is writable, DAZ (bit 6) included.
+pub const MXCSR_MASK: u32 = 0xFFFF;
+
+/// The value of XCR0 the profile describes: x87 and SSE state. The profile
+/// has no OSXSAVE, so guest code cannot read it; Wine's Unix side reports it.
+pub const XCR0: u64 = 3;
+
+/// The non-canonical poison value for host-pointer slots in ntdll.dll
+/// (`wine-unix.md`, section 8): a guest call through it misses the lookup,
+/// and translating a non-canonical address stops loudly.
+pub const NO_DISPATCHER: u64 = 0xDEAD_0000_0000_0000;
+
+/// Where `x64wasm-cli gen-header` writes [`c_header`] by default, relative to
+/// the repository root. The file is committed.
+pub const C_HEADER_PATH: &str = "native/wine/include/tempwind/abi.h";
+
+/// The command that regenerates [`C_HEADER_PATH`].
+pub const C_HEADER_COMMAND: &str = "cargo run -p x64wasm-cli -- gen-header";
+
+/// The C header of this ABI for Wine's Unix side (`abi.md`, "The C header"):
+/// every constant from its definition here, with the `TW_` prefix.
+pub fn c_header() -> String {
+    let u64c = |v: u64| format!("UINT64_C({v:#x})");
+    let u32c = |v: u32| format!("UINT32_C({v:#x})");
+    let mut out = Vec::new();
+    let section = |out: &mut Vec<String>, title: &str| out.push(format!("\n/* {title} */"));
+
+    section(
+        &mut out,
+        "CPU state block (abi.md, \"CPU state block\"): byte offsets.",
+    );
+    out.push(format!(
+        "#define TW_STATE_GPR(i) ({} + {} * (uint64_t)(i))",
+        u64c(STATE_GPR),
+        u64c(gpr_offset(1) - gpr_offset(0))
+    ));
+    for (name, v) in [
+        ("RIP", STATE_RIP),
+        ("RFLAGS", STATE_RFLAGS),
+        ("EXIT", STATE_EXIT),
+        ("CC_OP", STATE_CC_OP),
+        ("CC_A", STATE_CC_A),
+        ("CC_B", STATE_CC_B),
+        ("CC_R", STATE_CC_R),
+        ("FS_BASE", STATE_FS_BASE),
+        ("GS_BASE", STATE_GS_BASE),
+        ("FAULT_ADDR", STATE_FAULT_ADDR),
+        ("FAULT_KIND", STATE_FAULT_KIND),
+        ("XMM", STATE_XMM),
+        ("MXCSR", STATE_MXCSR),
+        ("FCW", STATE_FCW),
+        ("FSW", STATE_FSW),
+        ("FTW", STATE_FTW),
+        ("FPR", STATE_FPR),
+        ("SIZE", STATE_SIZE),
+    ] {
+        out.push(format!("#define TW_STATE_{name} {}", u64c(v)));
+    }
+
+    section(
+        &mut out,
+        "Statuses of a guest function (abi.md, \"Statuses\").",
+    );
+    for (name, v) in [
+        ("RETURNED", STATUS_RETURNED),
+        ("UNWIND", STATUS_UNWIND),
+        ("EXIT", STATUS_EXIT),
+    ] {
+        out.push(format!("#define TW_STATUS_{name} {v}"));
+    }
+
+    section(
+        &mut out,
+        "Exit reasons (abi.md, \"Exit reasons\"), in state.exit.",
+    );
+    for (name, v) in [
+        ("LEFT_CODE", EXIT_LEFT_CODE),
+        ("UNSUPPORTED", EXIT_UNSUPPORTED),
+        ("FAULT", EXIT_FAULT),
+        ("HOST", EXIT_HOST),
+    ] {
+        out.push(format!("#define TW_EXIT_{name} {}", u32c(v)));
+    }
+
+    section(&mut out, "Fault kinds, in state.fault_kind.");
+    for (name, v) in [
+        ("READ", FAULT_READ),
+        ("WRITE", FAULT_WRITE),
+        ("EXECUTE", FAULT_EXECUTE),
+        ("DIVIDE", FAULT_DIVIDE),
+        ("INVALID_OPCODE", FAULT_INVALID_OPCODE),
+        ("GENERAL_PROTECTION", FAULT_GENERAL_PROTECTION),
+    ] {
+        out.push(format!("#define TW_FAULT_{name} {}", u32c(v)));
+    }
+
+    section(
+        &mut out,
+        "Page-state table (abi.md, \"Page-state table\"): one byte per page.",
+    );
+    out.push(format!("#define TW_PAGE_CODE {PAGE_CODE}"));
+    out.push(format!("#define TW_PAGE_WATCH {PAGE_WATCH}"));
+    out.push(format!("#define TW_PAGE_FLAGS_SHIFT {PAGE_FLAGS_SHIFT}"));
+
+    section(
+        &mut out,
+        "Lookup table (abi.md, \"Lookup table\"): header offsets, slot size, hash.",
+    );
+    for (name, v) in [
+        ("SLOTS", LOOKUP_SLOTS),
+        ("MASK", LOOKUP_MASK),
+        ("USED", LOOKUP_USED),
+        ("HEADER_SIZE", LOOKUP_HEADER_SIZE),
+        ("SLOT_SIZE", LOOKUP_SLOT_SIZE),
+        ("HASH_MUL", LOOKUP_HASH_MUL),
+    ] {
+        out.push(format!("#define TW_LOOKUP_{name} {}", u64c(v)));
+    }
+    out.push(format!("#define TW_LOOKUP_HASH_SHIFT {LOOKUP_HASH_SHIFT}"));
+    out.push(
+        "\n/* The slot index a lookup probe for key starts at; probing continues at\n   \
+         (i + 1) & mask. */\n\
+         static inline uint64_t tw_lookup_hash(uint64_t key, uint64_t mask) {\n  \
+         return ((key * TW_LOOKUP_HASH_MUL) >> TW_LOOKUP_HASH_SHIFT) & mask;\n}"
+            .to_string(),
+    );
+
+    section(&mut out, "Addresses and limits.");
+    out.push(format!("#define TW_NO_RET {}", u64c(NO_RET)));
+    out.push(format!("#define TW_SENTINEL_RET {}", u64c(SENTINEL_RET)));
+    out.push(format!("#define TW_NULL_LIMIT {}", u64c(NULL_LIMIT)));
+    out.push(format!(
+        "#define TW_MAX_MEMORY_PAGES {}",
+        u64c(MAX_MEMORY_PAGES)
+    ));
+    out.push(format!("#define TW_NO_DISPATCHER {}", u64c(NO_DISPATCHER)));
+
+    section(
+        &mut out,
+        "CPU profile: what the translator's cpuid and fxsave return, and XCR0.\n   \
+         TW_CPUID_LEAVES initializes rows of { leaf, eax, ebx, ecx, edx }; other\n   \
+         leaves return zeros.",
+    );
+    let leaves = cpuid_leaves();
+    out.push(format!("#define TW_CPUID_LEAF_COUNT {}", leaves.len()));
+    out.push("#define TW_CPUID_LEAVES { \\".to_string());
+    for (i, (leaf, [a, b, c, d])) in leaves.iter().enumerate() {
+        let comma = if i + 1 < leaves.len() { "," } else { "" };
+        out.push(format!(
+            "  {{ {leaf:#010x}u, {a:#010x}u, {b:#010x}u, {c:#010x}u, {d:#010x}u }}{comma} \\"
+        ));
+    }
+    out.push("}".to_string());
+    out.push(format!("#define TW_MXCSR_MASK {}", u32c(MXCSR_MASK)));
+    out.push(format!("#define TW_XCR0 {}", u64c(XCR0)));
+
+    let mut text = format!(
+        "/* Generated from crates/x64wasm/src/abi.rs by `{C_HEADER_COMMAND}`;\n   \
+         do not edit. The translated-module ABI: docs/design/abi.md. */\n\
+         #ifndef TEMPWIND_ABI_H\n#define TEMPWIND_ABI_H\n\n#include <stdint.h>\n"
+    );
+    for line in out {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    text.push_str("\n#endif /* TEMPWIND_ABI_H */\n");
+    text
+}
+
 /// RFLAGS status-flag bits.
 pub mod flags {
     pub const CF: u64 = 1 << 0;
