@@ -511,7 +511,15 @@ impl<'a> Pe<'a> {
             let name = self.read_cstr(word(4))?;
             let iat = word(12);
             let int = word(16);
-            let functions = self.thunks(if int != 0 { int } else { iat }, iat)?;
+            // The names are only in the delay import name table. Until it is
+            // bound, the delay IAT holds the VAs of the load thunks, not
+            // hint/name RVAs as an ordinary unbound IAT does, so without a
+            // name table the DLL is known but its functions aren't.
+            let functions = if int != 0 {
+                self.thunks(int, iat)?
+            } else {
+                Vec::new()
+            };
             dlls.push(ImportDll { name, functions });
             desc = desc
                 .checked_add(32)

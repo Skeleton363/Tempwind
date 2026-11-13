@@ -386,6 +386,28 @@ fn delay_imports() {
     assert_eq!(pe.imports().unwrap().len(), 2);
 }
 
+/// A delay descriptor without a name table (INT RVA 0) names its DLL and no
+/// functions: its IAT holds the VAs of the load thunks, which aren't
+/// hint/name RVAs.
+#[test]
+fn delay_imports_without_a_name_table() {
+    let mut image = build_image();
+    let r = |rva: u32| (rva - RDATA_RVA) as usize + 0x400;
+    let d = RDATA_RVA + 0x800;
+    put32(&mut image, 0x58 + 112 + 13 * 8, d);
+    put32(&mut image, 0x58 + 116 + 13 * 8, 64);
+    put32(&mut image, r(d), 1);
+    put32(&mut image, r(d) + 4, d + 0x80); // DllNameRVA
+    put32(&mut image, r(d) + 12, d + 0xa0); // IAT
+    cstr(&mut image, r(d + 0x80), "delay.dll");
+    // The IAT's slot: a load thunk's VA, far outside the image as an RVA.
+    put64(&mut image, r(d + 0xa0), 0x1_8000_2000);
+    let dlls = parse(&image).delay_imports().unwrap();
+    assert_eq!(dlls.len(), 1);
+    assert_eq!(dlls[0].name, "delay.dll");
+    assert!(dlls[0].functions.is_empty());
+}
+
 #[test]
 fn exports() {
     let image = build_image();

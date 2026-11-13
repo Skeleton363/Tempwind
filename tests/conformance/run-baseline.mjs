@@ -33,7 +33,11 @@ const exeName = basename(exe);
 const launcher = o.launcher ? o.launcher.split(/\s+/) : [];
 const limitMs = Number(o.timeout) * 1000;
 const env = { ...process.env, WINETEST_DEBUG: '1' };
-for (const kv of o.env) { const i = kv.indexOf('='); env[kv.slice(0, i)] = kv.slice(i + 1); }
+for (const kv of o.env) {
+  const i = kv.indexOf('=');
+  if (i <= 0) { console.error(`--env takes NAME=VALUE, not ${JSON.stringify(kv)}`); process.exit(2); }
+  env[kv.slice(0, i)] = kv.slice(i + 1);
+}
 const traceDir = o['trace-dir'] ? resolve(o['trace-dir']) : null;
 if (traceDir) mkdirSync(traceDir, { recursive: true });
 

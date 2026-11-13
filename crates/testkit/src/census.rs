@@ -118,8 +118,9 @@ pub fn exclusion(insn: &Instruction) -> Option<&'static str> {
         | Rdmsr | Wrmsr | Rdpmc | Sysret | Sysexit | Iret | Iretd | Iretq | Swapgs | Lar | Lsl
         | Verr | Verw | Clac | Stac | Xsetbv => Some("privileged or system"),
         // int n enters the kernel through a gate user mode may not use
-        // (#GP), except n = 3; Windows code uses it for __fastfail (29h)
-        // and the debug services (2Dh).
+        // (#GP); Windows code uses it for __fastfail (29h) and the debug
+        // services (2Dh). Vector 3 is allowed and raises #BP like int3, but
+        // the census classes forms by Code, so `CD 03` is counted here too.
         Int => Some("privileged or system"),
         Syscall | Sysenter => Some("syscall"),
         Cpuid | Rdtsc | Rdtscp | Rdrand | Rdseed => Some("nondeterministic"),

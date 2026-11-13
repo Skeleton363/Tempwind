@@ -246,24 +246,36 @@ fn hex(v: u64) -> String {
     format!("{v:#x}")
 }
 
-pub fn run(args: &Args) -> Result<()> {
-    let pe_dir = args.tree.join(PE_DIR);
+/// The modules in `pe_dir`, by lower-case file name. A file without the
+/// `MZ` signature is data next to the modules and is skipped. A PE image
+/// whose headers or tables don't parse fails the closure: dropping it would
+/// drop its edges, and its importers would list it as unresolved.
+fn scan_modules(pe_dir: &Path) -> Result<BTreeMap<String, Info>> {
     let mut infos = BTreeMap::new();
-    for entry in fs::read_dir(&pe_dir).with_context(|| format!("read {}", pe_dir.display()))? {
+    for entry in fs::read_dir(pe_dir).with_context(|| format!("read {}", pe_dir.display()))? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        let rel = format!("{PE_DIR}/{}", entry.file_name().to_string_lossy());
-        match load_info(&entry.path(), rel) {
-            Ok(info) => {
-                infos.insert(name, info);
-            }
-            // Not a PE image (a data file next to the modules): not a module.
-            Err(e) => eprintln!("closure: skipping {name}: {e}"),
+        let mut magic = [0u8; 2];
+        let is_pe = fs::File::open(entry.path())
+            .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+            .is_ok()
+            && magic == *b"MZ";
+        if !is_pe {
+            eprintln!("closure: skipping {name}: not a PE image");
+            continue;
         }
+        let rel = format!("{PE_DIR}/{}", entry.file_name().to_string_lossy());
+        infos.insert(name, load_info(&entry.path(), rel)?);
     }
+    Ok(infos)
+}
+
+pub fn run(args: &Args) -> Result<()> {
+    let pe_dir = args.tree.join(PE_DIR);
+    let infos = scan_modules(&pe_dir)?;
     if infos.is_empty() {
         bail!("no PE modules in {}", pe_dir.display());
     }
@@ -444,6 +456,23 @@ mod tests {
         let hosts = &m["api-ms-win-core-foo-l1-1"];
         assert!(hosts.contains("kernelbase.dll") && hosts.contains("kernel32.dll"));
         assert!(m["ext-ms-win-x-l1-1"].contains("ntdll.dll"));
+    }
+
+    #[test]
+    fn scan_skips_data_and_fails_on_a_broken_image() {
+        let dir = std::env::temp_dir().join(format!("closure-scan-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // Data next to the modules: skipped.
+        fs::write(dir.join("libdata.a"), b"!<arch>\n").unwrap();
+        fs::write(dir.join("empty.dat"), b"").unwrap();
+        assert!(scan_modules(&dir).unwrap().is_empty());
+        // An image that doesn't parse: the closure fails, naming it.
+        fs::write(dir.join("broken.dll"), b"MZ\0\0").unwrap();
+        let Err(e) = scan_modules(&dir) else {
+            panic!("broken.dll was accepted");
+        };
+        assert!(format!("{e:#}").contains("broken.dll"), "{e:#}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
