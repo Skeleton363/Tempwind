@@ -169,7 +169,7 @@ MMX has no instructions in these builds. `mov` alone is 34.5 % of all instructio
 
 ## Wine closure census (Phase 2, M1)
 
-Measured on release `wine-bf443f0` (the PE modules are the same build as `wine-ccff087`, which `tests/targets/wine.lock` names; both `closure.json` files list the same 83 modules). The closure (`wine-build.md`, "The DLL closure") is 83 modules: 74 from `lib/wine/x86_64-windows` (`apisetschema.dll` is data only: no code, not translated), `kernel32_test.exe` and `ntdll_test.exe`, and the 7 Phase 1 roots. CI checks it with `testkit census --closure closure.json --tree <unpacked wine-pe-x86_64.tar.zst> <roots and test exes> --check`.
+Measured on release `wine-bf443f0`. Its PE modules are the same build as `wine-ccff087`'s and `wine-4c6ec0d`'s, the release `tests/targets/wine.lock` names; all three `closure.json` files list the same 83 modules, with the same bases and sizes, and the census of `wine-4c6ec0d` gives the same totals. The closure (`wine-build.md`, "The DLL closure") is 83 modules: 74 from `lib/wine/x86_64-windows` (`apisetschema.dll` is data only: no code, not translated), `kernel32_test.exe` and `ntdll_test.exe`, and the 7 Phase 1 roots. CI checks it with `testkit census --closure closure.json --tree <unpacked wine-pe-x86_64.tar.zst> <roots and test exes> --check`.
 
 | | closure (83 modules) |
 |---|---|
@@ -204,7 +204,7 @@ Wine's closure adds 16 forms to the 781 the Phase 1 families already covered. Ea
 Besides 7-Zip's 27 functions and MinGW's `cpuid` probes (above), the Wine modules have 5 functions with out-of-profile instructions, all CPUID-gated or unreachable under the profile: `ntdll_test.exe`'s `test_extended_context` and `test_extended_context_handler` (AVX `vmovups ymm`, run only when `cpuid` reports AVX) and `func_time` (`rdtsc`), wineboot's `read_tsc_frequency` (`rdtsc`, `rdtscp`), and dbghelp's `write_minidump` (`cpuid`). No Wine DLL has an SSE3+ or AVX path in the closure: ucrtbase, msvcrt and ntdll use only baseline forms.
 
 ### Translation
-Every closure module with code (82) translates with `translate-pe` and validates. The only unsupported sites are excluded or out-of-profile instructions: `syscall` (1,798), `int3` (12: ntdll 8, kernelbase 4 after non-returning calls), `cli`/`sti`/`in` in RTTI data (msvcp90 2, msvcr90 2), `rdtsc`/`rdtscp` (wineboot 8, `ntdll_test.exe` 4), `int 29h` and one AVX `vmovups` (`ntdll_test.exe`). The 7 Phase 1 roots translate as before (Phase 1 measurements).
+Every closure module with code (82) translates with `translate-pe` and validates. The only unsupported sites are excluded or out-of-profile instructions: `syscall` (1,798), `int3` (12: ntdll 8, kernelbase 4 after non-returning calls; the census table counts 9, since it decodes `.pdata` functions and gaps without padding, while discovery follows control flow, including the fall-through of calls that never return), `cli`/`sti`/`in` in RTTI data (msvcp90 2, msvcr90 2), `rdtsc`/`rdtscp` (wineboot 8, `ntdll_test.exe` 4), `int 29h` and one AVX `vmovups` (`ntdll_test.exe`). The 7 Phase 1 roots translate as before (Phase 1 measurements).
 
 In V8 (Node 24.22, V8 13.6, this session's 4-CPU VM, median of 3; `node tests/bench/translator/images.mjs --out target/wine/aot <modules>`), the 75 Wine modules with code (73 DLLs, drivers and programs, and the two test exes):
 

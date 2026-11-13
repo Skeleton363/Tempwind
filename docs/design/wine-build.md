@@ -46,7 +46,7 @@ How CI builds Wine 11 from the dl.winehq.org tarball, what it publishes, and the
   - **Why:** workflow artifacts can't be downloaded in a session (their storage host is outside the session's network allowlist), so a release is the only way a session gets the build. Run 42306869519 built Wine, but its late `baseline-wine` failure left nothing published.
 - **Assets are never replaced.** An asset already on a tag stays as it is, and a new build is a new tag.
 - **Retries:** both publish jobs go through `scripts/release-publish.sh`, which retries every API call. The releases API has twice refused a run's token with a transient 403, "Resource not accessible by integration".
-- **Without traces,** `closure` runs on the static edges alone and says so in `closure.json`'s `note`.
+- **Without traces,** `closure` runs on the static edges alone and says so in `closure.json`'s `data_files_note` (below).
 
 ## The DLL closure
 The set of PE modules that a Phase 2 run may load. It is the scope of the census (`instruction-scope.md`) and of AOT translation.
@@ -79,14 +79,18 @@ The set of PE modules that a Phase 2 run may load. It is the scope of the census
   ```
 
   - `path` is relative to the tree (`tests/kernel32_test.exe`), however `--root` names a root inside it; a root outside the tree keeps the path it was given (`roots/basic.exe`), and `census --closure` matches such roots to its FILES by file name.
-  - `overlaps` lists the pairs whose `[base, base + size)` ranges intersect.
-  - `highest_end` is the largest `base + size`.
-  - `memory_bytes` is the guest memory that loading every module at its preferred base implies, rounded up to 64 KiB.
-  - `data_files` lists the files the Unix side reads, read from the native trace (`+file` or `strace`): NLS, `wine.inf`. They are not translated, and M2's FS layout includes them.
+  - `via`: `root` (a `--root`), `always` (`apisetschema.dll`), `static`, `loaddll`.
+  - `overlaps` lists the pairs of DLLs whose `[base, base + size)` ranges intersect. Roots are left out, since no two load together. `root_overlaps` lists each root with the DLLs it loads that intersect it.
+  - `highest_end` is the largest `base + size`, and `lowest_base` the smallest `base`. `sum_of_sizes` adds up every module's size.
+  - `memory_bytes` is the guest memory that loading every module at its preferred base implies: `highest_end` rounded up to 64 KiB. `memory_bytes_definition` repeats this in the file.
+  - `unresolved` lists each name with no file in the tree and no apiset host, with up to 8 modules or traces that name it (`(loaddll kernel32_test.exe)`). Most are temporary DLLs the tests create.
+  - `trace_files` counts the `+loaddll` traces read; 0 means static edges only.
+  - `data_files` lists the install tree's `share/wine/nls/*.nls` and `share/wine/wine.inf`. That is a superset of what the Unix side reads, not narrowed by a `+file` trace. They are not translated. M2's FS layout includes them, and may narrow the list from a trace.
+  - `data_files_note` is the closure job's `--note`: how `data_files` were listed, and "Static edges only" when there were no traces.
 
 ## The prefix
-- **How it is made:** with the native build, `WINEPREFIX=$PWD/prefix WINEDEBUG=-all /opt/wine-11.0/bin/wine wineboot --init`, then `wineserver -w`.
-- **What is kept:** `system.reg`, `user.reg`, `userdef.reg`, `drive_c` and `dosdevices`, as made. The tarball records the prefix path it was made at, since the `.reg` files contain it.
+- **How it is made:** with the native build installed at its final path, `/opt/wine-11.0`: `WINEPREFIX=$HOME/wine-prefix WINEDEBUG=-all /opt/wine-11.0/bin/wine wineboot --init`, then `wineserver -w`.
+- **What is kept:** `system.reg`, `user.reg`, `userdef.reg`, `drive_c` and `dosdevices`, as made. The tarball holds `wine-prefix/` and `wine-prefix.path`, the path the prefix was made at, since the `.reg` files contain it.
 - **What is added:** wineboot's per-boot volatile keys don't reach the `.reg` files. The Emscripten Unix side adds them from a generated overlay (`wine-unix.md`, M2).
 
 ## Conformance baselines
@@ -95,6 +99,7 @@ The set of PE modules that a Phase 2 run may load. It is the scope of the census
   - `<exe> <unit>`, with a fresh temporary working directory;
   - `WINETEST_DEBUG=1`, so the summary line prints;
   - `WINETEST_PLATFORM=wine` under Wine, unset on Windows;
+  - under native Wine also `WINEDEBUG=+loaddll`, so the same pass gives the closure's dynamic edges; each unit's stderr is kept as its trace. The trace adds a stderr line per module load, and `seconds` includes it;
   - a 120 s limit (300 s for translated runs, which the runner records);
   - stdout and stderr captured.
 - **Platforms:**
@@ -112,9 +117,12 @@ The set of PE modules that a Phase 2 run may load. It is the scope of the census
                  "exit": 0, "seconds": 0.0 } ] }
   ```
 
-  - **`ok`:** a summary line was seen, failures = 0 and the exit code is 0.
-  - **`failed`:** a summary line was seen and failures > 0.
-  - **`crashed`:** no summary line, or an exception exit code (≥ 0xC0000000).
+  The first status whose rule matches is the unit's (`tests/conformance/parse.mjs`):
   - **`timeout`:** the unit was killed at the limit.
-  - **`unsupported`** (tempwind only): a `tempwind: unsupported:` line was seen.
+  - **`unsupported`:** a `tempwind: unsupported:` line was seen. Every platform is checked, but only our port prints it.
+  - **`crashed`:** no summary line, killed by a signal (`exit` −1), or an exception exit code (≥ 0xC0000000).
+  - **`failed`:** failures > 0, or failures = 0 with a non-zero exit code.
+  - **`ok`:** failures = 0 and the exit code is 0.
+  - **Native Wine's exit status is the exit code's low 8 bits** (`wine` is a Unix process), so 0xC0000005 arrives as 5. There, `crashed` rests on the missing summary line. A main process that crashes after its child processes printed their summaries is counted `failed`. No unit in `wine-4c6ec0d`'s baseline is such a case: every `failed` unit's exit code equals its failures.
+- **The release assets** `baseline-windows.json` and `baseline-wine.json` wrap one results object per exe: `{ "schema": 1, "platform", "wine", "commit", "run", "results": [ <kernel32_test.exe's>, <ntdll_test.exe's> ] }`.
 - **Rates:** units `ok` / units listed, and checks (executed − failures) / executed, both per exe and both against each baseline. M5's `conformance.yml` records them per main commit on the orphan branch `conformance-data`.
