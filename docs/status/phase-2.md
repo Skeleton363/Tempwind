@@ -280,12 +280,23 @@ Session 2 (from 2026-11-13) started fresh from M1's hand-off. The research pass 
 - **To resume:** restart WP0 and WP1 from their side branches (each in its own worktree: `git worktree add -b NAME DIR origin/m2-wpN-wip`), with briefs written from the WP rows below and `wine-unix.md`. Each agent first reads its branch's diff against `fa05b93`. Parallel agents work in their own worktrees, so their commits don't share a HEAD (M1's two branch reconciliations).
 - The Wine source for reading is unpacked from the pinned tarball (`tests/targets/sources.json`) into the scratchpad; a new container needs it unpacked again.
 
+### Resumed (2026-11-13, 18:30 UTC)
+- WP0 and WP1 were resumed by `SendMessage` in their worktrees, keeping their context. The owner ran `/compact` at the boundary from planning to execution.
+- **WP0 merged (`f0c0827`):**
+  - `abi.rs` defines the CPUID table, `MXCSR_MASK`, `XCR0` and `NO_DISPATCHER` once. `x64wasm-cli gen-header` writes `native/wine/include/tempwind/abi.h`, and `crates/x64wasm/tests/c_header.rs` fails on drift.
+  - `run` keeps the caller's `depth`. The L5 snapshots changed only in `run`.
+  - The spike runs at 4 GiB with `__wrap_sbrk` and takes its constants from `abi.h`. New checks: `depth` across a nested run (on v4's `run` it fails, 1 before and 0 after), the heap cap after growth (`malloc` gives NULL with `ENOMEM`, and neither the break nor the memory moves), and C finding lookup slots with `tw_lookup_hash`.
+  - Tests: `cargo test --workspace` 231 passed, `npm run test:node` 261 of 261, `wine-boundary` 5 of 5 runs in Node and in the Chromium Worker.
+  - Measured: creating the 4 GiB shared memory64 takes a median 0.3 ms in Node and 1.0 ms in the Chromium Worker (`abi.md`, "The spike (M1)").
+- **Decision, from WP0's report:** `depth` joins the green-thread save set (`abi.md`, "Green threads"). C restores it on the resumed stack, and a new thread starts with 0. M3 adds it, since the global exists once translated code runs, and M4's test with two threads checks it.
+- **Checkpoints (trial 6):** 116,079 tokens (11.6 %) at WP0's merge, read at the turn's start.
+
 ### Work packages
 At most two deep-workers at once and three subagents in all. Each brief names its files, the contract sections and the tests that decide "done", and a WIP track `m2-wpN-wip`. Agents commit their own paths only and use their own `--out` directories.
 
 | WP | Agent | When | Owns | Done when |
 |---|---|---|---|---|
-| WP0: boundary items | deep-worker | ∥ WP1 | `gen-header` and `abi.h`, with the drift test; the CPUID table and the other new constants in `abi.rs`; `run` keeping the caller's `depth` (`emit.rs`, L5 snapshots regenerated); the spike at 4 GiB with `--wrap=sbrk` | cargo tests pass; a spike check shows `depth` equal before and after a nested run, and fails on the old `run`; a spike check shows `malloc` returning NULL at the cap after growth; `wine-boundary` passes in Node and in the Chromium Worker; the time to create the 4 GiB memory is measured |
+| WP0: boundary items (merged, `f0c0827`) | deep-worker | ∥ WP1 | `gen-header` and `abi.h`, with the drift test; the CPUID table and the other new constants in `abi.rs`; `run` keeping the caller's `depth` (`emit.rs`, L5 snapshots regenerated); the spike at 4 GiB with `--wrap=sbrk` | cargo tests pass; a spike check shows `depth` equal before and after a nested run, and fails on the old `run`; a spike check shows `malloc` returning NULL at the cap after growth; `wine-boundary` passes in Node and in the Chromium Worker; the time to create the 4 GiB memory is measured |
 | WP1: build skeleton | deep-worker | first | `build.sh`, `config.h`, `imports.txt`, `rename-server.h`, `00xx`, `src/` skeletons (`green_pthread.c` working; `stubs.c`, `version.c`, `library.js`; `signal_wasm64.c`, `green.c`, `inproc.c`, `boot.c` and `virtual_wasm.c` with `grow_to` and `__wrap_sbrk`), `tests/harness.h`, `runtime/src/wine/unix-host.mjs` (memory, raw exports, imports, `preRun` ENV, the stdio devices, MEMFS), `tests/wine/link.test.mjs`, `npm run test:wine` | everything compiles and links with the three gates; the `link` test passes |
 | WP2: virtual backend | deep-worker | after WP1 | `01xx`, `virtual_wasm.c`, `tests/virtual.c`, `tests/wine/virtual.test.mjs` | the `virtual` checks (`wine-unix.md`, section 10). Its base maps (`virtual_init`, the first TEB, reserve, commit and free) come first and are merged early, since the wait harness needs them |
 | WP3: in-process server | deep-worker | after WP1, ∥ WP2 | `02xx` (`server/*` and `dlls/ntdll/unix/server.c`), `inproc.c`, `green.c`, the scheduler in `unix-host.mjs`, `tests/wait.c`, `tests/wine/wait.test.mjs` | the `wait` checks |
