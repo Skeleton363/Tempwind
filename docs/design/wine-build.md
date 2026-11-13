@@ -44,7 +44,7 @@ How CI builds Wine 11 from the dl.winehq.org tarball, what it publishes, and the
   - `publish-build` creates the release as soon as the build passes: the PE modules, the native tree, the prefix and `build-info.json`.
   - The same run's `publish-results` then adds the baselines, the traces and `closure.json`. It runs even when one of those jobs failed, so whatever exists is published, and a missing asset is a warning in the run.
   - **Why:** workflow artifacts can't be downloaded in a session (their storage host is outside the session's network allowlist), so a release is the only way a session gets the build. Run 42306869519 built Wine, but its late `baseline-wine` failure left nothing published.
-- **Assets are never replaced.** An asset already on a tag stays as it is, and a new build is a new tag.
+- **Assets are never replaced.** An asset already on a tag stays as it is, and a new build is a new tag. An asset that is there without its `.sha256` (an earlier attempt stopped between the two uploads) gets one made from the release's copy, which may come from another build of the same commit.
 - **Retries:** both publish jobs go through `scripts/release-publish.sh`, which retries every API call. The releases API has twice refused a run's token with a transient 403, "Resource not accessible by integration".
 - **Without traces,** `closure` runs on the static edges alone and says so in `closure.json`'s `data_files_note` (below).
 
@@ -65,6 +65,7 @@ The set of PE modules that a Phase 2 run may load. It is the scope of the census
   - Each test unit runs on its own.
   - This catches `LoadLibrary` and the delay loads that run.
 - **Always in:** `apisetschema.dll`, which is data and is mapped by the Unix side.
+- **The candidates** are the files in `lib/wine/x86_64-windows`. One without the `MZ` signature is data and is skipped. A PE image whose headers or tables don't parse fails the closure, since dropping it would silently drop its edges.
 - **`closure.json` schema 1:**
 
   ```
