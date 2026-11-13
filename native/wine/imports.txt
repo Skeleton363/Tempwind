@@ -17,7 +17,7 @@ env.tw_run                     a translated module's raw run (M3; M2 stops loudl
 # ---- Files, directories, pipes: Emscripten's FS (MEMFS and the host's stdio devices) ----
 env.__syscall_chdir            server and loader change the cwd (section 8)
 env.__syscall_chmod            file attributes (NtSetInformationFile)
-env.__syscall_dup              fd passing between client and in-process server is dup() (section 7)
+env.__syscall_dup              fd passing between client and in-process server is dup() (section 7: thread_get_inflight_fd, send_client_fd)
 env.__syscall_dup3             dup2 of fds (env.c, server fd handling)
 env.__syscall_fadvise64        posix_fadvise (file.c read-ahead hints)
 env.__syscall_fallocate        posix_fallocate (file.c, mapping.c)
@@ -36,8 +36,8 @@ env.__syscall_mkdirat          directory creation (file.c, the prefix's director
 env.__syscall_newfstatat       fstatat path lookups (file.c)
 env.__syscall_openat           opening files
 env.__syscall_pipe2            the client/server request and reply pipes (section 7)
-env.__syscall_poll             poll on the server's pipes (until green.c routes it, section 9)
-env.__syscall_poll_nonblocking poll with a zero timeout (Emscripten splits poll)
+env.__syscall_poll             libc's poll; green.c replaces poll (section 9), so no module imports it now
+env.__syscall_poll_nonblocking green.c's poll probes with it (the server's check_fd_events, a zero timeout; section 9)
 env.__syscall_readlinkat       symlinks of dosdevices (section 8)
 env.__syscall_renameat         NtSetInformationFile FileRenameInformation; registry saves
 env.__syscall_rmdir            directory removal
@@ -55,20 +55,20 @@ wasi_snapshot_preview1.fd_sync    fsync (NtFlushBuffersFile)
 wasi_snapshot_preview1.fd_write   write (files, pipes, the server's replies, stdio)
 
 # ---- Sockets: Emscripten's socket emulation (ntdll socket.c, server sock.c) ----
-env.__syscall_accept4          server sock.c accept; ntdll socket.c
-env.__syscall_bind             sockets
-env.__syscall_connect          sockets
+env.__syscall_accept4          server sock.c accept; ntdll socket.c; the master socket's accept (request.c, not run in-process)
+env.__syscall_bind             sockets (ntdll socket.c, server sock.c; the master socket's bind, not run in-process)
+env.__syscall_connect          sockets (ntdll socket.c, server sock.c; server_connect, not run in-process)
 env.__syscall_getpeername      sockets
 env.__syscall_getsockname      sockets
 env.__syscall_getsockopt       sockets
-env.__syscall_listen           sockets
+env.__syscall_listen           sockets (server sock.c; the master socket's listen, not run in-process)
 env.__syscall_recvfrom         sockets
-env.__syscall_recvmsg          sockets; the server's fd passing over its socket (replaced in-process, section 7)
-env.__syscall_sendmsg          sockets; send_client_fd (replaced in-process, section 7)
+env.__syscall_recvmsg          sockets (ntdll socket.c, virtual_locked_recvmsg, server sock.c); fd passing's recvmsg stays compiled, not run in-process (section 7)
+env.__syscall_sendmsg          sockets (ntdll socket.c, server sock.c); fd passing's sendmsg stays compiled, not run in-process (section 7)
 env.__syscall_sendto           sockets
 env.__syscall_setsockopt       sockets
 env.__syscall_shutdown         sockets
-env.__syscall_socket           sockets; socketpair for the server connection
+env.__syscall_socket           sockets (ntdll socket.c, server sock.c); the master socket and server_connect, not run in-process (section 7)
 
 # ---- Memory ----
 env._mmap_js                   virtual.c's file mmap (until 01xx routes it to virtual_wasm.c, section 6)
@@ -85,7 +85,7 @@ env._gmtime_js                 gmtime (registry and time zone code)
 env._localtime_js              localtime (time zone information)
 env._mktime_js                 mktime (time zone information)
 env._tzset_js                  tzset (TZ=UTC from the host, section 8)
-env._setitimer_js              setitimer (the server's timers; Emscripten implements alarm with it)
+env._setitimer_js              setitimer, under alarm: the server's ptrace watchdog (signal.c start_watchdog, from ptrace.c); the server's timers are its timeout lists (section 9)
 
 # ---- Process, environment, signals ----
 wasi_snapshot_preview1.environ_get        environ, built from ENV in preRun (section 8)
@@ -94,9 +94,9 @@ wasi_snapshot_preview1.proc_exit          exit()
 env.exit                       exit() through Emscripten's runtime (a Wine error ends the boot, section 8)
 env._abort_js                  abort(): stopping loudly (section 2)
 env.__assert_fail              assert()
-env.__call_sighandler          raise()/kill() of the process itself runs the handler (server signal handling, unused in-process)
+env.__call_sighandler          libc's raise(), which kill() of the process's own pid calls (the server's kill of a client pid: process.c process_sigkill, request.c, ptrace.c) and setitimer's alarm
 env.__do_set_thread_state      the -ww libc sets its thread state lazily (emscripten_thread_state.S)
-env._emscripten_runtime_keepalive_clear  raise()'s default terminate action (libc raise.c)
+env._emscripten_runtime_keepalive_clear  raise()'s default terminate action (libc raise.c; see __call_sighandler)
 env.emscripten_num_logical_cores  sysconf(_SC_NPROCESSORS_ONLN) (system.c; the profile says 1, section 3)
 
 # ---- -sSTACK_OVERFLOW_CHECK=2 ----
