@@ -218,6 +218,39 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
   - ci.yml dispatch 43385084634 green.
 - **Rework at review:** none.
 
+### The close (2026-11-13)
+- **Verification** (`/milestone-close` step 1, run by a builder on the code at `4c6ec0d`): every command passes.
+  - fmt; clippy, on the workspace and on `x64wasm-fp` for wasm32;
+  - `cargo test --workspace`: 228 passed, 8 ignored;
+  - `record --check`: all 80 files reproduce;
+  - L1 replay: 60,752 of 60,752 cases in each of the four modes;
+  - census `--check`:
+    - 7zz and CoreMark: 487 of 487 forms;
+    - basic, hello, l2_crt, l2_float and l2_int: 25, 230, 237, 355 and 272 forms, all covered;
+    - Wine's closure (83 modules, `wine-4c6ec0d`): 797 of 797;
+  - `npm run test:node` 261 of 261, and `npm run test:browser` 5 of 5;
+  - the 7-Zip matrix in translated mode: 138 of 138 steps, identical to `tests/sevenzip/expected` (`compare.mjs`).
+- **Spec review, 9 items:**
+  - `wine.lock` is moved;
+  - the missing CI translation gate is recorded for M3 (Known issues);
+  - seven contract gaps are closed by documenting the published data in `wine-build.md` and `instruction-scope.md`:
+    - the baseline wrapper;
+    - `closure.json`'s extra fields and `data_files_note`;
+    - data files listed from the install tree;
+    - `+loaddll` during the Wine baseline;
+    - the status rules;
+    - the prefix path;
+    - the int3 counts.
+- **Code review** (`/code-review medium`), 5 findings:
+  - **Fixed, with tests:**
+    - `testkit closure` fails on a PE image whose tables don't parse, where it used to skip it. Run on `wine-4c6ec0d`'s tree and traces, the stricter closure gives exactly the published module list.
+    - Delay imports without a name table list no functions, where they used to read the delay IAT as names.
+    - `release-publish.sh` adds a missing `.sha256`, made from the release's own copy (a dry run with a stub `gh` covers it).
+    - `run-baseline.mjs` rejects an `--env` without `=`.
+  - **A comment:** the census classes `int imm8` by Code, `CD 03` included.
+  - **Documented:** native Wine's 8-bit exit status (Known issues).
+- **After the fixes:** fmt, clippy, the new and affected tests, and `npm run test:node` (261 of 261) pass. Their push starts a new `wine` run, and CI runs on the PR.
+
 ## What works
 
 | Item | Evidence |
