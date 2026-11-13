@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include <time.h>
+#include <sys/types.h>
 
 /* stubs.c: stop loudly. Prints "tempwind: unsupported: <what>" on stderr and
  * calls abort() (section 2). */
@@ -52,5 +53,22 @@ void green_wake_queue( struct green_queue *queue, int all );
 /* virtual_wasm.c (section 5): grows the memory to cover end; 0 or -1 with
  * errno = ENOMEM. The module's only memory.grow. */
 int grow_to( uint64_t end );
+
+/* virtual_wasm.c (sections 4 and 6): the backend under virtual.c, which the
+ * 01xx patches declare there too. The guest regions are tw_reserve_list,
+ * ended by a zero size (virtual.c's struct preload_info). */
+struct tw_range
+{
+    void  *addr;
+    size_t size;
+};
+extern const struct tw_range tw_reserve_list[];
+void *tw_mmap( void *addr, size_t len, int prot, int flags, int fd, off_t offset );
+int tw_munmap( void *addr, size_t len );
+int tw_mprotect( void *addr, size_t len, int prot );
+int tw_madvise( void *addr, size_t len, int advice );
+int tw_msync( void *addr, size_t len, int flags );
+void *tw_page_flags( void );
+void tw_page_watch( const void *addr, size_t size, int on );
 
 #endif /* TEMPWIND_PRIVATE_H */

@@ -37,6 +37,10 @@ Keep this section current; add each command when it first works.
   - The DLL closure: `cargo run -p testkit --release -- closure --tree TREE --apiset apisetschema.spec --root EXE... [--traces DIR] [--data-file F]... --wine TAG [--note TEXT] --out closure.json`. TREE is an unpacked `wine-pe-x86_64.tar.zst`; CI runs it in the `closure` job.
   - Conformance baselines: `node tests/conformance/run-baseline.mjs --exe PATH --platform NAME --out OUT.json [--launcher wine] [--timeout 120] [--env K=V]... [--trace-dir DIR] [--only a,b]`. It runs one unit per process with `WINETEST_DEBUG=1`; `tests/conformance/parse.mjs` reads the summary lines.
   - Publishing to a release (CI): `SHA=<commit> scripts/release-publish.sh TAG NOTES FILE...`. It creates the release if needed, keeps assets already there, and retries API calls.
+- **Wine's Unix side (Phase 2 M2; `docs/design/wine-unix.md`, `.github/workflows/wine-unix.yml`):**
+  - Build: `native/wine/build.sh [--out DIR] [--jobs N] [--census]` writes `wine-unix.{mjs,wasm}`, the test modules and `build-info.json` into `DIR` (default `target/wine-unix`, inside the repository). It runs Emscripten through Docker (`scripts/emcc.sh`) and takes about 15 s with a warm cache. `--census` prints the server/ntdll symbol collisions.
+  - Test: `npm run test:wine` runs `tests/wine/*.test.mjs` against `target/wine-unix`, or against `TW_WINE_UNIX_DIR` (a built or fetched directory).
+  - Prepare: `tests/wine/prepare.sh [--fetch]` fetches the `wine.lock` assets into `target/wine` (needs `zstd`), builds `hello.exe` and `kuser-dump.exe` with MinGW-w64, runs `kuser-dump.exe` under native Wine 11 with `TZ=UTC` to write `target/wine/kuser.bin`, then builds the Unix side. With `--fetch` it downloads the release `tests/targets/wine-unix.lock` names (`wine-unix-<sha7>`) into `target/wine-unix` instead of building.
 - Release assets: `scripts/fetch-artifact.sh TAG ASSET [DIR]` or `scripts/fetch-artifact.sh --latest PREFIX ASSET [DIR]` (sha256-verified). Releases are published by `.github/workflows/artifacts.yml` as `<artifact>-<sha7>`.
 
 ## Environment and builds
