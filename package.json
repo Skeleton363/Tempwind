@@ -7,6 +7,7 @@
   "scripts": {
     "test:node": "node tests/node/run-node-tests.mjs",
     "test:browser": "playwright test",
+    "test:wine": "node tests/wine/run-wine-tests.mjs",
     "test": "npm run test:node && npm run test:browser"
   },
   "devDependencies": {

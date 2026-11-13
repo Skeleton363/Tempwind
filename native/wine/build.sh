@@ -138,7 +138,7 @@ mk="$out/obj/build.mk"
   echo "all: $rel/wine-unix.mjs$(for t in $tests; do printf ' %s/test-%s.mjs' "$rel" "$t"; done)"
   printf '%s/wine-unix.mjs: $(OBJS) $(W)/src/library.js $(MK)\n\temcc $(LDFLAGS) -sEXPORTED_FUNCTIONS=_boot,%s -o $@ $(OBJS)\n' "$rel" "$exports_common"
   for t in $tests; do
-    printf '$(O)/tests/%s.o: $(W)/tests/%s.c $(MK)\n\temcc $(CFLAGS) $(OWN) -I$(W)/tests -c -o $@ $<\n' "$t" "$t"
+    printf '$(O)/tests/%s.o: $(W)/tests/%s.c $(MK)\n\temcc $(CFLAGS) $(OWN) -I$(W)/tests -I$(W)/src -c -o $@ $<\n' "$t" "$t"
     printf '%s/test-%s.mjs: $(OBJS) $(O)/tests/%s.o $(W)/src/library.js $(MK)\n\temcc $(LDFLAGS) -sEXPORTED_FUNCTIONS=_tw_test_main,%s -o $@ $(OBJS) $(O)/tests/%s.o\n' \
       "$rel" "$t" "$t" "$exports_common" "$t"
   done
