@@ -391,7 +391,7 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
 | `malloc`, `free` | `(size i64) -> i64`, `(ptr i64) -> ()` | The host heap. |
 | `tw_page_flags` | `() -> i64` | The page-state table's address. |
 | `tw_main_state` | `() -> i64` | The main thread's state block, once `boot` has stopped at the entry. |
-| `tw_next_timeout` | `() -> i64` | Milliseconds until the earliest thread wait or server timer, rounded up; 0 if one is due; -1 if there is none. It ignores the server's KUSER tick and its registry save. |
+| `tw_next_timeout` | `() -> i64` | Milliseconds until the earliest thread wait or server timer, rounded up; 0 if one is due; -1 if there is none. It ignores the server's KUSER tick and its registry save. When it returns -1, it prints each waiting thread's wait on stderr, for the scheduler's deadlock report (`wine-unix.md`, section 9). |
 | `tw_run_timeouts` | `() -> ()` | Runs the expired server timeouts and wakes the threads whose deadline has passed. |
 | `emscripten_stack_set_limits`, `_emscripten_stack_restore` | as in the spike | A new green thread's stack (M4). |
 | `tw_test_main` | `() -> i32` | Harness modules only (`wine-unix.md`, section 10), entered through `promising`. |
@@ -402,7 +402,7 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
 
 | Import | Type | Use |
 |---|---|---|
-| `green_block` | `(thread i32) -> i64` | `WebAssembly.Suspending`, the only switch point. It resumes with the value JS passes (0 in M2). |
+| `green_block` | `(thread i32) -> i64` | `WebAssembly.Suspending`, the only switch point. It resumes with the value JS passes (0 in M2), or throws the scheduler's deadlock error. |
 | `green_wake` | `(thread i32) -> ()` | Plain. C has made the thread runnable; JS resumes its `green_block` after the current call into the module returns. |
 | `memory_grown` | `() -> ()` | Plain, as in the spike. |
 | `tw_run` | `(state i64) -> i32` | Plain. In M2 a stub that stops loudly, since boot stops before guest code; M3 links a translated module's `run` here. |
