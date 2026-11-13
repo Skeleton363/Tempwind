@@ -6,6 +6,7 @@
 //! x64wasm wat       --base 0x1000 --hex "4801d8c3" --shared
 //! x64wasm translate --base 0x1000 --file code.bin --max-function-insns 500 --no-depth-guard -o out.wasm
 //! x64wasm translate-pe basic.exe --out-dir out [--entries all|entry]
+//! x64wasm gen-header [--out native/wine/include/tempwind/abi.h]
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -65,6 +66,13 @@ enum Command {
         list_unsupported: bool,
         #[command(flatten)]
         extra: Extra,
+    },
+    /// Write the ABI's C header for Wine's Unix side (`abi.md`, "The C
+    /// header"). Run from the repository root.
+    GenHeader {
+        /// Output file (its directory is created if missing).
+        #[arg(long, default_value = x64wasm::abi::C_HEADER_PATH)]
+        out: PathBuf,
     },
 }
 
@@ -288,6 +296,15 @@ fn main() -> Result<()> {
             list_unsupported,
             extra,
         } => translate_pe(&file, &out_dir, entries, list_unsupported, &extra)?,
+        Command::GenHeader { out } => {
+            if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("creating {}", dir.display()))?;
+            }
+            std::fs::write(&out, x64wasm::abi::c_header())
+                .with_context(|| format!("writing {}", out.display()))?;
+            eprintln!("wrote {}", out.display());
+        }
     }
     Ok(())
 }
