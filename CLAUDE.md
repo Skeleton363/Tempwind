@@ -49,3 +49,4 @@ Quality first: rework is the most expensive waste. Cut the rest:
 - Split work into agents only along artifact boundaries (fixtures, ABI, separate files); never chain agents through summaries; small or tightly coupled work stays in the main loop.
 - Delegate large, self-contained work, not lookups one Grep answers. The brief names the files, the contract and the tests that decide "done"; agents report in about 150 words; the coordinator reviews diffs, not whole files.
 - Verify before pushing, including CI scripts that can run in the session. Wait for PR events instead of polling CI.
+- Context: at each checkpoint (plan approved, contracts pushed, each work package merged, before `/milestone-close`) read `context_usage` from `get_session`. Above 35 %, and always between planning and execution, ask the owner to run `/compact` with a ready focus line, once the state is in files (trial 6, `docs/dev/agent-runs.md`).

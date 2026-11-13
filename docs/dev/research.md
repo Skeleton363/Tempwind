@@ -153,3 +153,81 @@ The Phase 2 planning pass: 6 searches, plus reads of single files streamed from 
 ### Not adopted
 - **A wineserver in its own Worker with a SharedArrayBuffer channel** (Phase 0's risk 6). With one Windows process per run it is pure cost, and Phase 4 needs its cross-worker form anyway.
 - **Emscripten pthreads for Wine's threads:** each would be a Worker, with no shared table. Phase 2 keeps cooperative threads; parallel threads are Phase 4.
+
+## 2026-11-13: Phase 2 M2, Wine's Unix side
+
+The M2 planning pass, in a fresh session. Sources:
+- the wine-11.0 tarball (dl.winehq.org), unpacked in the scratchpad: `dlls/ntdll/unix/`, `server/`, `include/`, `programs/wineboot/`;
+- the `wine-4c6ec0d` release: the `+loaddll` traces and `wine-prefix.path`;
+- Emscripten 6.0.12's own source, inside the pinned `emscripten/emsdk:6.0.12` image (`tools/system_libs.py`, `src/lib/*.js`, `system/lib/`);
+- Emscripten's ChangeLog through raw.githubusercontent.com (newreleases.io is not reachable from a session);
+- searches on wasm exception handling in Node and Chrome, wasm-ld `--wrap`, community ports of Wine to Emscripten, and the Claude Code changelog.
+
+### Emscripten 6.0.12
+- **Releases since the pin:** 6.0.13 (2026-10-19) and 7.0.0 (2026-11-06) change no default we use. 7.0.0 caps a pipe's buffer at 64 KiB.
+  - Decision: stay on 6.0.12, which the spike proved. Revisit at M6. If we move to 7.x, the server's partial-write path for a large reply would need `main_loop` (`wine-unix.md`, "Risks").
+- **`-sSHARED_MEMORY` without `-pthread` links the `-ww` libc variant.** That variant leaves out both musl's `thread/` directory and `library_pthread_stub.c` (`tools/system_libs.py` L705-737 and L1238-1270), so every `pthread_*` function Wine calls is undefined at link time.
+  - Decision: the single-thread part of our green pthread layer moves from M4 into M2's build skeleton.
+- **`-sALLOW_MEMORY_GROWTH` must stay.** Without it, `updateMemoryViews` asserts that it runs only once when `ASSERTIONS` is on, and `emscripten_resize_heap` aborts (`src/runtime_common.js` L156, `src/lib/libcore.js` L252).
+  - Decision: keep the spike's flag. The glue's views then refresh themselves, and `sbrk` is capped by `--wrap` instead (below).
+- **The layout with `-sGLOBAL_BASE`** is `--no-stack-first`: static data, then the stack (64 KiB by default), then the heap. The stack grows down into Wine's globals.
+  - Decision: `-sSTACK_SIZE=1MB` and `-sSTACK_OVERFLOW_CHECK=2`.
+- **`sbrk` grows the memory** (through `emscripten_resize_heap`) only when the break passes the memory's current size. Once the virtual backend has grown the memory past 4 GiB, a later `malloc` would take guest pages above the host region. wasm-ld supports `--wrap=<symbol>`.
+  - Decision: `-sINITIAL_MEMORY=4GB`, and `-Wl,--wrap=sbrk` with a wrapper that refuses to move the break past 0x1_0000_0000. The heap never needs to grow the memory, so the virtual backend is the only grower. This settles the spike's first open item.
+- **`environ`** is built by a libc constructor during instantiation, from `ENV`.
+  - Decision: the JS host fills `ENV` in `preRun`.
+- **Wasm exceptions:** the legacy encoding is still Emscripten's default. exnref needs Chrome 137 and is behind a flag in Node 24.
+  - Decision: keep the legacy encoding.
+
+### Wine 11.0
+- **Where native Wine maps modules** (`hello.exe__run.log`, `+loaddll`):
+  - hello.exe at its preferred base, 0x1_4000_0000;
+  - ntdll at 0x6FFF_FFC0_0000, kernelbase at 0x6FFF_FF54_0000, kernel32 at 0x6FFF_FFA2_0000, msvcrt at 0x6FFF_FF06_0000.
+
+  Every DYNAMIC_BASE DLL that has relocations is marked `ImageDynamicallyRelocated` by the server (`server/mapping.c` ~L942). The client then asks the server for a slot (`dlls/ntdll/unix/virtual.c` L3403, `get_image_map_address`), and the server assigns one top-down from its ASLR range (`assign_map_address`, L1273). **This corrects** M1's note that Wine keeps the first DLL at 0x1_8000_0000 and the Phase 2 pass's "maps an image at its preferred base and moves it only on a conflict" (2026-11-06 above), which holds only for images without that flag.
+  - Decision: our port follows `guest-memory.md` instead. An image maps at its preferred base when that range is free, and otherwise gets a deterministic slot from the server's range, now [0x1_0000_0000, 0x1_7000_0000) top-down (`wine-unix.md`, "Address map and image placement").
+- **The boot path** (`dlls/ntdll/unix/loader.c`): `__wine_main` (L2278) → `init_paths` (L449, `dladdr`) → `virtual_init` → `init_environment` (`env.c` L824: `locale.nls`, `l_intl.nls`) → `start_main_thread` (L1908).
+  - `start_main_thread` runs `virtual_alloc_first_teb` (which commits KUSER), `signal_init_threading`, `dbg_init`, `server_init_process`, `virtual_map_user_shared_data`, `init_cpu_info`, `init_files`, `init_startup_info` (→ `build_initial_params` → `load_main_exe` maps the exe, and `run_wineboot`), `init_thread_stack`, `NtCreateKeyedEvent`, `load_ntdll`, `load_apiset_dll`, `server_init_process_done` and `signal_start_thread`.
+  - Decision: our `boot` export runs this path unchanged up to `signal_start_thread`, with patches only where a step needs the host (paths, KUSER, wineboot, the server).
+- **The x86-64 thread start** (`signal_x86_64.c`, `init_syscall_frame`, ~L2893):
+  - a CONTEXT at `((StackBase − 0x28) & ~15) − sizeof(CONTEXT)`, with Rip = `RtlUserThreadStart`, Rcx = the entry, Rdx = the PEB, Rsp = StackBase − 0x28, EFlags 0x200, the FPU control word 0x27f and MXCSR 0x1f80;
+  - the syscall frame, with RIP = `LdrInitializeThunk`, RCX = the CONTEXT, RSP = the CONTEXT − 8, and GS = the TEB.
+  - Decision: M2's boot builds exactly this state in the main thread's state block and stops there.
+- **apisetschema is data:** `load_apiset_dll` maps the file `SEC_COMMIT` at any free address and sets `PEB->ApiSetMap`. It is never mapped as an image.
+  - Decision: the done-when says "apisetschema's API set mapped (`PEB->ApiSetMap`)", in `plan.md` and the status note.
+- **wineboot's per-boot work** (`programs/wineboot/wineboot.c`): `create_user_shared_data` (L319) writes NtBuildNumber, NtProductType, ProductTypeIsValid, NtMajorVersion, NtMinorVersion, SuiteMask and NtSystemRoot into KUSER. It also creates the hardware, dynamic and computer-name keys and the volatile environment, sets up KnownDlls and starts services.exe. `virtual_init_user_shared_data` (`virtual.c` L4422: SystemCall = 1 and the CPU fields) is called only from `run_wineboot`.
+  - Decision: the wineboot skip does the KUSER part in-process; the keys come from the overlay; KnownDlls and services are M4.
+- **KUSER in a single address space:** the client maps the server's section with `mmap(MAP_FIXED)` (`virtual_map_user_shared_data`, L4393). Emscripten refuses that with EINVAL, and Wine then calls `exit(1)` (L4407). `virtual_init_user_shared_data` writes through a second mapping (L4438). The server sets its own pointer to the section at `server/mapping.c` L1502.
+  - Decision: one page at 0x7ffe0000, committed by the first TEB allocation, which both sides write directly.
+- **The transport:**
+  - the client writes a request to `request_fd` and reads the reply from `reply_fd`, and waits on `wait_fd` (`dlls/ntdll/unix/server.c`: `send_request` L183, `wait_reply` L276, `server_call_unlocked` L288, `wait_select_reply` L351);
+  - the server runs `read_request` → `call_req_handler` → `send_reply` (`server/request.c` L328, L292, L250);
+  - a new client comes from `master_socket_poll_event` (L543): `create_process`, then `create_thread(-1, process, NULL)`, which makes the request pipe and passes its fd with `send_client_fd`; the client's `init_thread` request passes two more fds;
+  - fds the server polls need `main_loop` (`server/fd.c` L2241);
+  - `get_next_timeout` is at most 16 ms, since the KUSER time is refreshed on a timer (`fd.c` L898, `set_user_shared_data_time` L380), and the registry is saved every 30 s.
+  - Decision: keep Wine's pipes and fd bookkeeping; the client calls the server's `read_request` synchronously after each `send_request`; waits block through `green_block`; the scheduler ignores the KUSER tick and the registry save when it looks for the next timeout.
+- **The server's cwd and paths:** the server changes the process's cwd with `fchdir` and returns to `server_dir_fd` afterwards. `get_initial_directory` reads `getcwd()` (`env.c` L1403). The server finds `l_intl.nls` through `server_argv0` and `DATADIR`.
+  - Decision: `boot` records the launch directory before the server starts, and `get_initial_directory` uses it; the server loads `l_intl.nls` from a constant path.
+- **CPU and processors:** `system.c`'s x86 code runs the host's `cpuid`, `xgetbv` and `fxsave`, and `sysconf` reports the host's cores.
+  - Decision: the CPU information comes from the translator's CPUID table, emitted into a C header by `x64wasm-cli gen-header`, and `NumberOfProcessors` is 1.
+- **The prefix** was made at `/home/runner/wine-prefix` for the user `runner` (`wine-prefix.path`). Its registry holds that path.
+  - Decision: the Unix side runs with the same `WINEPREFIX`, `HOME` and `USER`.
+- **The porting surface:** 27 `__x86_64__` sites in ntdll's Unix part and the server; 3 `__TRY` sites, all in `virtual.c`; the missing system headers belong to other platforms or are `HAVE_`-guarded Linux ones; the blocking calls are `select` and `usleep` sleeps, `sched_yield`, `futex_wait`, `poll` and the server waits (`sync.c` `NtDelayExecution` sleeps with `select`).
+
+### Community
+- **No port of Wine's Unix side to Emscripten turned up.** Boxedwine is off-limits under the clean-room rule, and we read nothing of it. "Wine-Assembly" is a WAT interpreter for Windows 98 programs and doesn't apply.
+- **Claude Code 2.1.319-2.1.323** adds `CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES` and `denyInsteadOfPrompting`.
+  - Leads only: no evidence ties either to a cost of ours. Not adopted.
+
+### Review
+- **A Plan-agent review of the draft** found 2 blockers and 9 should-fix items, all folded into the contracts:
+  - the blockers: the `-ww` libc has no pthread stubs; dropping `ALLOW_MEMORY_GROWTH` trips `updateMemoryViews`' run-once assertion;
+  - the should-fix items: ntdll is `ImageDynamicallyRelocated`, so image placement is M2's; apisetschema is data; KUSER needs patches, not a mapping; CPU information from the translator's table; `getcwd` after the server's `fchdir`; `ENV` in `preRun`; the deadlock check ignores the KUSER tick and the registry save; `STACK_OVERFLOW_CHECK`; file ownership between work packages; write-back of writable shared views.
+
+### Workflow
+- **The context of this session:** research and planning filled 483,687 of 1,000,000 tokens before any work began (`get_session`, `context_usage`), and every later step re-reads that context. Auto-compaction would only start at 901,600.
+  - Decision: the owner's change, trial 6 in `agent-runs.md`: context checkpoints with requested compactions.
+
+### Not adopted
+- **A socket or a separate Worker for the server:** one Windows process per run makes either pure cost (2026-11-06's decision holds).
+- **Rebasing the closure DLLs in M2:** M3 decides it with the translator's evidence.

@@ -46,6 +46,14 @@ We judge workflow decisions (effort levels, caps, agent rules) by data, at almos
 
 Trials 4 and 5 are cheap; if they show nothing, they are removed.
 
+## Trial 6 (started 2026-11-13, the owner's change)
+
+| Change | Applied as | Baseline | Measure | Decided at |
+|---|---|---|---|---|
+| 6. Context checkpoints: the coordinator reads `context_usage` from `get_session` at each checkpoint (plan approved, contracts pushed, each work package merged, before `/milestone-close`). Above 35 %, and always between planning and execution, it asks the owner to run `/compact` with a ready focus line, once the state is in files (the plan, the contracts, the status note, the agents' tracks). Agents read the sources; the coordinator reads diffs and the lines it cites. | One line in `CLAUDE.md`'s "Working efficiently" | M2's planning stretch: 483,687 of 1,000,000 tokens of context before any work, $15.42, 34.2M cache reads, 256k output (`main` line of 2026-11-13). Auto-compaction would have started at 901,600. Compacted at the approval to 98,077. | `context_usage` at each checkpoint; the number of compactions; M2's cache reads per coordinator request, after against before; rework traced to lost context, which must stay 0 | M2's close |
+
+**Problem:** every request re-reads the whole context, so a session that fills half its window while planning pays that half again at every later step. **Lead for M3, not adopted yet:** delegate the research pass's source reading to a subagent, so the coordinator's context holds findings, not sources.
+
 ## Trials (started 2026-11-05, decided at the M6 close-out)
 
 | Change | Where | Measure | Kept if |
