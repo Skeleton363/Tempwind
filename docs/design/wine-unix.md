@@ -26,11 +26,12 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
   - `green.c`: blocking, sleeping and waking (section 9);
   - `green_pthread.c`: the pthread functions Wine calls (section 9);
   - `inproc.c`: the in-process server transport (section 7);
-  - `signal_wasm64.c`: the machine layer that replaces `signal_x86_64.c`. In M2: `NtCurrentTeb()`, the process and thread setup of section 8, and stubs that stop loudly for the rest;
+  - `signal_wasm64.c`: the machine layer that replaces `signal_x86_64.c`. In M2: the process and thread setup of section 8, and stubs that stop loudly for the rest (`NtCurrentTeb()` is `thread.c`'s, which reads `teb_key`);
   - `stubs.c`: libc functions Emscripten lacks (section 2);
   - `version.c`: the version strings Wine's build would generate;
   - `virtual_wasm.c`: the memory backend under `virtual.c` (sections 5 and 6);
-  - `library.js`: the `--js-library` that declares the imports of `abi.md` v5.
+  - `library.js`: the `--js-library` that declares the imports of `abi.md` v5;
+  - `tempwind_private.h`: what the `src/` files share (`tw_unsupported`, the imports, the green thread and queue, `grow_to`).
 - **Our patches and `native/wine/` stay public under the LGPL.** The JS host and the tests are our own code.
 
 ## 2. Build
@@ -192,7 +193,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - Wine's blocking libc calls are routed there: `select` and `usleep` sleeps, `sched_yield`, `poll` on the server's pipes and the waits of section 7. A blocking call that green.c doesn't handle stops loudly.
 - **`green_pthread.c`**, the single-thread part of the green pthread layer. The `-ww` libc that `-sSHARED_MEMORY` links without `-pthread` has no pthread functions at all (`research.md`, 2026-11-13), so this is needed from the first link:
   - mutexes (recursive ones included), condition variables, `pthread_once`, keys, `pthread_self`, `pthread_sigmask` and the attribute functions;
-  - keys are per green thread. `signal_wasm64.c`'s `NtCurrentTeb()` reads `teb_key`, as the other `signal_*.c` files do (with `WINE_UNIX_LIB`, `winnt.h` leaves `NtCurrentTeb` to them);
+  - keys are per green thread. `NtCurrentTeb()` (`thread.c`) reads `teb_key`, so it follows the running green thread;
   - a thread that suspends while it holds a mutex is a bug, and the layer asserts on it;
   - a condition wait goes through `green.c` (a wait that nothing can end is the scheduler's deadlock);
   - `pthread_create` stops loudly until M4.
