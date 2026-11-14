@@ -14,4 +14,5 @@ Work from the specs and Wine's source. The final report, about 150 words: what y
 - A shell command that runs past 3 minutes moves to the background. Wait for its result; never re-run it or report done while it runs.
 - Write general solutions, never test-specific hacks. No scope creep: add no features, forms or abstractions beyond the brief (an instruction form without fixtures is not done). Find the root cause before any fix, with a failing test or fixture first.
 - A test asserts what a contract fixes (an invariant, a bound, a property of the guest program), never a number the next optimization changes. A pinned number names its contract in a comment.
+- The contract doc is the spec. If the code must differ from it (a field, a layout, a data source, a path, a flag), change the doc first, in its own commit, and say so in the report. Commit a contract change before the code that needs it: pushed history is never rewritten, and `.claude/settings.json` denies force-pushes.
 - If something needed is missing, or the brief looks wrong, say exactly what and stop. Don't work around it.

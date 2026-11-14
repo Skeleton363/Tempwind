@@ -7,6 +7,7 @@ description: Close a milestone - run the full verification, review the diff in t
 Never merge. The user merges.
 
 ## 1. Verify (record the commands and results)
+- First, free disk (`df -h .`; M2's run stalled at 2.9 GB, so delete merged agent worktrees' `target/`) and, on a fresh checkout, build the inputs the tests read: `tests/pe/build.sh`, `tests/native/build.sh` and `native/spike/boundary/build.sh`.
 - `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 - `cargo clippy -p x64wasm-fp --target wasm32-unknown-unknown -- -D warnings`
 - `cargo run -p testkit --release -- record --check`
@@ -14,6 +15,7 @@ Never merge. The user merges.
 - `cargo run -p testkit --release -- spike --out target/spike`, then `tests/pe/prepare.sh` and `tests/native/prepare.sh`
 - `npm run test:node` and `npm run test:browser`
 - From Phase 1's M5 on: the 7-Zip matrix in `translated` mode and `compare.mjs` against `tests/sevenzip/expected`. It runs on Wine from Phase 2's M4.
+- From Phase 2's M2: `tests/wine/prepare.sh` (it runs `native/wine/build.sh` and its three gates), then `npm run test:wine`.
 Save long logs in the scratchpad; keep the numbers. Fix failures at the root cause; never weaken or skip a test.
 
 ## 2. Two-stage review of the milestone diff (`git diff main...HEAD`)
