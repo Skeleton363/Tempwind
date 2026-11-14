@@ -1,0 +1,229 @@
+ntdll's startup on wasm64 (docs/design/wine-unix.md, section 8; section 3
+for the CPU).
+
+boot (native/wine/src/boot.c) runs __wine_main as the exec'd wine loader
+would; these are the changes the startup path needs.
+- Paths (loader.c, init_paths): no dladdr. ntdll.so's directory is the
+  constant LIBDIR "/wine/x86_64-unix", so the PE files are under
+  /wine/lib/wine/x86_64-windows, NLS and wine.inf under /wine/share/wine
+  and the loader in /wine/bin, in MEMFS.
+- The host-pointer slots in ntdll.dll (loader.c, load_ntdll_functions):
+  __wine_syscall_dispatcher and __wine_unix_call_dispatcher get the
+  poison value TW_NO_DISPATCHER until M3; __wine_unixlib_handle gets the
+  host address of unix_call_funcs, an opaque handle.
+- The initial directory (env.c, get_initial_directory): the launch
+  directory boot recorded, not getcwd(), which the in-process server
+  has moved.
+- The wineboot skip (env.c, run_wineboot): no wineboot process. It
+  creates \KernelObjects\__wineboot_event, initializes KUSER, writes
+  wineboot's seven KUSER fields (create_user_shared_data) from the
+  version, sets the event and waits on it as Wine does.
+- No child processes (process.c, NtCreateUserProcess): it prints
+  "tempwind: unsupported: NtCreateUserProcess <image>" and returns
+  STATUS_NOT_SUPPORTED.
+- The CPU (system.c, section 3): do_cpuid reads the translator's profile
+  (TW_CPUID_LEAVES, zeros for other leaves), do_xgetbv returns TW_XCR0,
+  the DAZ probe reads TW_MXCSR_MASK, and there is one processor. This
+  replaces 0002's loud stops.
+
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -59,6 +59,10 @@
+ #include "wine/condrv.h"
+ #include "wine/debug.h"
+ #include "unix_private.h"
++#ifdef __wasm64__
++#include "ddk/wdm.h"
++extern const char *tw_launch_dir;  /* native/wine/src/boot.c */
++#endif
+ #include "locale_private.h"
+ #include "error.h"
+ 
+@@ -1397,6 +1401,12 @@
+ 
+     /* try to get it from the Unix cwd */
+ 
++#ifdef __wasm64__
++    /* Tempwind (wine-unix.md, section 8): the launch directory that boot
++     * recorded, since the in-process server has moved the cwd since. */
++    (void)size;
++    cwd = strdup( tw_launch_dir );
++#else
+     for (size = 1024; ; size *= 2)
+     {
+         if (!(cwd = malloc( size ))) break;
+@@ -1406,6 +1416,7 @@
+         cwd = NULL;
+         break;
+     }
++#endif
+ 
+     /* try to use PWD if it is valid, so that we don't resolve symlinks */
+ 
+@@ -1554,6 +1565,9 @@
+     LARGE_INTEGER timeout;
+     unsigned int status;
+     int count = 1;
++#ifdef __wasm64__
++    static const WCHAR rootW[] = {'C',':','\\','w','i','n','d','o','w','s',0};
++#endif
+ 
+     init_unicode_string( &nameW, eventW );
+     InitializeObjectAttributes( &attr, &nameW, OBJ_OPENIF, 0, NULL );
+@@ -1566,6 +1580,22 @@
+     }
+ 
+     virtual_init_user_shared_data();
++#ifdef __wasm64__
++    /* Tempwind (wine-unix.md, section 8): no wineboot process. Of its work,
++     * a process start needs only its seven KUSER fields, which
++     * create_user_shared_data (programs/wineboot/wineboot.c) writes from the
++     * version: the PEB's as init_peb sets it, with the product type and suite
++     * mask that the prefix's registry version gives. */
++    user_shared_data->NtBuildNumber      = 19045;
++    user_shared_data->NtProductType      = NtProductWinNt;
++    user_shared_data->ProductTypeIsValid = TRUE;
++    user_shared_data->NtMajorVersion     = 10;
++    user_shared_data->NtMinorVersion     = 0;
++    user_shared_data->SuiteMask          = 0;
++    wcscpy( user_shared_data->NtSystemRoot, rootW );
++    NtSetEvent( handles[0], NULL );
++    goto wait;
++#endif
+     env[size] = 0;
+     params.Flags           = PROCESS_PARAMS_FLAG_NORMALIZED;
+     params.Environment     = env;
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -90,6 +90,9 @@
+ #include "winioctl.h"
+ #include "winternl.h"
+ #include "unix_private.h"
++#ifdef __wasm64__
++#include "tempwind/abi.h"
++#endif
+ #include "wine/list.h"
+ #include "ntsyscalls.h"
+ #include "wine/debug.h"
+@@ -448,10 +451,16 @@
+ 
+ static void init_paths(void)
+ {
++#ifdef __wasm64__
++    /* Tempwind (wine-unix.md, section 8): no dladdr; the install tree is at
++     * constant paths in MEMFS, so ntdll.so's directory is LIBDIR's. */
++    ntdll_dir = strdup( LIBDIR "/wine/x86_64-unix" );
++#else
+     Dl_info info;
+ 
+     if (!dladdr( init_paths, &info ) || !(ntdll_dir = realpath_dirname( info.dli_fname )))
+         fatal_error( "cannot get path to ntdll.so\n" );
++#endif
+ 
+     if ((build_dir = remove_tail( ntdll_dir, "/dlls/ntdll" )))
+     {
+@@ -1636,6 +1645,14 @@
+         GET_FUNC( __wine_unix_call_dispatcher_arm64ec );
+         GET_FUNC( KiUserEmulationDispatcher );
+     }
++#ifdef __wasm64__
++    /* Tempwind (wine-unix.md, section 8): the dispatchers are not guest code;
++     * their slots get the non-canonical poison value until M3 writes the
++     * dispatcher addresses. __wine_unixlib_handle stays an opaque handle. */
++    *p__wine_syscall_dispatcher = (void *)TW_NO_DISPATCHER;
++    *p__wine_unixlib_handle = (UINT_PTR)unix_call_funcs;
++    *p__wine_unix_call_dispatcher = (void *)TW_NO_DISPATCHER;
++#else
+     *p__wine_syscall_dispatcher = __wine_syscall_dispatcher;
+     *p__wine_unixlib_handle = (UINT_PTR)unix_call_funcs;
+     if (p__wine_unix_call_dispatcher_arm64ec)
+@@ -1645,6 +1662,7 @@
+         *p__wine_unix_call_dispatcher_arm64ec = __wine_unix_call_dispatcher;
+     }
+     else *p__wine_unix_call_dispatcher = __wine_unix_call_dispatcher;
++#endif
+ #undef GET_FUNC
+ }
+ 
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -755,6 +755,11 @@
+     TRACE( "%s image %s cmdline %s parent %p machine %x\n", debugstr_us( &path ),
+            debugstr_us( &params->ImagePathName ), debugstr_us( &params->CommandLine ), parent, machine );
+ 
++#ifdef __wasm64__
++    /* Tempwind (wine-unix.md, section 8): no child processes. */
++    fprintf( stderr, "tempwind: unsupported: NtCreateUserProcess %s\n", debugstr_us( &path ) );
++    return STATUS_NOT_SUPPORTED;
++#endif
+     unixdir = get_unix_curdir( params );
+ 
+     InitializeObjectAttributes( &attr, &path, OBJ_CASE_INSENSITIVE, 0, 0 );
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -80,6 +80,9 @@
+ #include "ddk/wdm.h"
+ #include "wine/asm.h"
+ #include "unix_private.h"
++#ifdef __wasm64__
++#include "tempwind/abi.h"
++#endif
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(ntdll);
+@@ -327,18 +330,22 @@
+ }
+ 
+ #ifdef __wasm64__
+-/* Host-CPU instructions: the CPU information will come from the translator's
+- * profile (wine-unix.md, section 3); until then these stop loudly. */
++/* Tempwind (wine-unix.md, section 3): the CPU is the translator's profile.
++ * cpuid returns its table's row for the leaf (every subleaf alike) and zeros
++ * for other leaves, as the translator's cpuid does; XCR0 is the profile's. */
+ static void do_cpuid( unsigned int ax, unsigned int cx, unsigned int *p )
+ {
+-    fprintf( stderr, "tempwind: unsupported: do_cpuid\n" );
+-    abort();
++    static const unsigned int leaves[TW_CPUID_LEAF_COUNT][5] = TW_CPUID_LEAVES;
++    unsigned int i;
++
++    p[0] = p[1] = p[2] = p[3] = 0;
++    for (i = 0; i < TW_CPUID_LEAF_COUNT; i++)
++        if (leaves[i][0] == ax) memcpy( p, &leaves[i][1], 4 * sizeof(*p) );
+ }
+ 
+ static UINT64 do_xgetbv( unsigned int cx )
+ {
+-    fprintf( stderr, "tempwind: unsupported: do_xgetbv\n" );
+-    abort();
++    return cx ? 0 : TW_XCR0;
+ }
+ #else
+ static inline void do_cpuid( unsigned int ax, unsigned int cx, unsigned int *p )
+@@ -359,7 +366,10 @@
+  * This function assumes you have already checked for SSE2/FXSAVE support. */
+ static inline BOOL have_sse_daz_mode(void)
+ {
+-#ifdef __i386__
++#ifdef __wasm64__
++    /* Tempwind (wine-unix.md, section 3): the mask the translator's fxsave stores. */
++    return (TW_MXCSR_MASK & (1 << 6)) >> 6;
++#elif defined(__i386__)
+     /* Intel says we need a zeroed 16-byte aligned buffer */
+     char buffer[512 + 16];
+     XSAVE_FORMAT *state = (XSAVE_FORMAT *)(((ULONG_PTR)buffer + 15) & ~15);
+@@ -1608,7 +1618,9 @@
+ {
+     long num;
+ 
+-#ifdef _SC_NPROCESSORS_ONLN
++#ifdef __wasm64__
++    num = 1;  /* Tempwind (wine-unix.md, section 3): one processor */
++#elif defined(_SC_NPROCESSORS_ONLN)
+     num = sysconf(_SC_NPROCESSORS_ONLN);
+     if (num < 1)
+     {

@@ -20,8 +20,9 @@
 //   runnable and no timeout it stops the waiting threads with a deadlock
 //   error.
 //
-// Hooks for later packages: the boot set (WP4) writes into `host.FS` before
-// `call('boot')`. A test may replace the scheduler with `greenBlock`.
+// The boot set and the entry into `boot` are beside it, in boot-set.mjs
+// (wine-unix.md, section 8). A test may replace the scheduler with
+// `greenBlock`.
 // Host-neutral: the caller passes the glue's factory and the compiled module.
 
 import { createMemory64 } from '../memory.mjs';

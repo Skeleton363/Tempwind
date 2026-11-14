@@ -20,6 +20,10 @@
  * calls abort() (section 2). */
 _Noreturn void tw_unsupported( const char *what );
 
+/* boot.c (section 8): the end of signal_start_thread under
+ * BOOT_STOP_AT_ENTRY, back to boot. */
+_Noreturn void tw_boot_stopped( void );
+
 /* Imports of the module (abi.md v5, "Host entries of the Unix side"),
  * declared by library.js. */
 int64_t green_block( int32_t thread );  /* WebAssembly.Suspending */
