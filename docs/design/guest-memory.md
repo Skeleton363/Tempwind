@@ -36,7 +36,7 @@ Phase 0, item 7. Status: **decided, option A (identity mapping below 16 GiB)**. 
   - 0x7fff_fe00_0000-0x7fff_ffff_0000, for top-down allocations and Wine's own *virtual heap* (`alloc_virtual_heap`, ~L3600).
 - `user_space_limit = 0x7fff_ffff_0000` (`virtual.c` L191-193).
 - wineserver hands out ASLR addresses for relocated 64-bit DLLs from 0x6000_0000_0000 + 16 TiB, top-down (`server/mapping.c` `init_memory`, `assign_map_address`). The same DLL gets the same address in every process.
-- Relocated EXEs keep their preferred base if it is free. DLLs flagged DYNAMIC_BASE go top-down (`virtual.c` `map_image_view`).
+- Relocated EXEs keep their preferred base if it is free. DLLs flagged DYNAMIC_BASE go top-down (`virtual.c` `map_image_view`). Native Wine maps every DYNAMIC_BASE DLL that has relocations (`ImageDynamicallyRelocated`) at a slot the server assigns top-down from its ASLR range, even when its preferred base is free (`+loaddll` traces, `research.md` 2026-11-13). Our port tries the preferred base first (`wine-unix.md`, section 4).
 
 **Wine's Unix side shares the address space with PE code.** Syscalls, unixlib calls (`__wine_unix_call(handle, code, args)`) and `KeUserModeCallback` pass raw guest pointers. The C code then dereferences them, including pointers nested in structures (`UNICODE_STRING.Buffer`, `IO_STATUS_BLOCK`, `OBJECT_ATTRIBUTES` ...). The Emscripten-compiled Unix side therefore has to see guest memory at the guest's addresses, or every dereference in Wine's Unix code has to be translated. See `native/README.md`.
 
@@ -170,10 +170,10 @@ How to read it:
 | 0x0_0001_0000-0x0_7ffd_ffff | Guest low region, about 2 GiB. Wine's DOS-area reserve, bottom-up VirtualAlloc, heaps, stacks, PEB/TEB (top-down below 2 GiB as today), low fixed-base EXEs (0x40_0000), everything a non-LAA process uses. |
 | 0x0_7ffe_0000-0x0_7ffe_ffff | KUSER_SHARED_DATA (0x7ffe_0000) and the syscall-dispatcher slot at 0x7ffe_1000. Fixed by Windows ABI and Wine's thunks. |
 | 0x0_7fff_0000-0x0_7fff_ffff | No-access gap, as on Windows. |
-| 0x0_8000_0000-0x0_ffff_ffff | **Host region**, 2 GiB, reported to the guest as reserved. The Emscripten Unix side (`GLOBAL_BASE=0x80000000`; data, pthread stacks, a malloc arena capped below 4 GiB) and the translator's runtime data (CPU state blocks, block lookup tables, the page-state table: 1 byte per 4 KiB page = 4 MiB). |
-| 0x1_0000_0000-0x3_ffff_ffff | Guest high region, 12 GiB. Images at their preferred base when it lies here (MSVC 0x1_4000_0000/0x1_8000_0000, Wine 0x1_7000_0000 and up, MinGW DLLs 0x2_xxxx_xxxx-0x3_xxxx_xxxx). The server's ASLR range for relocated DLLs moves here, top-down, replacing 0x6000_0000_0000. MEM_TOP_DOWN allocations start from a ceiling just above the highest image, not from 16 GiB, so the memory stays small. |
+| 0x0_8000_0000-0x0_ffff_ffff | **Host region**, 2 GiB, reported to the guest as reserved. It belongs to the Emscripten Unix side's allocator (`GLOBAL_BASE=0x80000000`; static data, the 1 MiB stack, then the heap, capped below 4 GiB by the `sbrk` wrapper). The translator's runtime data (CPU state blocks, block lookup tables, green-thread stacks) comes from that heap, and the Unix side allocates the page-state table there (1 byte per 4 KiB page = 4 MiB). `wine-unix.md`, sections 4 and 5. |
+| 0x1_0000_0000-0x3_ffff_ffff | Guest high region, 12 GiB. Images at their preferred base when it lies here and is free (MSVC 0x1_4000_0000/0x1_8000_0000, Wine 0x1_7000_0000 and up, MinGW DLLs 0x2_xxxx_xxxx-0x3_xxxx_xxxx). A relocated DLL whose base is taken gets a slot from the server's range [0x1_0000_0000, 0x1_7000_0000), top-down below ntdll, which replaces 0x6000_0000_0000 and keeps the memory small (M2). MEM_TOP_DOWN allocations start from a ceiling just above the highest image, not from 16 GiB, so the memory stays small (M3; `wine-unix.md`, section 4). |
 
-`user_space_limit` = `address_space_limit` = 0x4_0000_0000 (16 GiB). For non-LAA processes it is 0x7fff_0000.
+`user_space_limit` = `address_space_limit` = 0x4_0000_0000 (16 GiB), for every EXE: 64-bit Wine never lowers it for an EXE without `LARGE_ADDRESS_AWARE` (`virtual_set_large_address_space`), and neither do we (`wine-unix.md`, section 4).
 
 Why the host region sits at 2-4 GiB:
 
@@ -226,9 +226,9 @@ The condition is not met, so A stays.
 - **A `virtual.c` backend without mmap.** Views over the wasm memory, commit = grow if needed plus zero on recommit, protection kept only in the page-state table, and `MEM_RESERVE` failing beyond the guest range. Patch the address constants:
   - `virtual.c` L186-197;
   - the preloader reserve list, which has no preloader here and becomes a static list;
-  - `server/mapping.c` `init_memory` ASLR range, moved to [0x1_0000_0000, 0x4_0000_0000) top-down;
-  - Wine's virtual heap, moved into the host region or the low region.
-- **Emscripten placement.** Import the memory the JS runtime creates (shared, maximum 262144 pages), and set `GLOBAL_BASE=0x80000000`. Cap stacks and the malloc arena below 0x1_0000_0000 with a custom `sbrk` limit. Never use Emscripten's `mmap` for guest memory: it zero-fills and is slow.
+  - `server/mapping.c` `init_memory` ASLR range, moved to [0x1_0000_0000, 0x1_7000_0000) top-down (M2);
+  - Wine's virtual heap and its other bookkeeping, in the host heap (M2).
+- **Emscripten placement.** Import the memory the JS runtime creates (shared, maximum 262144 pages), and set `GLOBAL_BASE=0x80000000`. Cap the heap below 0x1_0000_0000: M2 starts the memory at 4 GiB and wraps `sbrk` (`-Wl,--wrap=sbrk`), so the virtual backend is the only grower. Never use Emscripten's `mmap` for guest memory: it zero-fills and is slow.
 - **Guest pointer validation in the Unix side.** The `__TRY`/`__EXCEPT` replacement must use `virtual_check_buffer_for_read/write` and the page-state table, because bad pointers do not fault.
 - **Shared pages.** KUSER_SHARED_DATA and the session shared memory are replicated by the server writing into each client's memory. MapViewOfFile gets a policy for second views (copy plus write-back at flush/unmap) and an error for unsupported cases.
 - **One memory per Windows process,** created by the JS process launcher, with its own workers and its own Unix-side instance.

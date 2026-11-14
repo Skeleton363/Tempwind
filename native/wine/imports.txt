@@ -1,0 +1,107 @@
+# The wasm imports Wine's Unix side may have (docs/design/wine-unix.md,
+# section 2, gate 2). One import per line: `module.field`, then its reason.
+# build.sh fails on any import of any module built (wine-unix and the test
+# modules) that isn't listed here. A new import needs its line, with a
+# reason, in the same change. Lines may list imports a module doesn't have
+# (yet): the gate checks module ⊆ list.
+
+# ---- The shared memory (abi.md v5, "Instances") ----
+env.memory                     the per-process shared memory64 that JS creates (-sIMPORTED_MEMORY)
+
+# ---- Tempwind's own (abi.md v5, "Host entries of the Unix side"; src/library.js) ----
+env.green_block                the only switch point, a WebAssembly.Suspending (section 9)
+env.green_wake                 C made a green thread runnable; JS resumes it (section 9)
+env.memory_grown               after grow_to's memory.grow: JS refreshes its views (section 5)
+env.tw_run                     a translated module's raw run (M3; M2 stops loudly)
+
+# ---- Files, directories, pipes: Emscripten's FS (MEMFS and the host's stdio devices) ----
+env.__syscall_chdir            server and loader change the cwd (section 8)
+env.__syscall_chmod            file attributes (NtSetInformationFile)
+env.__syscall_dup              fd passing between client and in-process server is dup() (section 7: thread_get_inflight_fd, send_client_fd)
+env.__syscall_dup3             dup2 of fds (env.c, server fd handling)
+env.__syscall_fadvise64        posix_fadvise (file.c read-ahead hints)
+env.__syscall_fallocate        posix_fallocate (file.c, mapping.c)
+env.__syscall_fchdir           the server's directory walks (fchdir back to the saved cwd)
+env.__syscall_fchmod           file attributes on an open fd
+env.__syscall_fcntl64          fd flags, O_NONBLOCK on the server's pipes, file locks
+env.__syscall_fstat64          stat of open files
+env.__syscall_fstatfs64        fstatfs (file.c volume information)
+env.__syscall_ftruncate64      NtSetInformationFile end of file, mapping sizes
+env.__syscall_getcwd           the launch directory and the server's cwd (section 8)
+env.__syscall_getdents64       directory listings (file.c, the registry's prefix scan)
+env.__syscall_ioctl            FIONREAD/FIONBIO on pipes and sockets; terminal queries on the stdio devices
+env.__syscall_linkat           hard links (NtSetInformationFile FileLinkInformation)
+env.__syscall_lstat64          path lookups (file.c, loader.c)
+env.__syscall_mkdirat          directory creation (file.c, the prefix's directories)
+env.__syscall_newfstatat       fstatat path lookups (file.c)
+env.__syscall_openat           opening files
+env.__syscall_pipe2            the client/server request and reply pipes (section 7)
+env.__syscall_poll             libc's poll; green.c replaces poll (section 9), so no module imports it now
+env.__syscall_poll_nonblocking green.c's poll probes with it (the server's check_fd_events, a zero timeout; section 9)
+env.__syscall_readlinkat       symlinks of dosdevices (section 8)
+env.__syscall_renameat         NtSetInformationFile FileRenameInformation; registry saves
+env.__syscall_rmdir            directory removal
+env.__syscall_stat64           path lookups
+env.__syscall_unlinkat         file deletion; registry saves
+env.__syscall_utimensat        futimens (file times)
+env.__syscall_getuid32         getuid: the server's and the prefix's ownership checks
+wasi_snapshot_preview1.fd_close   close
+wasi_snapshot_preview1.fd_fdstat_get  isatty and fd type checks (the stdio devices, section 8)
+wasi_snapshot_preview1.fd_pread   pread (file.c, image and file views)
+wasi_snapshot_preview1.fd_pwrite  pwrite (file.c, write-back of shared views)
+wasi_snapshot_preview1.fd_read    read (files, pipes, the server's requests)
+wasi_snapshot_preview1.fd_seek    lseek
+wasi_snapshot_preview1.fd_sync    fsync (NtFlushBuffersFile)
+wasi_snapshot_preview1.fd_write   write (files, pipes, the server's replies, stdio)
+
+# ---- Sockets: Emscripten's socket emulation (ntdll socket.c, server sock.c) ----
+env.__syscall_accept4          server sock.c accept; ntdll socket.c; the master socket's accept (request.c, not run in-process)
+env.__syscall_bind             sockets (ntdll socket.c, server sock.c; the master socket's bind, not run in-process)
+env.__syscall_connect          sockets (ntdll socket.c, server sock.c; server_connect, not run in-process)
+env.__syscall_getpeername      sockets
+env.__syscall_getsockname      sockets
+env.__syscall_getsockopt       sockets
+env.__syscall_listen           sockets (server sock.c; the master socket's listen, not run in-process)
+env.__syscall_recvfrom         sockets
+env.__syscall_recvmsg          sockets (ntdll socket.c, virtual_locked_recvmsg, server sock.c); fd passing's recvmsg stays compiled, not run in-process (section 7)
+env.__syscall_sendmsg          sockets (ntdll socket.c, server sock.c); fd passing's sendmsg stays compiled, not run in-process (section 7)
+env.__syscall_sendto           sockets
+env.__syscall_setsockopt       sockets
+env.__syscall_shutdown         sockets
+env.__syscall_socket           sockets (ntdll socket.c, server sock.c); the master socket and server_connect, not run in-process (section 7)
+
+# ---- Memory ----
+env._mmap_js                   virtual.c's file mmap (until 01xx routes it to virtual_wasm.c, section 6)
+env._munmap_js                 munmap of a file mapping (until 01xx, section 6)
+env._msync_js                  msync of a file mapping (until 01xx, section 6)
+env.emscripten_resize_heap     referenced by libc's sbrk; never reached, since __wrap_sbrk caps the break (section 5)
+env.emscripten_get_heap_max    malloc's heap limit query (dlmalloc)
+
+# ---- Time ----
+wasi_snapshot_preview1.clock_time_get  clock_gettime: real time, as in Wine (KUSER, timeouts)
+env.emscripten_date_now        gettimeofday/time
+env.emscripten_get_now         the monotonic clock
+env._gmtime_js                 gmtime (registry and time zone code)
+env._localtime_js              localtime (time zone information)
+env._mktime_js                 mktime (time zone information)
+env._tzset_js                  tzset (TZ=UTC from the host, section 8)
+env._setitimer_js              setitimer, under alarm: the server's ptrace watchdog (signal.c start_watchdog, from ptrace.c); the server's timers are its timeout lists (section 9)
+
+# ---- Process, environment, signals ----
+wasi_snapshot_preview1.environ_get        environ, built from ENV in preRun (section 8)
+wasi_snapshot_preview1.environ_sizes_get  environ's size
+wasi_snapshot_preview1.proc_exit          exit()
+env.exit                       exit() through Emscripten's runtime (a Wine error ends the boot, section 8)
+env._abort_js                  abort(): stopping loudly (section 2)
+env.__assert_fail              assert()
+env.__call_sighandler          libc's raise(), which kill() of the process's own pid calls (the server's kill of a client pid: process.c process_sigkill, request.c, ptrace.c) and setitimer's alarm
+env.__do_set_thread_state      the -ww libc sets its thread state lazily (emscripten_thread_state.S)
+env._emscripten_runtime_keepalive_clear  raise()'s default terminate action (libc raise.c; see __call_sighandler)
+env.emscripten_num_logical_cores  sysconf(_SC_NPROCESSORS_ONLN) (system.c; the profile says 1, section 3)
+
+# ---- -sSTACK_OVERFLOW_CHECK=2 ----
+env.__handle_stack_overflow    the shadow stack's overflow check reports here (section 2)
+
+# ---- The boot (WP4, section 8): libc calls the boot path reaches ----
+env.__syscall_faccessat        access(): check_command_line looks for a builtin exe named like argv[0] (loader.c; boot passes WINELOADERNOEXEC, section 8)
+env.__syscall_umask            umask: init_files reads the start umask for new files' modes (file.c)

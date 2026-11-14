@@ -1,0 +1,101 @@
+ntdll Unix part for wasm64 (docs/design/wine-unix.md, sections 2 and 3).
+
+The guest is AMD64, so these guest branches take __wasm64__:
+current_machine (unix_private.h), the x86 CPU-information block and
+PROCESSOR_ARCHITECTURE_AMD64 (system.c), the stub syscall's Rip
+(loader.c), address_space_start 0x110000 (virtual.c, section 4).
+Host-CPU instructions get a wasm64 path: do_cpuid and do_xgetbv stop
+loudly until the CPU profile replaces them (section 3, WP4). The LDT and
+.so-DLL branches stay x86-only (no WoW64, no dlopen).
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index cb700dd..31994fe 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -126,7 +126,7 @@ static void stub_syscall( const char *name )
+     NtGetContextThread( GetCurrentThread(), &context );
+ #ifdef __i386__
+     rec.ExceptionAddress = (void *)context.Eip;
+-#elif defined __x86_64__
++#elif defined __x86_64__ || defined __wasm64__  /* wasm64: the guest is AMD64 */
+     rec.ExceptionAddress = (void *)context.Rip;
+ #elif defined __arm__ || defined __aarch64__
+     rec.ExceptionAddress = (void *)context.Pc;
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index 350bcea..e73581b 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -270,7 +270,7 @@ static pthread_mutex_t timezone_mutex = PTHREAD_MUTEX_INITIALIZER;
+  * This a set of mutually exclusive #if define()s each providing its
+  * own functions to be called from init_cpu_info().
+  */
+-#if defined(__i386__) || defined(__x86_64__)
++#if defined(__i386__) || defined(__x86_64__) || defined(__wasm64__)  /* wasm64: the guest is AMD64 */
+ 
+ static int next_xstate_offset( int off, UINT64 compaction_mask, int feature_idx )
+ {
+@@ -326,6 +326,21 @@ void copy_xstate( XSAVE_AREA_HEADER *dst, XSAVE_AREA_HEADER *src, UINT64 mask )
+     }
+ }
+ 
++#ifdef __wasm64__
++/* Host-CPU instructions: the CPU information will come from the translator's
++ * profile (wine-unix.md, section 3); until then these stop loudly. */
++static void do_cpuid( unsigned int ax, unsigned int cx, unsigned int *p )
++{
++    fprintf( stderr, "tempwind: unsupported: do_cpuid\n" );
++    abort();
++}
++
++static UINT64 do_xgetbv( unsigned int cx )
++{
++    fprintf( stderr, "tempwind: unsupported: do_xgetbv\n" );
++    abort();
++}
++#else
+ static inline void do_cpuid( unsigned int ax, unsigned int cx, unsigned int *p )
+ {
+     __asm__ ( "cpuid" : "=a" (p[0]), "=b" (p[1]), "=c" (p[2]), "=d" (p[3]) : "a" (ax), "c" (cx) );
+@@ -337,6 +352,7 @@ static inline UINT64 do_xgetbv( unsigned int cx )
+     __asm__( "xgetbv" : "=a" (low), "=d" (high) : "c" (cx) );
+     return low | ((UINT64)high << 32);
+ }
++#endif
+ 
+ /* Detect if a SSE2 processor is capable of Denormals Are Zero (DAZ) mode.
+  *
+@@ -1631,7 +1647,7 @@ static SYSTEM_CPU_INFORMATION get_cpuinfo(void)
+         .ProcessorArchitecture = PROCESSOR_ARCHITECTURE_ARM64,
+ #elif defined(__i386__)
+         .ProcessorArchitecture = PROCESSOR_ARCHITECTURE_INTEL,
+-#elif defined(__x86_64__)
++#elif defined(__x86_64__) || defined(__wasm64__)  /* wasm64: the guest is AMD64 */
+         .ProcessorArchitecture = PROCESSOR_ARCHITECTURE_AMD64,
+ #endif
+     };
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 3932b17..27ee1ba 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -43,7 +43,7 @@ typedef struct
+ 
+ #ifdef __i386__
+ static const WORD current_machine = IMAGE_FILE_MACHINE_I386;
+-#elif defined(__x86_64__)
++#elif defined(__x86_64__) || defined(__wasm64__)  /* wasm64: the guest is AMD64 */
+ static const WORD current_machine = IMAGE_FILE_MACHINE_AMD64;
+ #elif defined(__arm__)
+ static const WORD current_machine = IMAGE_FILE_MACHINE_ARMNT;
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 111849d..5ffc8b7 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -182,7 +182,7 @@ static const UINT_PTR host_page_mask = 0xfff;
+ #endif
+ 
+ /* Note: these are Windows limits, you cannot change them. */
+-#if defined(__i386__) || defined(__x86_64__)
++#if defined(__i386__) || defined(__x86_64__) || defined(__wasm64__)  /* wasm64: the guest is AMD64 */
+ static void *address_space_start = (void *)0x110000; /* keep DOS area clear */
+ #else
+ static void *address_space_start = (void *)0x10000;

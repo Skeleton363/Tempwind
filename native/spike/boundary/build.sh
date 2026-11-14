@@ -24,15 +24,19 @@ cargo run -q -p x64wasm-cli --release -- translate --shared --base 0x10100000 \
 
 # The Unix side. The flags are the ones abi.md's "Wine boundary" records:
 # - wasm64, importing a shared memory64 that JS creates (maximum 16 GiB =
-#   262144 pages, initial 2 GiB + 64 MiB), static data from 2 GiB;
-#   SHARED_MEMORY without pthreads turns on atomics and bulk memory;
+#   262144 pages, initial 4 GiB: the host region [2 GiB, 4 GiB) from the
+#   start), static data from 2 GiB; SHARED_MEMORY without pthreads turns on
+#   atomics and bulk memory;
+# - sbrk wrapped (boundary.c's __wrap_sbrk) so the heap stops at 4 GiB and
+#   never grows the memory (wine-unix.md, section 5);
+# - the ABI's constants from native/wine/include/tempwind/abi.h;
 # - wasm exception handling, also for setjmp/longjmp;
 # - no -sJSPI: the driver wraps thread_main in WebAssembly.promising and
 #   green_block in WebAssembly.Suspending itself;
 # - the raw stack functions exported for starting green threads.
-scripts/emcc.sh -m64 -O2 -Wall -Werror --no-entry \
+scripts/emcc.sh -m64 -O2 -Wall -Werror --no-entry -Inative/wine/include \
   -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH \
-  -sINITIAL_MEMORY=2112MB -sMAXIMUM_MEMORY=16GB -sGLOBAL_BASE=2GB \
+  -sINITIAL_MEMORY=4GB -sMAXIMUM_MEMORY=16GB -sGLOBAL_BASE=2GB -Wl,--wrap=sbrk \
   -fwasm-exceptions -sSUPPORT_LONGJMP=wasm \
   -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=node,worker \
   -sEXPORTED_FUNCTIONS=_malloc,_emscripten_stack_set_limits,__emscripten_stack_restore \

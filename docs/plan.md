@@ -126,7 +126,7 @@ Each milestone ends with:
 | # | Milestone | Done when |
 |---|---|---|
 | M1 | Wine in CI, and the boundary spike | CI publishes Wine's PE modules, test exes, prefix and a native build. Windows and native-Wine test baselines are recorded. The DLL closure is listed with its bases. `census --check` passes on the closure, and every closure DLL translates and compiles in V8. A spike proves the JSPI boundary in Node and Chromium: an Emscripten wasm64 module owns the loop, translated code calls into it, it suspends, and green threads switch. |
-| M2 | Wine's Unix side boots | ntdll's Unix part and the in-process wineserver build with Emscripten in CI. In Node they boot to `LdrInitializeThunk`, with ntdll, apisetschema and the exe mapped, the registry and NLS loaded, and KUSER filled. A C harness covers virtual memory and server waits. |
+| M2 | Wine's Unix side boots | ntdll's Unix part and the in-process wineserver build with Emscripten in CI. In Node they boot to `LdrInitializeThunk`, with ntdll and the exe mapped, apisetschema's API set mapped (`PEB->ApiSetMap`), the registry and NLS loaded, and KUSER filled. A C harness covers virtual memory and server waits. |
 | M3 | Boot: hello.exe on Wine | hello.exe and the L2 programs run on Wine in Node, matching native, with both checks on. hello.exe does the same in a Chromium Worker. |
 | M4 | Console programs on Wine | Green threads; win32u loads; CoreMark validates and the 7-Zip matrix gives 138/138 on Wine; both benchmarks are tracked on Wine; the JS shim is deleted. |
 | M5 | Exceptions and conformance tracked | A basic raise path through Wine's own dispatcher. `l2_seh.exe` matches native. Both test exes run in CI, with rates tracked against the baselines. |

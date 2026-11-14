@@ -1,0 +1,129 @@
+# Phase 2 M2: build Wine's Unix side (ntdll's Unix part and wineserver) with
+# Emscripten as one wasm64 module, run `npm run test:wine`, and publish
+# `wine-unix-<sha7>` (docs/design/wine-unix.md, sections 2 and 10). Tests that
+# don't build fetch the release named by tests/targets/wine-unix.lock.
+name: wine-unix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "native/wine/**"
+      - "runtime/src/wine/**"
+      - "tests/wine/**"
+      - "tests/native/hello.c"
+      - "tests/targets/sources.json"
+      - "tests/targets/wine.lock"
+      - "runtime/src/abi.mjs"
+      - "runtime/src/memory.mjs"
+      - "scripts/emcc.sh"
+      - "scripts/fetch-artifact.sh"
+      - "scripts/release-publish.sh"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/wine-unix.yml"
+  pull_request:
+    paths:
+      - "native/wine/**"
+      - "runtime/src/wine/**"
+      - "tests/wine/**"
+      - "tests/native/hello.c"
+      - "tests/targets/sources.json"
+      - "tests/targets/wine.lock"
+      - "runtime/src/abi.mjs"
+      - "runtime/src/memory.mjs"
+      - "scripts/emcc.sh"
+      - "scripts/fetch-artifact.sh"
+      - "scripts/release-publish.sh"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/wine-unix.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wine-unix-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  # The commit under test (a pull request run checks out a merge commit).
+  SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  build:
+    # A branch with a pull request runs on its push event only.
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'claude/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      # scripts/emcc.sh keeps Emscripten's cache here (docker's /emcache).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/tempwind
+          key: wine-unix-emcache-${{ hashFiles('scripts/emcc.sh') }}-${{ hashFiles('native/wine/build.sh') }}
+          restore-keys: |
+            wine-unix-emcache-${{ hashFiles('scripts/emcc.sh') }}-
+            wine-unix-emcache-
+
+      # Fetches the Wine 11 release (target/wine: hello.exe, kuser.bin, native tree),
+      # then builds the Unix side with native/wine/build.sh into target/wine-unix.
+      - name: Prepare the inputs and build the Unix side
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd gcc-mingw-w64-x86-64
+          tests/wine/prepare.sh
+
+      - name: npm run test:wine
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run test:wine
+
+      - name: Collect the release files
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/wine-unix/wine-unix.{mjs,wasm} target/wine-unix/test-*.{mjs,wasm} target/wine-unix/build-info.json dist/
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wine-unix
+          path: dist
+
+  # Publish only from a push or a manual run of this repository's branches; the
+  # release starts as soon as the build and its tests pass.
+  publish:
+    needs: build
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'claude/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wine-unix
+          path: dist
+      - name: Create release wine-unix-<sha7>
+        run: |
+          set -euo pipefail
+          tag="wine-unix-${SHA:0:7}"
+          notes="Wine 11.0's Unix side (ntdll Unix part and wineserver, Emscripten wasm64) built by workflow run $RUN_URL at commit $SHA: wine-unix.{mjs,wasm}, the test modules and build-info.json (docs/design/wine-unix.md)."
+          # Creates the release if needed, keeps assets it already has, retries transient API errors.
+          scripts/release-publish.sh "$tag" "$notes" dist/*
+          echo "Published $tag" >> "$GITHUB_STEP_SUMMARY"

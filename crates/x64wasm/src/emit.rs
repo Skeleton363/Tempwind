@@ -1641,7 +1641,10 @@ fn emit_run(fbase: u32) -> Function {
     const FUNC: u32 = 1;
     const ENTRY: u32 = 2;
     const STATUS: u32 = 3;
-    let mut func = Function::new([(3, ValType::I32)]);
+    // The entry value of `depth` (v5): a nested run counts on from the outer
+    // guest frames and gives the count back when it returns.
+    const D0: u32 = 4;
+    let mut func = Function::new([(4, ValType::I32)]);
     let mut f = func.instructions();
     // The lazy flag record starts materialized from RFLAGS.
     f.local_get(STATE);
@@ -1651,8 +1654,8 @@ fn emit_run(fbase: u32) -> Function {
     f.local_get(STATE);
     f.i64_load(mem(abi::STATE_RFLAGS));
     f.i64_store(mem(abi::STATE_CC_A));
-    f.i32_const(0);
-    f.global_set(G_DEPTH);
+    f.global_get(G_DEPTH);
+    f.local_set(D0);
 
     f.block(BlockType::Empty); // $done
     f.loop_(BlockType::Empty); // $next
@@ -1690,12 +1693,16 @@ fn emit_run(fbase: u32) -> Function {
     f.i64_const(abi::NO_RET as i64);
     f.i64_store(mem(abi::STATE_RIP));
     f.end();
-    f.i32_const(0);
+    // UNWIND or RETURNED: no guest frame of this run is live.
+    f.local_get(D0);
     f.global_set(G_DEPTH);
     f.br(0);
     f.end(); // loop
     f.end(); // $done
 
+    // Give the caller its depth back.
+    f.local_get(D0);
+    f.global_set(G_DEPTH);
     // Materialize RFLAGS; STATUS holds the exit reason.
     f.local_get(STATE);
     f.local_get(STATE);
@@ -2141,7 +2148,10 @@ fn names(
 
     let mut locals = IndirectNameMap::new();
     let mut run = NameMap::new();
-    for (i, n) in ["state", "func", "entry", "status"].iter().enumerate() {
+    for (i, n) in ["state", "func", "entry", "status", "d0"]
+        .iter()
+        .enumerate()
+    {
         run.append(i as u32, n);
     }
     locals.append(fbase + F_RUN, &run);

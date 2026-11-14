@@ -1,0 +1,138 @@
+ntdll image placement on wasm64 (docs/design/wine-unix.md, section 4).
+
+Why: the translator's modules are made for an image's address, so the same
+files in the same load order must land at the same addresses, and the
+memory must stay small. Wine asks the server for a slot before it tries the
+preferred base of an ImageDynamicallyRelocated DLL, which would move ntdll,
+the EXE and every free-based DLL into the slot range.
+
+- map_image_view tries the preferred base first, for every image.
+- Only then does a relocated DLL ask the server (get_image_map_address),
+  and map_image_view tries that slot; virtual_map_image no longer asks first.
+- Then the search: for an image based above 4 GiB, first in the image range
+  [0x1_0000_0000, 0x1_7000_0000), where the server's ranges64 lies, so that
+  a top-down search does not grow the memory to 16 GiB; then anywhere.
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3355,6 +3355,86 @@
+ }
+ 
+ 
++#ifdef __wasm64__
++
++/***********************************************************************
++ *             map_image_view
++ *
++ * Map a view for a PE image at an appropriate address (wine-unix.md,
++ * section 4): the preferred base for every image first; then, for a
++ * relocated DLL, the server's slot; then a search, in the image range
++ * first for an image based above 4 GiB.
++ */
++static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_info *image_info, SIZE_T size,
++                                ULONG_PTR limit_low, ULONG_PTR limit_high, ULONG alloc_type, HANDLE mapping )
++{
++    static const ULONG_PTR image_range_end = 0x170000000;  /* the server's ranges64 ends here */
++    unsigned int vprot = SEC_IMAGE | SEC_FILE | VPROT_COMMITTED | VPROT_READ | VPROT_EXEC | VPROT_WRITECOPY;
++    void *base;
++    NTSTATUS status;
++    ULONG_PTR start, end;
++    BOOL top_down = (image_info->image_charact & IMAGE_FILE_DLL) &&
++                    (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated);
++
++    limit_low = max( limit_low, (ULONG_PTR)address_space_start );  /* make sure the DOS area remains free */
++    if (!limit_high) limit_high = (ULONG_PTR)user_space_limit;
++
++    /* first the preferred base, for every image */
++
++    base = wine_server_get_ptr( image_info->base );
++    if ((ULONG_PTR)base == image_info->base)
++    {
++        status = map_view( view_ret, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
++        if (!status) return status;
++    }
++
++    /* then the server's slot, which only a relocated DLL asks for */
++
++    if (!image_info->map_addr && top_down && mapping)
++    {
++        SERVER_START_REQ( get_image_map_address )
++        {
++            req->handle = wine_server_obj_handle( mapping );
++            if (!wine_server_call( req )) image_info->map_addr = reply->addr;
++        }
++        SERVER_END_REQ;
++    }
++    if (image_info->map_addr && image_info->map_addr != image_info->base)
++    {
++        base = wine_server_get_ptr( image_info->map_addr );
++        if ((ULONG_PTR)base == image_info->map_addr)
++        {
++            status = map_view( view_ret, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
++            if (!status) return status;
++        }
++    }
++
++    /* then some appropriate address range: above 4 GiB the image range, so
++     * that a top-down search does not grow the memory to the limit */
++
++    if (image_info->base >= limit_4g)
++    {
++        start = max( limit_low, limit_4g );
++        end = min( limit_high, image_range_end - 1 );
++    }
++    else
++    {
++        start = limit_low;
++        end = min( limit_high, get_wow_user_space_limit() );
++    }
++    if (start < end && (start != limit_low || end != limit_high))
++    {
++        status = map_view( view_ret, NULL, size, top_down ? MEM_TOP_DOWN : 0, vprot, start, end, 0 );
++        if (!status) return status;
++    }
++
++    /* then any suitable address */
++
++    return map_view( view_ret, NULL, size, top_down ? MEM_TOP_DOWN : 0, vprot, limit_low, limit_high, 0 );
++}
++
++#else  /* __wasm64__ */
++
+ /***********************************************************************
+  *             map_image_view
+  *
+@@ -3414,6 +3494,8 @@
+     return map_view( view_ret, NULL, size, top_down ? MEM_TOP_DOWN : 0, vprot, limit_low, limit_high, 0 );
+ }
+ 
++#endif  /* __wasm64__ */
++
+ 
+ /***********************************************************************
+  *             virtual_map_image
+@@ -3445,6 +3527,7 @@
+         return status;
+     }
+ 
++#ifndef __wasm64__  /* wasm64: map_image_view asks once the preferred base is taken */
+     if (!image_info->map_addr &&
+         (image_info->image_charact & IMAGE_FILE_DLL) &&
+         (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated))
+@@ -3456,10 +3539,15 @@
+         }
+         SERVER_END_REQ;
+     }
++#endif
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+ 
++#ifdef __wasm64__
++    status = map_image_view( &view, image_info, size, limit_low, limit_high, alloc_type, mapping );
++#else
+     status = map_image_view( &view, image_info, size, limit_low, limit_high, alloc_type );
++#endif
+     if (status) goto done;
+ 
+     status = map_image_into_view( view, nt_name, unix_fd, image_info, machine, shared_fd, needs_close );

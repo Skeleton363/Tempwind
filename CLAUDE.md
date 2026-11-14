@@ -44,8 +44,9 @@ Core verification. The oracle, census, 7-Zip matrix, benchmarks, profiling and r
 
 ## Working efficiently
 Quality first: rework is the most expensive waste. Cut the rest:
-- Contracts and tests before code: design notes and ABI changes are committed before agents start; fixtures or a failing test come before a fix.
+- Contracts and tests before code: design notes and ABI changes are committed before agents start; fixtures or a failing test come before a fix. Once the plan is approved, the status note's work-package table is the only copy kept current.
 - Read narrowly: Grep, then Read with offset/limit. Never read fixtures, `census.json`, snapshots or CI logs whole; save logs to a file and grep them. Keep command output short (`cargo test -q`, `| tail -n 40`) except while diagnosing.
 - Split work into agents only along artifact boundaries (fixtures, ABI, separate files); never chain agents through summaries; small or tightly coupled work stays in the main loop.
 - Delegate large, self-contained work, not lookups one Grep answers. The brief names the files, the contract and the tests that decide "done"; agents report in about 150 words; the coordinator reviews diffs, not whole files.
 - Verify before pushing, including CI scripts that can run in the session. Wait for PR events instead of polling CI.
+- Context: at each checkpoint (plan approved, contracts pushed, each work package merged, before `/milestone-close`, after its reviews) read `context_usage` from `get_session` at a turn's start. Above 25 % (the reading leaves out about 75k tokens and lags), and always between planning and execution, ask the owner to run `/compact` with a ready focus line, once the state is in files (trial 6, `docs/dev/agent-runs.md`).

@@ -1,0 +1,143 @@
+ntdll virtual memory on the wasm memory: the base maps (docs/design/wine-unix.md,
+sections 4 and 6).
+
+- mmap, munmap, mprotect, madvise and msync in virtual.c go to the backend
+  in native/wine/src/virtual_wasm.c (tw_*), which keeps its own record of the
+  maps (section 6).
+- The limits are 16 GiB, the memory's maximum: address_space_limit,
+  user_space_limit, working_set_limit and get_host_addr_space_limit
+  (section 4).
+- virtual_init takes the static reserve list (tw_reserve_list, the guest
+  regions) in place of the preloader's (section 4).
+- Wine's bookkeeping lives in the host heap: anon_mmap_alloc and
+  alloc_virtual_heap allocate there (section 4). map_view's own map at no
+  fixed address goes to the backend, which takes a free range in the guest
+  regions (section 6).
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -92,6 +92,22 @@
+ #include "unix_private.h"
+ #include "wine/debug.h"
+ 
++#ifdef __wasm64__
++/* No host mmap (docs/design/wine-unix.md, section 6): these calls go to the
++ * backend in native/wine/src/virtual_wasm.c, which keeps its own record of
++ * the maps on the one wasm memory. */
++void *tw_mmap( void *addr, size_t len, int prot, int flags, int fd, off_t offset );
++int tw_munmap( void *addr, size_t len );
++int tw_mprotect( void *addr, size_t len, int prot );
++int tw_madvise( void *addr, size_t len, int advice );
++int tw_msync( void *addr, size_t len, int flags );
++#define mmap tw_mmap
++#define munmap tw_munmap
++#define mprotect tw_mprotect
++#define madvise tw_madvise
++#define msync tw_msync
++#endif
++
+ WINE_DEFAULT_DEBUG_CHANNEL(virtual);
+ WINE_DECLARE_DEBUG_CHANNEL(module);
+ WINE_DECLARE_DEBUG_CHANNEL(virtual_ranges);
+@@ -102,6 +118,12 @@
+     size_t size;
+ };
+ 
++#ifdef __wasm64__
++/* The preloader's reserve list, as a static list: the guest regions
++ * (wine-unix.md, section 4; virtual_wasm.c). */
++extern const struct preload_info tw_reserve_list[];
++#endif
++
+ struct reserved_area
+ {
+     struct list entry;
+@@ -187,7 +209,12 @@
+ #else
+ static void *address_space_start = (void *)0x10000;
+ #endif
+-#ifdef _WIN64
++#ifdef __wasm64__
++/* wine-unix.md, section 4: the guest regions end at 16 GiB, the memory's maximum */
++static void *address_space_limit = (void *)0x400000000;  /* top of the total available address space */
++static void *user_space_limit    = (void *)0x400000000;  /* top of the user address space */
++static void *working_set_limit   = (void *)0x400000000;  /* top of the current working set */
++#elif defined(_WIN64)
+ static void *address_space_limit = (void *)0x7fffffff0000;  /* top of the total available address space */
+ static void *user_space_limit    = (void *)0x7fffffff0000;  /* top of the user address space */
+ static void *working_set_limit   = (void *)0x7fffffff0000;  /* top of the current working set */
+@@ -273,9 +300,19 @@
+ /* allocate anonymous mmap() memory at any address */
+ void *anon_mmap_alloc( size_t size, int prot )
+ {
++#ifdef __wasm64__
++    /* Wine's own bookkeeping lives in the host heap (wine-unix.md, section 4):
++     * the view blocks, pages_vprot, the virtual heap, the fd and sync caches. */
++    void *ptr;
++
++    assert( !(size & host_page_mask) );
++    if (!(ptr = aligned_alloc( host_page_size, size ))) return MAP_FAILED;
++    return memset( ptr, 0, size );
++#else
+     assert( !(size & host_page_mask) );
+ 
+     return mmap( NULL, size, prot, MAP_PRIVATE | MAP_ANON, -1, 0 );
++#endif
+ }
+ 
+ #ifdef USE_UFFD_WRITEWATCH
+@@ -2308,7 +2345,11 @@
+ 
+         for (;;)
+         {
++#ifdef __wasm64__  /* guest memory from the backend, not the host heap (section 6) */
++            if ((ptr = mmap( NULL, view_size, unix_prot, MAP_PRIVATE | MAP_ANON, -1, 0 )) == MAP_FAILED)
++#else
+             if ((ptr = anon_mmap_alloc( view_size, unix_prot )) == MAP_FAILED)
++#endif
+             {
+                 status = (errno == ENOMEM) ? STATUS_NO_MEMORY : STATUS_INVALID_PARAMETER;
+                 ERR( "anon mmap error %s, size %p, unix_prot %#x\n",
+@@ -2757,6 +2798,9 @@
+  */
+ static void *get_host_addr_space_limit(void)
+ {
++#ifdef __wasm64__
++    return (void *)0x400000000;  /* the memory's maximum (wine-unix.md, section 4) */
++#else
+     unsigned int flags = MAP_PRIVATE | MAP_ANON;
+     UINT_PTR addr = (UINT_PTR)1 << 63;
+ 
+@@ -2776,6 +2820,7 @@
+         addr >>= 1;
+     }
+     return (void *)((addr << 1) - (granularity_mask + 1));
++#endif
+ }
+ 
+ #endif /* _WIN64 */
+@@ -3603,6 +3648,10 @@
+     void *ret;
+ 
+     size = ROUND_SIZE( 0, size, host_page_mask );
++#ifdef __wasm64__
++    /* in the host heap, never in a guest region (wine-unix.md, section 4) */
++    if (size) return anon_mmap_alloc( size, PROT_READ | PROT_WRITE );
++#endif
+ 
+     LIST_FOR_EACH_ENTRY_REV( area, &reserved_areas, struct reserved_area, entry )
+     {
+@@ -3637,7 +3686,12 @@
+  */
+ void virtual_init(void)
+ {
++#ifdef __wasm64__
++    /* the static reserve list (wine-unix.md, section 4) stands for the preloader's */
++    const struct preload_info *reserve_list = tw_reserve_list, **preload_info = &reserve_list;
++#else
+     const struct preload_info **preload_info = dlsym( RTLD_DEFAULT, "wine_main_preload_info" );
++#endif
+     const char *preload;
+     size_t size;
+     int i;
