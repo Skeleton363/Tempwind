@@ -118,7 +118,7 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
   - **The same files in the same load order land at the same addresses.** Nothing is randomized.
 - **`MEM_TOP_DOWN` with no limit (M3, patch 0104):**
   - `map_view` searches a request with no `limit_high` from `min(user_space_limit, host_addr_space_limit)`, 16 GiB, down (`virtual.c` L2287-2295). A top-down allocation there would grow the memory to 16 GiB.
-  - So a top-down `map_view` with no `limit_high` first searches below a ceiling: the end of the highest mapped image view, rounded up to 64 KiB. Only if nothing fits there does it search the full range, as Wine does.
+  - So a top-down `map_view` with no `limit_high` first searches below a ceiling: the end of the highest mapped image view, rounded up to 64 KiB. Only if nothing fits there does it search the full range, as Wine does. With no image view mapped there is no ceiling, and the search is Wine's.
   - Guest code reaches it through `NtAllocateVirtualMemory` with `MEM_TOP_DOWN` and no zero bits, which passes no limit (L5223-5228, `unix_private.h` L527).
   - Images never reach the ceiling: `map_image_view` always passes a `limit_high` (L3329). Neither does the Unix side's other top-down use, the PEB and TEB block below 2 GiB (L4054-4055).
 
@@ -308,11 +308,11 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
     - a unix call;
     - KUSER's clock advanced by a syscall's entry;
     - `+syscall` lines in Wine's format.
-  - `virtual`:
+  - `virtual`: `tw_invalidate` before an unmap of `PAGE_CODE` pages, and none for pages without it.
+  - `section`, since these need an image view and so the server's sections:
+    - placement against `TW_IMAGE_RANGE_END`;
     - the top-down ceiling (section 4);
-    - `tw_image_mapped` after an image map, recorded by the test host;
-    - `tw_invalidate` before an unmap of `PAGE_CODE` pages, and none for pages without it.
-  - `section`: placement against `TW_IMAGE_RANGE_END`.
+    - `tw_image_mapped` after an image map, recorded by the test host.
   - `boot`: the `PROCESSOR_*` values in `overlay.reg`, and KUSER's `XState` and `ActiveProcessorCount`, against the CPU profile (M2's leftovers).
 - **Programs (M3):** `tests/wine/programs.test.mjs` runs hello.exe, l2_int, l2_crt and l2_float.
   - Each runs in a fresh Unix-side instance, with both memory checks on.
