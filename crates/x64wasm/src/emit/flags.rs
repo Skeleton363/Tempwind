@@ -369,7 +369,7 @@ fn dynamic_cond(f: &mut InstructionSink<'_>, base: Cond) {
 
 /// `flags(op: i32, a: i64, b: i64, r: i64) -> i64`: the status flags of a
 /// lazy record (operands zero-extended to the record's width).
-pub(super) fn emit_flags() -> Function {
+pub(crate) fn emit_flags() -> Function {
     use abi::flags::*;
     const OP: u32 = 0;
     const A: u32 = 1;

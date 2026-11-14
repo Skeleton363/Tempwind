@@ -79,7 +79,8 @@ mod string;
 mod structure;
 mod x87;
 
-use flags::{Known, emit_flags};
+use flags::Known;
+pub(crate) use flags::emit_flags;
 use structure::{Item, Jump, Plan, Sel, Transfer};
 use x87::X87Locals;
 
@@ -148,7 +149,7 @@ mod slot {
     pub const MEM_STORES: u64 = 11;
 }
 
-fn mem(offset: u64) -> MemArg {
+pub(crate) fn mem(offset: u64) -> MemArg {
     MemArg {
         offset,
         align: 0,
@@ -1767,26 +1768,34 @@ fn emit_run(fbase: u32) -> Function {
     f.local_get(D0);
     f.global_set(G_DEPTH);
     // Materialize RFLAGS; STATUS holds the exit reason.
-    f.local_get(STATE);
-    f.local_get(STATE);
-    f.i64_load(mem(abi::STATE_RFLAGS));
-    f.i64_const(!abi::flags::STATUS as i64);
-    f.i64_and();
-    f.local_get(STATE);
-    f.i32_load(mem(abi::STATE_CC_OP));
-    for offset in [abi::STATE_CC_A, abi::STATE_CC_B, abi::STATE_CC_R] {
-        f.local_get(STATE);
-        f.i64_load(mem(offset));
-    }
-    f.call(fbase + F_FLAGS);
-    f.i64_or();
-    f.i64_store(mem(abi::STATE_RFLAGS));
+    materialize_rflags(&mut f, STATE, fbase + F_FLAGS);
     f.local_get(STATE);
     f.local_get(STATUS);
     f.i32_store(mem(abi::STATE_EXIT));
     f.local_get(STATUS);
     f.end();
     func
+}
+
+/// The trampoline's step 3 (`abi.md`, "Trampoline"), also the bridge's
+/// `flags_materialize`: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a,
+/// cc_b, cc_r)` for the state block whose address is in local `state`,
+/// with `flags` (the [`emit_flags`] function) at function index `flags`.
+pub(crate) fn materialize_rflags(f: &mut InstructionSink<'_>, state: u32, flags: u32) {
+    f.local_get(state);
+    f.local_get(state);
+    f.i64_load(mem(abi::STATE_RFLAGS));
+    f.i64_const(!abi::flags::STATUS as i64);
+    f.i64_and();
+    f.local_get(state);
+    f.i32_load(mem(abi::STATE_CC_OP));
+    for offset in [abi::STATE_CC_A, abi::STATE_CC_B, abi::STATE_CC_R] {
+        f.local_get(state);
+        f.i64_load(mem(offset));
+    }
+    f.call(flags);
+    f.i64_or();
+    f.i64_store(mem(abi::STATE_RFLAGS));
 }
 
 /// A module that exports, for testing them against reference models, the
