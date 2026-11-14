@@ -29,7 +29,6 @@ Update the current phase's note, `docs/status/phase-N.md` (the highest N there):
 ## 4. Draft PR
 - Commit by pathspec, `git push`.
 - Open a draft PR titled `[Phase N] <milestone>` with a summary, the test summary and the measurements. No `Co-Authored-By`, `Claude-Session` or "Generated with" lines.
-- The description's first line is the merge danger: whether a revert alone undoes the merge (a two-way door) or not (one-way: published releases, recorded data, a contract others build on), and what breaks for whom if it is wrong. Trial 4 in `docs/dev/agent-runs.md`.
 - `subscribe_pr_activity` for the PR; keep one safety-net check-in (`send_later`) and wait for PR events instead of polling.
 
 ## 5. Retro (once CI is green)
