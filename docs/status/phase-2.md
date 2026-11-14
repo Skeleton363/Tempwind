@@ -530,6 +530,7 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
 - **After the contracts, the first briefs and WP4's first pass:** 479,531 tokens (48 %), $42.73 and 107.5M cache reads for the whole session.
   - Writing the contracts cost the most. It took many turns at a large context, reading the docs and Wine's lines, so about 65M cache reads.
   - A compaction was asked for.
+- **At the owner's pause:** 101,742 tokens (10.2 %) after the second compaction. The whole session, agents included, cost $52.90 and 138.2M cache reads.
 
 ### Progress (2026-11-14)
 - **Pushed to the PR branch:**
@@ -556,6 +557,54 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
     - add a test that reads `TW_IMAGE_RANGE_END` from `abi.h`, the file only, since the crate stays independent;
     - drop the gate step's second rebase, which `prepare.sh` already ran and verified;
     - run `prepare.sh` end to end with `bridge` and `--shared`, and the gate with `--all`.
+
+## M3 progress (paused 2026-11-14)
+The owner paused M3 at 20:15 UTC, when the five-hour rate limit read `allowed_warning`. Nothing is left uncommitted: each track's work is on its side branch, and no work package is merged yet. The decisions, the work-package table (each package's files and done-when) and the progress before the pause are in the M3 section above.
+
+**Committed**
+- **The PR branch** `claude/nice-albattani-dpo4jx` has:
+  - the contracts (`986f037`: `abi.md` v5, `wine-unix.md` v2);
+  - the constants (`b3e3bc5`);
+  - the host's `opts.imports` (`b1f6262`);
+  - notes.
+
+  The `wine-unix` workflow passed at `b3e3bc5` and `b1f6262`.
+- **The side branches** are all based on `b1f6262`. The coordinator hasn't reviewed or tested WP1's and WP2's commits yet.
+
+**Per track**
+- **WP1, `m3-wp1-wip` at `b8ffe57`** (deep-worker):
+  - **Done:**
+    - `d996c62` is a contract change, to review at the merge: the top-down ceiling and `tw_image_mapped` checks move to the `section` harness, which has the server's image views;
+    - `2e6013a` (WIP): the dispatchers, contexts, wrapper generator and patches.
+  - **Saved at the pause** (`b8ffe57`):
+    - `tests/syscall.c`, half written and never run;
+    - unverified changes to the `section` and `virtual` harnesses, `gen-syscalls.mjs` and `tests/wine/m3-imports.mjs`.
+  - **Left:** the syscall harness and `tests/wine/syscall.test.mjs`, then the row's done-when (the three gates, `test:wine`).
+- **WP2, `m3-wp2-wip` at `a85ed5d`** (deep-worker):
+  - **Done:**
+    - `0b53058`, the failing rep test;
+    - `26f652f`, the store check over every page of a `rep` range;
+    - `974778a`, the `pop m64` fix for ntdll's `RtlCaptureContext`.
+  - **Saved at the pause** (`a85ed5d`): the bridge (`bridge.rs` and its tests) and `translate-pe --shared`, unverified. The `pop m64` regression test was being written.
+  - **Left:**
+    - finish those, and add the `bridge` command;
+    - the run-time translator's `shared_memory` flag;
+    - the `abi.mjs`↔`abi.h` test and the L5 snapshots;
+    - then the row's done-when, and the whole closure translating with all three flags.
+- **WP4, `m3-wp4-wip` at `f0ed274`** (builder): its first pass is reviewed. The four items under "Progress (2026-11-14)" come once WP2 merges.
+- **WP3, WP5 and WP6** haven't started.
+
+**How to resume**
+- **In this session,** while its container lives: the stopped agents can be messaged, and they keep their context. A resumed run's ledger line counts only its increment, with `--since`.
+- **In a fresh session:**
+  1. Prepare the shared inputs, which lived only in this container: `scripts/apt-install.sh zstd`, then `tests/wine/prepare.sh --fetch` in the main tree. Agents read `target/wine` through `TW_WINE_DIR`.
+  2. Brief WP1 and WP2 again from their rows in the table, the contracts and this section. Each brief starts with `git fetch origin m3-wpN-wip && git checkout -B m3-wpN FETCH_HEAD`, then reads the WIP commits' messages. It pushes with `git push origin HEAD:refs/heads/m3-wpN-wip`.
+  3. Then follow the table's order:
+     - WP4 and WP3 when WP2 merges;
+     - WP5 after WP1 and WP3;
+     - WP6 after WP5's hello and WP4.
+  4. For each report: review the diff against the contracts, merge it into the PR branch, log its ledger line, and checkpoint.
+- **Ledger:** the three runs' segments up to the pause and a `main` snapshot are logged. Transcripts live only as long as the container, so they couldn't wait.
 
 ## What works
 
@@ -662,7 +711,7 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
 
 ## Next step: M3, "Boot: hello.exe on Wine", in a new session
 
-**M3 is planned and in progress (2026-11-14):** its decisions and work packages are under "M3" above, and they supersede what follows where the two differ.
+**M3 is planned, started and paused (2026-11-14):** its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. Resume from "M3 progress (paused 2026-11-14)", not from the start below.
 
 **Start:** read `docs/plan.md` ("Phase 2 milestones", M3), this note's M2 section ("Decisions taken when planning M2", "Second resume", "The close"), `ARCHITECTURE.md`, `docs/design/wine-unix.md` (v1 with M2's amendments) and `abi.md` v5. Then do the research pass into `docs/dev/research.md`. M2's retro (`docs/dev/agent-runs.md`) has a lead for it: give the source reading to a subagent, since planning M2 took 27.5M of the coordinator's 112.8M cache reads, at 313k a request.
 
