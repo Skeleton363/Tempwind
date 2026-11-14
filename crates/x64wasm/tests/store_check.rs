@@ -49,6 +49,18 @@ fn run(
     opts: &Options,
     watch: (u64, usize),
 ) -> Outcome {
+    run_with(code, regs, &[], code_pages, opts, watch)
+}
+
+/// [`run`], with the u64 values `mem` written to guest memory first.
+fn run_with(
+    code: &str,
+    regs: &[(usize, u64)],
+    mem: &[(u64, u64)],
+    code_pages: &[u64],
+    opts: &Options,
+    watch: (u64, usize),
+) -> Outcome {
     let code = hex(code);
     let wasm = translate(&code, BASE, opts);
     let mut p = Process::new();
@@ -59,6 +71,9 @@ fn run(
     }
     p.write(0x4_0000, &[0x5a; 0x1_0000]);
     p.enter_state(BASE, regs);
+    for &(addr, v) in mem {
+        p.write_u64(addr, v);
+    }
     let module = p.link(&wasm);
     let exit = p.call_run(&module, "run");
     let state = p.state();
@@ -157,5 +172,74 @@ fn rep_ranges_beside_code_run() {
             assert_eq!(out.state.gpr[RCX], 0, "{ctx}");
             assert!(out.bytes.iter().all(|&b| b != 0), "{ctx}: stored");
         }
+    }
+}
+
+/// `pop m64` (wine-11.0 `RtlCaptureContext`: `pushfq; pop qword [rcx+0x44]`):
+/// the destination's checks come before RSP changes, and an RSP-based
+/// destination uses RSP after the increment (SDM, POP).
+#[test]
+fn pop_to_memory_checks_first() {
+    const RSP: usize = 4;
+    const VALUE: u64 = 0x0123_4567_89ab_cdef;
+    let store = option_sets()[0].clone();
+    let both = Options {
+        null_check: true,
+        ..store.clone()
+    };
+    for opts in [store, both] {
+        // pop qword [rcx+0x44]; ret: the destination ends on the code page.
+        let out = run(
+            "8f4144 c3",
+            &[(RCX, 0x2_0fc0)],
+            &[0x2_1000],
+            &opts,
+            (0x2_1000, 8),
+        );
+        assert_eq!((out.exit, out.state.rip), (abi::EXIT_UNSUPPORTED, BASE));
+        assert_eq!(out.state.gpr[RSP], common::STACK, "RSP unchanged");
+        assert!(out.bytes.iter().all(|&b| b == 0), "nothing stored");
+        // pop qword [rsp+8]: the destination, at the old RSP + 16, is on
+        // the code page; the old RSP + 8 is not.
+        let out = run(
+            "8f442408 c3",
+            &[(RSP, 0x2_0ff0)],
+            &[0x2_1000],
+            &opts,
+            (0x2_1000, 8),
+        );
+        assert_eq!((out.exit, out.state.rip), (abi::EXIT_UNSUPPORTED, BASE));
+        assert_eq!(out.state.gpr[RSP], 0x2_0ff0, "RSP unchanged");
+        assert!(out.bytes.iter().all(|&b| b == 0), "nothing stored");
+        // Away from code it stores the popped value at the old RSP + 16,
+        // and ret pops the sentinel at the old RSP + 8.
+        let out = run_with(
+            "8f442408 c3",
+            &[(RSP, 0x2_0f00)],
+            &[(0x2_0f00, VALUE), (0x2_0f08, abi::SENTINEL_RET)],
+            &[0x2_1000],
+            &opts,
+            (0x2_0f10, 8),
+        );
+        assert_eq!(
+            (out.exit, out.state.rip),
+            (abi::EXIT_LEFT_CODE, abi::SENTINEL_RET)
+        );
+        assert_eq!(out.state.gpr[RSP], 0x2_0f10);
+        assert_eq!(out.bytes, VALUE.to_le_bytes());
+        // pop qword [rcx+0x44] stores at RCX + 0x44.
+        let out = run_with(
+            "8f4144 c3",
+            &[(RCX, 0x2_0000)],
+            &[
+                (common::STACK, VALUE),
+                (common::STACK + 8, abi::SENTINEL_RET),
+            ],
+            &[0x2_1000],
+            &opts,
+            (0x2_0044, 8),
+        );
+        assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
+        assert_eq!(out.bytes, VALUE.to_le_bytes());
     }
 }

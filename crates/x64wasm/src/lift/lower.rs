@@ -17,6 +17,9 @@ pub(super) struct Lower<'i> {
     pub(super) ea: Option<Value>,
     /// The memory operand's guest address (with the FS/GS base), once computed.
     pub(super) seg_ea: Option<Value>,
+    /// RSP's value in the memory operand's address, if not the register's
+    /// (`pop m64`: RSP after the increment).
+    pub(super) ea_rsp: Option<Value>,
     /// The memory checks to insert (`translator.md`, "Memory checks").
     pub(super) checks: Checks,
     /// Temporaries allocated before the first side effect (once there is

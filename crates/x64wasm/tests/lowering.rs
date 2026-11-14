@@ -312,6 +312,8 @@ fn memory_checks_come_before_side_effects() {
         ("58", true, false),         // pop rax
         ("ff33", true, true),        // push qword [rbx]
         ("8f03", true, true),        // pop qword [rbx]
+        ("8f4144", true, true),      // pop qword [rcx+0x44]
+        ("8f442408", true, true),    // pop qword [rsp+8]
         ("e800000000", false, true), // call rel32
         ("ff13", true, true),        // call [rbx]
         ("c3", true, false),         // ret
