@@ -97,6 +97,20 @@ export const BLOCKS_VERSION = 1;
 export const BLOCKS_HEADER_SIZE = 16;
 export const BLOCKS_ENTRY_SIZE = 16;
 
+// Wine processes (abi.md v5, "Wine boundary"): the dispatcher addresses (lookup
+// keys, not code), the bridge's table slots and exports, the tombstone key of a
+// removed lookup slot, and the end of the image range below the rebased closure.
+export const SYSCALL_DISPATCHER = 0x7ffe_1100n;
+export const UNIX_CALL_DISPATCHER = 0x7ffe_1110n;
+export const RUN_INDEX = 0;
+export const TOMBSTONE_INDEX = 1;
+export const TABLE_RESERVED = 2;
+export const LOOKUP_TOMBSTONE = 0xdead_0000_0000_0001n;
+export const BRIDGE_DEPTH_GET_EXPORT = 'depth_get';
+export const BRIDGE_DEPTH_SET_EXPORT = 'depth_set';
+export const BRIDGE_FLAGS_MATERIALIZE_EXPORT = 'flags_materialize';
+export const IMAGE_RANGE_END = 0x1_6000_0000n;
+
 // Run-time translator (x64wasm_rt.wasm) request and result layouts.
 export const RT_REQUEST_SIZE = 40;
 export const RT_REQ_CODE_BASE = 0;
@@ -112,6 +126,8 @@ export const RT_FLAG_STORE_CHECK = 1 << 1;
 export const RT_FLAG_COUNTERS = 1 << 2;
 export const RT_FLAG_SYNC_ALL = 1 << 3;
 export const RT_FLAG_REFERENCE_LAYOUT = 1 << 4;
+/** v5: Options::shared_memory, as every module of a Wine process needs. */
+export const RT_FLAG_SHARED_MEMORY = 1 << 5;
 export const RT_RESULT_SIZE = 20;
 export const RT_RES_STATUS = 0;
 export const RT_RES_WASM_PTR = 4;
@@ -150,9 +166,9 @@ export const STACK_ALIGN = 0x1_0000n;
 export const MIN_LOOKUP_SLOTS = 4096;
 export const RFLAGS_INIT = 0x202n;
 /** A thread's FP state at its start, as on Windows x64: all exceptions masked, round to nearest, x87 at double precision, empty x87 stack. */
-export const MXCSR_INIT = 0x1f80;
-export const FCW_INIT = 0x027f;
-export const FTW_EMPTY = 0xffff;
+export const INIT_MXCSR = 0x1f80;
+export const INIT_FCW = 0x027f;
+export const INIT_FTW = 0xffff;
 /** End of the FP part of the state block (XMM, MXCSR, x87), which belongs to the thread. */
 export const STATE_FP_END = STATE_FPR + 8 * 16;
 /** Host-initiated guest call: RSP = top - GUEST_CALL_FRAME, [RSP] = SENTINEL_RET. */

@@ -29,7 +29,19 @@ _Noreturn void tw_boot_stopped( void );
 int64_t green_block( int32_t thread );  /* WebAssembly.Suspending */
 void green_wake( int32_t thread );
 void memory_grown( void );
+/* M3: the bridge's exports (wasm to wasm), then the JS host's. */
 int32_t tw_run( uint64_t state );
+int32_t tw_depth_get( void );
+void tw_depth_set( int32_t depth );
+void tw_flags_materialize( uint64_t state );
+int32_t tw_translate( uint64_t rip, uint64_t base, uint64_t size );
+void tw_image_mapped( int32_t fd, uint64_t base, uint64_t size );
+void tw_invalidate( uint64_t base, uint64_t size );
+
+/* run.c (section 12): runs translated code from the state block until the
+ * thread ends. It returns only on EXIT_HOST; the host function that stopped
+ * recorded why. Every other end stops loudly, or is process exit's longjmp. */
+void tw_run_loop( uint64_t state );
 
 /* green_pthread.c: a green thread as the pthread layer sees it (section 9).
  * M2 has one, the main thread. */
