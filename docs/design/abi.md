@@ -124,6 +124,8 @@ A caller that gets a status other than 0 from a call stores nothing further and 
    - `STATUS_EXIT`: the reason is in `state.exit`.
 3. Materialize RFLAGS: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a, cc_b, cc_r)`. Set `depth = d0`, store the exit reason in `state.exit` and return it.
 
+A `run` that ends by a trap or by an import that throws restores nothing: the exception leaves `depth` at the inner value. The host that catches it restores `depth` to its own entry value, as `runtime/src/process.mjs`'s `callNested` does in its `finally`. A host that keeps running after a top-level trap sets `depth` back to 0. M3's `tw_run` caller follows the same rule. This was found by M2's code review: today a trap ends the process, so nothing reaches the stale value.
+
 **`depth` across nested runs (v5).** A host starts `depth` at 0, so a top-level `run` behaves as in v4. A `run` entered from a host function while guest frames are live (a nested guest call: "Wine boundary", "Who calls whom", item 5) counts on from the outer frames, so the depth guard bounds the wasm stack across all nested runs, and the outer guest code continues with its own count when the nested `run` returns.
 
 `NO_RET = 0xFFFF_FFFF_FFFF_FFFF`, a non-canonical address that no `call` can push. Every module's `run` behaves the same, so a host may use any of them.
