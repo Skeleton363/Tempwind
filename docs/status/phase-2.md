@@ -366,6 +366,35 @@ The owner paused at 19:08 UTC ("M2 progress (paused 2026-11-13)" below). WP2 and
     - `virtual_init_user_shared_data` stays untested until `do_cpuid` takes the CPU profile; it still stops loudly.
     - The in-process start skips `server_connect`'s `setup_config_dir` (now in section 7), so the boot set must bring `dosdevices`.
 - **Checkpoint (trial 6):** 247,562 tokens (24.8 %) at the start of the turn, before WP2 part 2's merge.
+- **WP4, the boot (merged, `83aa097`):**
+  - **`0301-ntdll-startup.patch`:**
+    - constant paths (`LIBDIR`, no `dladdr`);
+    - the dispatcher slots get `TW_NO_DISPATCHER`, and `__wine_unixlib_handle` an opaque handle;
+    - the initial directory is the launch directory that `boot` recorded;
+    - the wineboot skip;
+    - `NtCreateUserProcess` returns `STATUS_NOT_SUPPORTED` with a `tempwind: unsupported:` line;
+    - the CPU comes from the translator's profile (`do_cpuid`, `do_xgetbv`, the DAZ probe, one processor), replacing `0002`'s loud stops.
+  - **The thread start:**
+    - `boot.c` runs `__wine_main` with `WINELOADERNOEXEC=1`. It returns through `longjmp` once `signal_start_thread` (`signal_wasm64.c`) has built the CONTEXT and the state block, as `init_syscall_frame` does.
+    - `signal_init_process` commits 0x7ffe1000 and writes the poison dispatcher address there.
+  - **The overlay and the boot set:** `native/wine/prefix/overlay.reg` holds the computer name `TEMPWIND`, the hardware description from the CPU profile, and the volatile environment of the prefix's user, `runner`. `runtime/src/wine/boot-set.mjs` writes the boot set into MEMFS and enters `boot`.
+  - **The contract part came first** (`0c144bd`, sections 8 and 10).
+  - **Checks:**
+    - seven in the harness: `rip_ldr_initialize_thunk`, `context_and_state`, `images_at_preferred_bases`, `apiset_map`, `registry_values`, `nls_loaded` and `kuser`;
+    - the Node test also checks that the boot opens only its boot set, and measures the boot.
+
+    KUSER matches `kuser.bin` except the clock fields, the CPU-profile fields and `NumberOfPhysicalPages`.
+  - **The one check WP4 couldn't finish:** `registry_values` needs the server to load the overlay, which takes a change in `server/registry.c`, a `02xx` file. WP4 proposed the diff without making it, and the coordinator added it as `0202` (`4f8ca56`). That commit lands before the merge, so each commit on the PR branch passes.
+  - **History:** WP4's track has the contract commit after the code. Its force-push to reorder `m2-wp4-wip` was denied, so it made a local branch `m2-wp4-final` with the same tree as two commits, contract first. The coordinator merged that branch; `m2-wp4-wip` stays as pushed.
+  - **On the merge:** 9 patches; the three gates pass; 79 imports (WP4 added `__syscall_faccessat` and `__syscall_umask`); 21 s. `wine-unix.wasm` is 976,581 bytes (355,625 gzipped). `npm run test:wine` passes 12 of 12. The review found no defects.
+  - **Measurements:**
+    - Boot to `LdrInitializeThunk` in Node takes 75 to 91 ms: a median of about 76 ms over WP4's 6 runs, and 78.0 to 82.6 ms over the coordinator's 4.
+    - Memory after boot is 94,219 pages of 64 KiB (5.75 GiB). Its top is ntdll's end (0x1_7000_0000 + 0xae000); nothing else grew it.
+  - **WP4's decisions, accepted at review:**
+    - The computer name is `TEMPWIND`, not the runner VM's name from the prefix.
+    - `NumberOfPhysicalPages` joins the KUSER exceptions, since it is the host's memory.
+    - The wineboot skip writes the version as constants (10.0.19045, `NtProductWinNt`, suite mask 0, `C:\windows`), because the PEB isn't set at that point. They match `kuser.bin`. A per-program Windows version (M3 or later) would need them from the registry, as wineboot reads them.
+- **Checkpoint (trial 6):** 291,812 tokens (29.2 %) at the start of the turn, before WP4's merge.
 
 ### Work packages
 At most two deep-workers at once and three subagents in all. Each brief names its files, the contract sections and the tests that decide "done", and a WIP track `m2-wpN-wip`. Agents commit their own paths only and use their own `--out` directories.
@@ -376,7 +405,7 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 | WP1: build skeleton (merged, `7d55b61`) | deep-worker | first | `build.sh`, `config.h`, `imports.txt`, `rename-server.h`, `00xx`, `src/` skeletons (`green_pthread.c` working; `stubs.c`, `version.c`, `library.js`; `signal_wasm64.c`, `green.c`, `inproc.c`, `boot.c` and `virtual_wasm.c` with `grow_to` and `__wrap_sbrk`), `tests/harness.h`, `runtime/src/wine/unix-host.mjs` (memory, raw exports, imports, `preRun` ENV, the stdio devices, MEMFS), `tests/wine/link.test.mjs`, `npm run test:wine` | everything compiles and links with the three gates; the `link` test passes |
 | WP2: virtual backend (merged, `4f1e0d1` and `ff7d5b3`) | deep-worker | after WP1 | `01xx`, `virtual_wasm.c`, `tests/virtual.c`, `tests/wine/virtual.test.mjs`; from WP3's merge, `tests/section.c` and `tests/wine/section.test.mjs` (moved from WP4: image placement through the server is `virtual.c`'s behavior) | the `virtual` and `section` checks (`wine-unix.md`, section 10). Its base maps (`virtual_init`, the first TEB, reserve, commit and free) come first and are merged early, since the wait harness needs them |
 | WP3: in-process server (merged, `5122ac2`) | deep-worker | after WP1, ∥ WP2 | `02xx` (`server/*` and `dlls/ntdll/unix/server.c`), `inproc.c`, `green.c`, the scheduler in `unix-host.mjs`, `tests/wait.c`, `tests/wine/wait.test.mjs` | the `wait` checks |
-| WP4: boot | deep-worker | after WP2 and WP3 | `03xx` (`loader.c`, `env.c`, `system.c`, `process.c`, `thread.c`), `boot.c`, `signal_wasm64.c`, `overlay.reg`, the boot set in `unix-host.mjs`, `tests/boot.c` and its Node test | the `boot` checks |
+| WP4: boot (merged, `83aa097`; the overlay load `0202`, `4f8ca56`) | deep-worker | after WP2 and WP3 | `03xx` (`loader.c`, `env.c`, `system.c`, `process.c`, `thread.c`), `boot.c`, `signal_wasm64.c`, `overlay.reg`, the boot set in `unix-host.mjs`, `tests/boot.c` and its Node test | the `boot` checks |
 | WP5: CI and prepare (merged, `c8d0cf2`) | builder | after WP1, ∥ the others | `tests/wine/prepare.sh`, `tests/wine/kuser-dump.c`, `.github/workflows/wine-unix.yml`, `docs/dev/commands.md` | run locally under the job's shell first; green on the PR branch, with `wine-unix-<sha7>` published |
 
 - **Hand-offs:** a `src/` skeleton or a Wine file passes from WP1 to its area's owner when WP1 merges, and `unix-host.mjs` passes from WP1 to WP3 to WP4. `00xx` is frozen once WP1 merges: a later header fix goes in a new patch in the fixing package's range. `config.h`, `stubs.c`, `imports.txt` and `rename-server.h` take appended lines from any package, each with its reason.
