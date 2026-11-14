@@ -5,8 +5,9 @@
  * NtAllocateVirtualMemory and NtFreeVirtualMemory, and the backend under
  * them (sections 4-6): zero on recommit, protect and query, write-watch and
  * PAGE_WATCH, the guest regions only, the heap cap, file views and pointer
- * validation. Image placement needs the server's sections, so the `section`
- * harness tests it. tests/wine/virtual.test.mjs runs this one.
+ * validation, and invalidation (M3). Image placement, the top-down ceiling
+ * and tw_image_mapped need the server's sections, so the `section` harness
+ * tests them. tests/wine/virtual.test.mjs runs this one.
  *
  * Copyright 2026 the Tempwind authors
  *
@@ -598,6 +599,38 @@ static const char *pointer_validation( void )
     return NULL;
 }
 
+/* Invalidation (section 6): before the backend unmaps or maps over pages
+ * with PAGE_CODE, it calls tw_invalidate with the range; for pages without
+ * it, it makes no call. The check sets PAGE_CODE as JS does when it links a
+ * module, and clears it as JS does once no module remains. It prints each
+ * call it expects ("# invalidate BASE SIZE"); the JS test's recorder must
+ * have exactly those, each made while the marker byte was still there. */
+static const char *invalidate_code( void )
+{
+    uint8_t *flags = tw_page_flags();
+    uint64_t base = 0;
+    volatile uint8_t *p;
+
+    ensure_init();
+    TW_EXPECT( !alloc( &base, 0x4000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE ) );
+    p = (volatile uint8_t *)(uintptr_t)base;
+    p[0] = p[0x1000] = p[0x3000] = 0x5a;
+
+    TW_EXPECT( !release( base, 0x1000, MEM_DECOMMIT ) );  /* no PAGE_CODE: no call */
+    flags[(base + 0x1000) >> 12] |= TW_PAGE_CODE;
+    TW_EXPECT( !release( base + 0x1000, 0x1000, MEM_DECOMMIT ) );
+    printf( "# invalidate %#llx 0x1000\n", (unsigned long long)(base + 0x1000) );
+    flags[(base + 0x1000) >> 12] &= ~TW_PAGE_CODE;
+    TW_EXPECT( p[0x1000] == 0 );  /* decommitted after the call */
+
+    flags[(base + 0x3000) >> 12] |= TW_PAGE_CODE;
+    TW_EXPECT( !release( base, 0, MEM_RELEASE ) );
+    printf( "# invalidate %#llx 0x4000\n", (unsigned long long)base );
+    flags[(base + 0x3000) >> 12] &= ~TW_PAGE_CODE;
+    EXPECT_FREE( base );
+    return NULL;
+}
+
 static const struct tw_check checks[] =
 {
     { "init_first_teb", init_first_teb },
@@ -613,6 +646,7 @@ static const struct tw_check checks[] =
     { "file_view_copy", file_view_copy },
     { "file_view_write_back", file_view_write_back },
     { "pointer_validation", pointer_validation },
+    { "invalidate_code", invalidate_code },
     { "second_writable_view", second_writable_view, TW_ALONE },
 };
 

@@ -65,6 +65,18 @@ for (const s of stubs) if (!entries.some((e) => e.name === s)) fail(`ntsyscalls.
 
 // ---- include/: prototypes and the types passed by value that are records ---
 const incDir = join(tree, 'include');
+// A parameter's type without its name, if it has one ("HANDLE handle",
+// "const OBJECT_ATTRIBUTES *attr", "unsigned int x"): the last identifier is
+// a name when a type word comes before it.
+const QUALIFIERS = new Set(['const', 'volatile', 'struct', 'union', 'enum']);
+const BUILTINS = new Set(['unsigned', 'signed', 'short', 'long', 'int', 'char', 'float', 'double', 'void']);
+function withoutName(param) {
+  const ids = [...param.matchAll(/[A-Za-z_]\w*/g)].filter((m) => !QUALIFIERS.has(m[0]));
+  const last = ids.at(-1);
+  if (ids.length < 2 || BUILTINS.has(last[0])) return param;
+  return (param.slice(0, last.index) + param.slice(last.index + last[0].length)).replace(/\s+/g, ' ').trim();
+}
+
 const winternl = stripComments(readFileSync(join(incDir, 'winternl.h'), 'utf8'));
 const protos = new Map();
 for (const m of winternl.matchAll(/NTSYSAPI\s+([\w\s*]+?)\s+WINAPI\s+(Nt\w+)\s*\(/g)) {
@@ -80,7 +92,8 @@ for (const m of winternl.matchAll(/NTSYSAPI\s+([\w\s*]+?)\s+WINAPI\s+(Nt\w+)\s*\
     if (ch === ',' && !d) { params.push(cur); cur = ''; } else cur += ch;
   }
   params.push(cur);
-  const ps = params.map((p) => p.replace(/\s+/g, ' ').trim()).filter((p) => p && p !== 'void' && p !== 'VOID');
+  const ps = params.map((p) => p.replace(/\s+/g, ' ').trim()).filter((p) => p && p !== 'void' && p !== 'VOID')
+    .map(withoutName);
   protos.set(m[2], { ret: m[1].replace(/\s+/g, ' ').trim(), params: ps });
 }
 

@@ -2,8 +2,9 @@
  * The `section` checks (docs/design/wine-unix.md, section 10): sections
  * through the in-process server. Image placement through NtCreateSection
  * and NtMapViewOfSection (section 4): at the preferred base, in a ranges64
- * slot when the base is taken, then a search in the image range. A
- * writable shared file view written back (section 6).
+ * slot when the base is taken, then a search in the image range, all against
+ * TW_IMAGE_RANGE_END. A writable shared file view written back (section 6).
+ * M3: the top-down ceiling (section 4) and tw_image_mapped (section 6).
  *
  * The setup runs before the checks, as start_main_thread does it (loader.c):
  * virtual_init, the first TEB, dbg_init, the configuration directory (the
@@ -36,11 +37,11 @@
 #include "unix_private.h"
 
 #include "harness.h"
+#include "tempwind/abi.h"
 #include "tempwind_private.h"
 
 #define WASM_PAGE        0x10000ull
-#define IMAGE_RANGE      0x100000000ull  /* the server's ranges64 (section 4) */
-#define IMAGE_RANGE_END  0x170000000ull
+#define IMAGE_RANGE      0x100000000ull  /* the server's ranges64 (section 4), to TW_IMAGE_RANGE_END */
 #define DATA_FILE        "/tempwind/data.bin"
 #define DATA_SIZE        0x3000
 
@@ -132,7 +133,7 @@ static const char *image_exe_preferred_base( void )
  * (sas.dll: 0x1_8000_0000), before any server slot. When the base is taken,
  * a second DLL with the same base (softpub.dll) gets the server's first
  * ranges64 slot: assigned top-down, its size rounded to 64 KiB plus 64 KiB
- * of space, so it ends 64 KiB below 0x1_7000_0000 (server/mapping.c
+ * of space, so it ends 64 KiB below TW_IMAGE_RANGE_END (server/mapping.c
  * assign_map_address). A second view of that DLL, with both taken, comes
  * from the search in the image range, top-down, so the memory stays small. */
 static const char *image_dll_slot( void )
@@ -152,13 +153,13 @@ static const char *image_dll_slot( void )
         return tw_fail( "softpub.dll: status %#x at %#llx", (unsigned)status, (unsigned long long)slot );
     EXPECT_IMAGE( slot );
     size = (size_of_image( slot ) + 0xffff) & ~0xffffull;
-    if (slot != IMAGE_RANGE_END - size - 0x10000)
+    if (slot != TW_IMAGE_RANGE_END - size - 0x10000)
         return tw_fail( "softpub.dll at %#llx, not in the first ranges64 slot %#llx", (unsigned long long)slot,
-                        (unsigned long long)(IMAGE_RANGE_END - size - 0x10000) );
+                        (unsigned long long)(TW_IMAGE_RANGE_END - size - 0x10000) );
 
     TW_EXPECT( map( second, &again, PAGE_EXECUTE_READ ) == STATUS_IMAGE_NOT_AT_BASE );
     EXPECT_IMAGE( again );
-    if (again < IMAGE_RANGE || again + size > IMAGE_RANGE_END || again == slot)
+    if (again < IMAGE_RANGE || again + size > TW_IMAGE_RANGE_END || again == slot)
         return tw_fail( "the second softpub.dll view at %#llx", (unsigned long long)again );
     TW_EXPECT( memory_bytes() < 0x200000000ull );
 
@@ -219,11 +220,59 @@ static const char *file_view_written_back( void )
     return NULL;
 }
 
+/* MEM_TOP_DOWN with no limit (section 4, patch 0104): with hello.exe
+ * mapped, the allocation ends at or below the end of the highest image view
+ * rounded up to 64 KiB, and the memory does not grow toward 16 GiB. */
+static const char *top_down_ceiling( void )
+{
+    HANDLE section = image_section( "/tempwind/hello.exe" );
+    uint64_t base, ceiling;
+    void *ptr = NULL;
+    SIZE_T size = 0x20000;
+
+    TW_EXPECT( section );
+    TW_EXPECT( map( section, &base, PAGE_EXECUTE_READ ) == STATUS_SUCCESS );
+    ceiling = (base + size_of_image( base ) + 0xffff) & ~0xffffull;
+    TW_EXPECT( !NtAllocateVirtualMemory( NtCurrentProcess(), &ptr, 0, &size, MEM_RESERVE | MEM_COMMIT | MEM_TOP_DOWN,
+                                         PAGE_READWRITE ) );
+    if ((uintptr_t)ptr + size > ceiling || (uintptr_t)ptr < IMAGE_RANGE)
+        return tw_fail( "top-down allocation at %p, the ceiling is %#llx", ptr, (unsigned long long)ceiling );
+    TW_EXPECT( memory_bytes() < 0x200000000ull );
+    ((volatile uint8_t *)ptr)[size - 1] = 1;
+    size = 0;
+    TW_EXPECT( !NtFreeVirtualMemory( NtCurrentProcess(), &ptr, &size, MEM_RELEASE ) );
+    TW_EXPECT( !NtUnmapViewOfSection( NtCurrentProcess(), (void *)(uintptr_t)base ) );
+    NtClose( section );
+    return NULL;
+}
+
+/* An image map calls tw_image_mapped with the image file's fd, the base and
+ * the size (section 6). It prints the call it expects ("# image_mapped PATH
+ * BASE SIZE"); the JS test's recorder must have it, with the fd's path. */
+static const char *image_mapped( void )
+{
+    HANDLE section = image_section( "/tempwind/hello.exe" );
+    MEMORY_BASIC_INFORMATION mbi;
+    uint64_t base;
+
+    TW_EXPECT( section );
+    TW_EXPECT( map( section, &base, PAGE_EXECUTE_READ ) == STATUS_SUCCESS );
+    TW_EXPECT( !NtQueryVirtualMemory( NtCurrentProcess(), (void *)(uintptr_t)base, MemoryRegionInformation, &mbi,
+                                      sizeof(mbi), NULL ) || 1 );
+    printf( "# image_mapped /tempwind/hello.exe %#llx %#x\n", (unsigned long long)base,
+            (unsigned)((size_of_image( base ) + 0xfff) & ~0xfff) );
+    TW_EXPECT( !NtUnmapViewOfSection( NtCurrentProcess(), (void *)(uintptr_t)base ) );
+    NtClose( section );
+    return NULL;
+}
+
 static const struct tw_check checks[] =
 {
     { "image_exe_preferred_base", image_exe_preferred_base },
     { "image_dll_slot", image_dll_slot },
     { "file_view_written_back", file_view_written_back },
+    { "top_down_ceiling", top_down_ceiling },
+    { "image_mapped", image_mapped },
 };
 
 int tw_test_main( void )
