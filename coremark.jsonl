@@ -5,3 +5,4 @@
 {"commit":"88b0328","date":"2026-11-13T08:10:35.510Z","node":"v24.22.0","cpu":"INTEL(R) XEON(R) PLATINUM 8573C","runs":3,"translated_ips":10742.078348,"native_ips":25651.041057,"ratio":0.4188}
 {"commit":"d9f3e71","date":"2026-11-13T08:27:34.550Z","node":"v24.22.0","cpu":"AMD EPYC 9V74 80-Core Processor","runs":3,"translated_ips":12469.827693,"native_ips":31120.228647,"ratio":0.4007}
 {"commit":"1d80713","date":"2026-11-14T14:59:10.229Z","node":"v24.22.0","cpu":"Intel(R) Xeon(R) 6973P-C","runs":3,"translated_ips":14781.860027,"native_ips":32904.719203,"ratio":0.4492}
+{"commit":"61b7058","date":"2026-11-14T15:26:51.273Z","node":"v24.22.0","cpu":"AMD EPYC 9V74 80-Core Processor","runs":3,"translated_ips":12392.401426,"native_ips":31161.224593,"ratio":0.3977}
