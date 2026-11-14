@@ -161,7 +161,7 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 - **No red runs.** All green:
   - `wine-unix` ran 10 times: #1 on WP5's track, #2-#8 on the PR branch, and #9-#10 skipped on the PR's events;
   - `targets` ran twice;
-  - `ci` #71 and `bench` #32-#33 ran on the PR. The retro's push cancelled `ci` #72, which tested the same code as #71.
+  - `ci` #71-#72 and `bench` #32-#33 ran on the PR.
 
   M1 had 3 red runs and 1 run with wrong data, all in its new workflow. M2's new `wine-unix.yml` was green from its first run, because WP5 first ran its steps locally under the job's shell (M1's rule).
 - **Rework rounds:** 0.
