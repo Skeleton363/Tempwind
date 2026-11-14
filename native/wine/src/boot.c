@@ -33,6 +33,9 @@ const char *tw_launch_dir;
 static jmp_buf boot_stop;
 static int booting;
 
+/* boot's flags, for signal_start_thread (signal_wasm64.c). */
+int tw_boot_flags;
+
 /* boot(argc, argv, flags), entered through WebAssembly.promising: argv[0] is
  * /wine/bin/wine, argv[1] the program as a DOS path, then its arguments.
  * Returns 0 once stopped at the entry; a Wine error ends in exit(). */
@@ -48,6 +51,7 @@ int boot( int argc, char **argv, int flags )
      * __wine_main then takes argv as the loader's, with no re-exec. */
     if (setenv( "WINELOADERNOEXEC", "1", 1 )) tw_unsupported( "boot: setenv" );
 
+    tw_boot_flags = flags;
     booting = 1;
     if (!setjmp( boot_stop ))
     {
