@@ -1,6 +1,14 @@
-# Wine's Unix side with Emscripten (v1, Phase 2 M2)
+# Wine's Unix side with Emscripten (v2, Phase 2 M3)
 
-Wine 11's ntdll Unix part and wineserver, built with Emscripten as one wasm64 module that runs in the Windows process's Worker. This is the contract for M2's work packages and the base M3-M5 build on. The boundary to translated code is `abi.md` v5, "Wine boundary"; the address space is `guest-memory.md`; the Wine CI build and its published data are `wine-build.md`. The decisions behind it are in `docs/status/phase-2.md`, and the research in `docs/dev/research.md` (2026-11-06 and 2026-11-13).
+Wine 11's ntdll Unix part and wineserver, built with Emscripten as one wasm64 module that runs in the Windows process's Worker. This is the contract for M2's and M3's work packages and the base M4-M5 build on. The boundary to translated code is `abi.md` v5, "Wine boundary"; the address space is `guest-memory.md`; the Wine CI build, its published data and the packaging for this module are `wine-build.md`. The decisions behind it are in `docs/status/phase-2.md`, and the research in `docs/dev/research.md` (2026-11-06, 2026-11-13 and 2026-11-14).
+
+- **v1 (M2)** booted to `LdrInitializeThunk`.
+- **v2 (M3)** runs guest code to process exit. It adds:
+  - syscalls, unix calls and contexts (section 11);
+  - the run loop and translated code (section 12);
+  - the rebased closure and the top-down ceiling (section 4);
+  - invalidation and write-copy (section 6);
+  - running, process exit, stdio as FIFOs and the lazy boot set (section 8).
 
 Line numbers refer to the pristine wine-11.0 tarball.
 
@@ -8,6 +16,8 @@ Line numbers refer to the pristine wine-11.0 tarball.
 ```
 native/wine/                 LGPL-2.1-or-later (COPYING.LIB, README.md)
   build.sh                   the build (section 2)
+  gen-syscalls.mjs           the syscall wrapper generator (section 11)
+  rebase/                    the rebase tool, a Rust crate (wine-build.md, "Packaging")
   config.h                   hand-curated configure result for Emscripten 6.0.12
   imports.txt                the wasm imports the module may have, each with a reason
   rename-server.h            renames the server's colliding globals (section 2, gate 3)
@@ -26,22 +36,28 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
   - `green.c`: blocking, sleeping and waking (section 9);
   - `green_pthread.c`: the pthread functions Wine calls (section 9);
   - `inproc.c`: the in-process server transport (section 7);
-  - `signal_wasm64.c`: the machine layer that replaces `signal_x86_64.c`. In M2: the process and thread setup of section 8, and stubs that stop loudly for the rest (`NtCurrentTeb()` is `thread.c`'s, which reads `teb_key`);
+  - `run.c`: the run loop, `tw_run_loop` (section 12);
+  - `signal_wasm64.c`: the machine layer that replaces `signal_x86_64.c`. In M2: the process and thread setup of section 8, and stubs that stop loudly for the rest (`NtCurrentTeb()` is `thread.c`'s, which reads `teb_key`). From M3 also the dispatchers and the context functions (section 11);
   - `stubs.c`: libc functions Emscripten lacks (section 2);
   - `version.c`: the version strings Wine's build would generate;
   - `virtual_wasm.c`: the memory backend under `virtual.c` (sections 5 and 6);
   - `library.js`: the `--js-library` that declares the imports of `abi.md` v5;
-  - `tempwind_private.h`: what the `src/` files share (`tw_unsupported`, the imports, the green thread and queue, `grow_to`).
+  - `tempwind_private.h`: what the `src/` files share (`tw_unsupported`, the imports, the green thread and queue, `grow_to`, `tw_run_loop`).
+- **Shared lists:** `library.js`, `imports.txt` and `tempwind_private.h` are shared by every work package.
+  - M3's imports (`abi.md` v5, "Host entries of the Unix side") are declared in all three before the work packages start.
+  - A work package that needs one more import appends it at the end of the list in its own commit. It never reorders or rewrites other lines, so the merges stay mechanical.
+- **`rebase/`** is a self-contained crate, LGPL like the rest of `native/wine/`. It has its own PE reader and depends on no crate of ours.
 - **Our patches and `native/wine/` stay public under the LGPL.** The JS host and the tests are our own code.
 
 ## 2. Build
 `native/wine/build.sh [--out DIR] [--jobs N] [--census]` (default `DIR` = `target/wine-unix`). Everything it makes goes under `DIR`, so two builds with different `--out` don't collide.
 1. **Source:** the tarball named under `"wine"` in `tests/targets/sources.json`, downloaded from its URL into `DIR/src/` (or reused there) and checked against the pinned sha256. It extracts only what it compiles: `dlls/ntdll/unix/`, the ntdll headers they include, `server/` and `include/`.
 2. **Patches** from `native/wine/patches/`, in name order. A patch that doesn't apply cleanly fails the build.
+   - **Then the syscall wrappers (M3):** `node native/wine/gen-syscalls.mjs` reads the patched tree's `dlls/ntdll/ntsyscalls.h` and `include/winternl.h` and writes `DIR/gen/syscall_table.c` (section 11). It is generated at every build and never committed.
 3. **Compile** every C file through `scripts/emcc.sh`:
    - ntdll's Unix part: the `UNIX_SRCS` of `dlls/ntdll/Makefile.in`, except `signal_*.c`, which `src/signal_wasm64.c` replaces;
    - the server: the `SOURCES` of `server/Makefile.in`, with `-include rename-server.h`;
-   - `src/*.c`.
+   - `src/*.c` and `DIR/gen/syscall_table.c`.
 
    The flags: `-m64 -O2 -sSHARED_MEMORY -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -DWINE_UNIX_LIB -include native/wine/config.h`, the defines Wine's makefiles give each directory (`EXTRADEFS`), and Wine's include paths, with `native/wine/include` first. `-sSHARED_MEMORY` at compile time turns on atomics and bulk memory, which the shared-memory link requires of every object (wasm-ld refuses an object without them).
 4. **Link** `DIR/wine-unix.mjs` and `DIR/wine-unix.wasm` with the spike's flags (`abi.md` v5, "Instances") and these:
@@ -60,6 +76,7 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
    1. **No undefined symbols.** The link keeps Emscripten's default `ERROR_ON_UNDEFINED_SYMBOLS=1`: no `-sERROR_ON_UNDEFINED_SYMBOLS=0`, no `--allow-undefined`, no `-sWARN_ON_UNDEFINED_SYMBOLS`.
    2. **Imports:** every import of every module built (module and field, read from its import section) is listed in `imports.txt`. A new import needs its line, with a reason, in the same change.
    3. **Collisions:** `emnm` over the server's objects and over ntdll's (with `src/`) finds no global symbol defined on both sides that `rename-server.h` doesn't rename. `--census` prints the list, so the header can be regenerated from it.
+   4. **Syscalls (M3):** the generator's checks pass (section 11). It prints every entry it couldn't match and exits nonzero.
 6. **`DIR/build-info.json`:** the emcc version, the tarball's sha256, each patch with its sha256, the import list, and the sizes of `wine-unix.wasm` raw and gzipped.
 
 **`config.h`** is a non-Linux POSIX profile. Every `HAVE_` it defines is true of the 6.0.12 sysroot: the header exists and the function links. Anything Linux-only (`__linux__` branches, `prctl`, `epoll`, `inotify`, futexes) stays off.
@@ -90,11 +107,20 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
 - **Images:**
   1. An image maps at its preferred base when [base, base + size) is free and inside a guest region. `map_image_view` tries the preferred base first for every image.
   2. Only if that fails does a DLL marked `ImageDynamicallyRelocated` ask the server (`get_image_map_address`, `virtual.c` L3403).
-  3. Otherwise `map_view` searches top-down for relocated DLLs, as Wine does. For an image based above 4 GiB, the search runs first in the image range [0x1_0000_0000, 0x1_7000_0000), then in the whole guest regions. Wine's own first range ends at `limit_high`, 16 GiB, so a top-down search there would grow the memory to 16 GiB (found by M2's WP2).
-  - **The server's ranges** (`server/mapping.c` `init_memory`, L271-276): `ranges64` is [0x1_0000_0000, 0x1_7000_0000), assigned top-down, so the first slot ends just below ntdll's base and the memory stays small. `ranges32` stays [0x6000_0000, 0x7c00_0000).
+  3. Otherwise `map_view` searches top-down for relocated DLLs, as Wine does. For an image based above 4 GiB, the search runs first in [0x1_0000_0000, `TW_IMAGE_RANGE_END`), then in the whole guest regions. Wine's own first range ends at `limit_high`, 16 GiB, so a top-down search there would grow the memory to 16 GiB (found by M2's WP2).
+  - **The server's ranges** (`server/mapping.c` `init_memory`, L271-276): `ranges64` is [0x1_0000_0000, `TW_IMAGE_RANGE_END`), assigned top-down, so the first slot ends just below the rebased closure and the memory stays small. `ranges32` stays [0x6000_0000, 0x7c00_0000).
+  - **`TW_IMAGE_RANGE_END`** = 0x1_6000_0000 (`abi.h`, M3) is the one constant behind both: patches 0102 and 0201 and the `section` harness use it. In M2 both ended at 0x1_7000_0000.
+  - **The rebased closure (M3):** packaging gives every closure DLL except ntdll, kernelbase, kernel32 and apisetschema a unique base in [`TW_IMAGE_RANGE_END`, 0x1_7000_0000) (`wine-build.md`, "Packaging").
+    - So each maps at its preferred base, is not relocated and keeps its AOT module.
+    - Without it, 60 closure DLLs share 0x1_8000_0000. All but the first to load would map at load-order-dependent slots, be relocated and miss their AOT modules.
+    - 0x1_8000_0000 stays free for users' own DLLs: it is MSVC's default DLL base.
+    - This differs from native Wine, which moves every `ImageDynamicallyRelocated` DLL into its ASLR range (`research.md`, 2026-11-13). Wine relocates a DLL only to the server's `map_addr` (`virtual.c` L3205-3223), and the PE loader relocates only a module that isn't at its `ImageBase` (`dlls/ntdll/loader.c` L2172-2173). So a rebased DLL at its new base runs unrelocated.
   - **The same files in the same load order land at the same addresses.** Nothing is randomized.
-- **`MEM_TOP_DOWN` with no limit** (only guest code asks for it, through `NtAllocateVirtualMemory`) is meant to start from a ceiling just above the highest image (`guest-memory.md`). That ceiling comes in M3, when guest code first runs. In M2 such a search starts at 16 GiB. Wine's Unix side uses top-down only for images (above) and for the PEB and TEB block below 2 GiB (`virtual.c` L4055), so the M2 boot never reaches it (found by M2's WP2).
-  - This differs from native Wine, which moves every `ImageDynamicallyRelocated` DLL into its ASLR range (`research.md`, 2026-11-13). M3 decides with the translator's evidence whether the closure DLLs are rebased to unique bases when packaged.
+- **`MEM_TOP_DOWN` with no limit (M3, patch 0104):**
+  - `map_view` searches a request with no `limit_high` from `min(user_space_limit, host_addr_space_limit)`, 16 GiB, down (`virtual.c` L2287-2295). A top-down allocation there would grow the memory to 16 GiB.
+  - So a top-down `map_view` with no `limit_high` first searches below a ceiling: the end of the highest mapped image view, rounded up to 64 KiB. Only if nothing fits there does it search the full range, as Wine does.
+  - Guest code reaches it through `NtAllocateVirtualMemory` with `MEM_TOP_DOWN` and no zero bits, which passes no limit (L5223-5228, `unix_private.h` L527).
+  - Images never reach the ceiling: `map_image_view` always passes a `limit_high` (L3329). Neither does the Unix side's other top-down use, the PEB and TEB block below 2 GiB (L4054-4055).
 
 ## 5. Memory growth
 - **One grower:** `virtual_wasm.c`'s `grow_to(end)` is the only `memory.grow` in the module. It grows the memory to cover `end`, rounded up to 64 KiB and never past 262144 pages, then calls the import `memory_grown`. A grow that fails makes the map fail with `ENOMEM`.
@@ -131,13 +157,22 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
 - **The page-state table** (`abi.md`, "Page-state table"):
   - the backend allocates it (1 byte per 4 KiB page up to 16 GiB, 4 MiB, from the host heap) and exports its address as `tw_page_flags()`;
   - the backend keeps `PAGE_WATCH`: it is set on the pages of a write-watch view whenever Wine sets `VPROT_WRITEWATCH` there (commit, `NtResetWriteWatch`), and cleared whenever Wine clears it (a recorded write);
-  - the JS linker sets `PAGE_CODE` (M3).
+  - JS sets `PAGE_CODE` when it links a module, and clears it when invalidation leaves no module there (M3; `abi.md` v5, "Page-state table").
 - **Pointer validation:** a bad guest pointer doesn't fault, so the three `__TRY` sites in `virtual.c` become checks against the views:
   - `virtual_check_buffer_for_read` (L4807): every page is committed and readable, not a guard page;
   - `virtual_check_buffer_for_write` (L4841): every page is committed and writable or write-copy;
   - `NtReadVirtualMemory` (L6693): the same read check on the source.
   - a write check that passes records the write on the write-watched pages it covers, as the fault it replaces would;
   - a buffer wholly in the host region passes: it is the Unix side's own memory, and Wine's Unix side calls these checks on its own buffers too.
+- **Write-copy (M3):** a write to a write-copy page leaves it write-copy, whether it is a checked write in C or a store in translated code.
+  - That is Wine 11's own behaviour. It has no `VPROT_WRITTEN`, and `virtual_handle_fault` changes only guard and write-watch pages (`virtual.c` L4538-4595). So `NtQueryVirtualMemory` reports `PAGE_WRITECOPY` before and after a write (`get_win32_prot`, L1866-1872).
+  - M2's status note listed this as a difference from Wine. It isn't one.
+- **Images (M3):** once an image view is mapped and relocated, the backend calls `tw_image_mapped(fd, base, size)` with the image file's fd (`abi.md` v5). JS links the image's AOT module before any of its code runs.
+- **Invalidation (M3):** the backend calls `tw_invalidate(base, size)` before it unmaps or remaps pages that have `PAGE_CODE`:
+  - an unmap or a free;
+  - a fixed map over them: a decommit, a recommit, a view mapped over the range.
+
+  JS removes every module whose code overlaps the range, so the next transfer there misses and translates the new contents. A range without `PAGE_CODE` needs no call. A store from translated code to a `PAGE_CODE` page is a store-check hit and stops loudly until Phase 4 (section 12).
 
 ## 7. The in-process server
 The server is linked into the module and runs on the calling thread. `02xx` and `src/inproc.c`.
@@ -170,38 +205,63 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
 `src/boot.c`, `src/signal_wasm64.c` and `03xx` (`loader.c`, `env.c`, `process.c`, `system.c`); the overlay's load is `02xx` (`server/registry.c`).
 - **Entry:** `boot(argc, argv, flags)`, a raw export entered through `WebAssembly.promising` (`abi.md` v5). JS writes argv into the host heap through the raw `malloc`.
   - `argv[0]` is `/wine/bin/wine`, `argv[1]` the program as a DOS path (`C:\tempwind\hello.exe`), then its arguments.
-  - `boot` records the launch directory (the cwd when it is entered). Its caller `chdir`s there first: in M2 that is the boot test, since `boot-set.mjs`'s `boot()` doesn't, and M3's host must do it too. and sets `WINELOADERNOEXEC=1`, as the wine loader's exec of itself does (`loader_exec`, `loader.c` L525), so `__wine_main` takes argv with no re-exec. Then it runs `__wine_main`.
-  - `flags`: `BOOT_STOP_AT_ENTRY` (1) is the only mode in M2. M3 adds running.
-  - It returns 0 once it has stopped at the entry. A Wine error ends in `exit()`, which the host sees as the rejection of `boot`'s promise with Emscripten's exit status.
+  - `boot` records the launch directory, which is the cwd when it is entered. Its caller `chdir`s there first. In M3 the JS host `chdir`s to the program's directory in `drive_c`: `C:\tempwind` by default, or `opts.cwd`.
+  - `boot` sets `WINELOADERNOEXEC=1`, as the wine loader's exec of itself does (`loader_exec`, `loader.c` L525), so `__wine_main` takes argv with no re-exec. Then it runs `__wine_main`.
+  - `flags`: 0 runs the process to its exit (M3). `BOOT_STOP_AT_ENTRY` (1) stops at the entry, as in M2. Any other value, or a second `boot` in one instance, stops loudly.
+  - **Return:** in run mode `boot` returns the process's exit status, the full Windows status, once the process exits ("Process exit" below). With `BOOT_STOP_AT_ENTRY` it returns 0 once it has stopped at the entry. A Wine error ends in `exit()`, which the host sees as the rejection of `boot`'s promise with Emscripten's exit status.
 - **The environment,** set by the JS host in `preRun` (libc builds `environ` from `ENV` during instantiation):
   - `WINEPREFIX=/home/runner/wine-prefix`, the path the prefix was made at (`wine-prefix.path`), since its `.reg` files hold it;
   - `HOME=/home/runner`, `USER=runner`, `LANG=en_US.UTF-8`, `TZ=UTC`;
   - `WINEDEBUG`, only when a caller puts it in the host's `opts.env`. Nothing reads the host process's own `WINEDEBUG`, and M2's tests set none.
 - **Paths:** `init_paths` (`loader.c` L449) uses constant paths instead of `dladdr`: `/wine/lib/wine/x86_64-windows` for the PE files, `/wine/share/wine` for NLS and `wine.inf`, `/wine/bin` for the loader. `get_initial_directory` (`env.c` L1389) uses the launch directory `boot` recorded, not `getcwd()`, because the server moves the cwd.
-- **stdio:** fds 0-2 are non-tty character devices that the JS host provides (no line buffering, `isatty` false), so `get_initial_console` (`env.c` L1340) passes them to the server as plain handles and kernelbase starts no conhost.
+- **stdio, as FIFOs (M3):** fds 0-2 are nodes the JS host makes with `mkdev` and then marks `S_IFIFO` through `node.mode`. I/O still goes to the device's callbacks by `rdev` (`research.md`, 2026-11-14), and writes reach the host synchronously. `isatty` is false.
+  - **Windows sees pipes:**
+    - `get_device_info` reports a FIFO as `FILE_DEVICE_NAMED_PIPE` (`unix/file.c` L7215-7218);
+    - kernelbase's `GetFileType` maps that to `FILE_TYPE_PIPE` (`dlls/kernelbase/file.c` L3297-3309);
+    - msvcrt marks the stream `WX_PIPE` (`dlls/msvcrt/file.c` L755-766).
+  - **Why:** a native run whose output a pipe captures sees the same, buffering included. msvcrt gives a non-tty stdout a full buffer (`file.c` L866-880) and flushes it at exit (`dlls/msvcrt/main.c` L145). M4's `7z -so` needs a pipe too. M2's character devices made msvcrt treat stdout as a tty.
+  - **No conhost:** with no tty, `get_initial_console` (`env.c` L1340) passes them to the server as plain handles (L1363-1370), and kernelbase starts no conhost.
 - **The wineboot skip:** in place of `run_wineboot` (`env.c` L1537), boot creates `\KernelObjects\__wineboot_event`, runs `virtual_init_user_shared_data()`, writes wineboot's seven KUSER fields (NtBuildNumber, NtProductType, ProductTypeIsValid, NtMajorVersion, NtMinorVersion, SuiteMask, NtSystemRoot) as `create_user_shared_data` does (`programs/wineboot/wineboot.c` L319), then sets the event and waits on it as Wine does.
-  - The values: the version `init_peb` gives the PEB (10.0, build 19045), `NtProductWinNt`, SuiteMask 0 and `C:\windows`. The PEB itself isn't set yet at that point (`init_peb` runs after `build_initial_params`), and native wineboot, which reads the version from the prefix's registry, writes these (`kuser.bin`).
+  - The values: the version `init_peb` gives the PEB (10.0, build 19045; `env.c` L1827-1834), `NtProductWinNt`, SuiteMask 0 and `C:\windows`. The PEB itself isn't set yet at that point (`init_peb` runs after `build_initial_params`), and native wineboot, which reads the version from the prefix's registry, writes these (`kuser.bin`).
+  - **They stay in M3.** They are the prefix default, which native wineboot writes from its own `RtlGetVersion` (`programs/wineboot/wineboot.c` L342-350), never a program's. A per-program version (`AppDefaults\<exe>\Version`) changes only the PEB, through unmodified PE code (`version_init`, `dlls/ntdll/version.c` L473, called from `loader.c` L4452).
 - **The overlay:** `native/wine/prefix/overlay.reg`, the per-boot keys wineboot would write. The JS host puts it at `/wine/share/tempwind/overlay.reg`; the server's `init_registry` loads it right after `user.reg`, with its keys relative to `\Registry` and as no save branch.
   - It holds the computer name (`TEMPWIND`, not the host's), the hardware description with the CPU from the profile (the values `create_hardware_registry_keys` derives from it: vendor, family, model and stepping, brand string, `FeatureSet`, one processor, ntdll's 1000 MHz), the processor variables of the system environment, and the volatile environment of the prefix's user.
   - Its keys name `ControlSet001`: the loader does not follow `CurrentControlSet`'s link.
 - **No child processes:** `NtCreateUserProcess` returns `STATUS_NOT_SUPPORTED` and prints `tempwind: unsupported: NtCreateUserProcess <image>`.
-- **The host-pointer slots in ntdll.dll:** `load_ntdll_functions` writes the poison value `TW_NO_DISPATCHER` (`abi.h`, non-canonical) into `__wine_syscall_dispatcher` and `__wine_unix_call_dispatcher`, and `signal_wasm64.c` commits the page at 0x7ffe1000 and writes it there too. `__wine_unixlib_handle` gets the host address of `unix_call_funcs`, an opaque handle. M3 writes the dispatcher addresses.
+- **The host-pointer slots in ntdll.dll (M3):**
+  - `load_ntdll_functions` writes `TW_SYSCALL_DISPATCHER` into `__wine_syscall_dispatcher` and `TW_UNIX_CALL_DISPATCHER` into `__wine_unix_call_dispatcher` (patch 0301, edited in place).
+  - `signal_wasm64.c` commits the page at 0x7ffe1000 and writes `TW_SYSCALL_DISPATCHER` there.
+  - `__wine_unixlib_handle` gets the host address of `unix_call_funcs`, an opaque handle.
+  - In M2 all three slots held the poison value `TW_NO_DISPATCHER`. The addresses are lookup keys for the dispatchers (`abi.md` v5, "Syscalls and unix calls").
 - **`BOOT_STOP_AT_ENTRY`:** `signal_start_thread` builds the start state as `init_syscall_frame` does (`signal_x86_64.c` L2896):
   - a `CONTEXT` at `((StackBase − 0x28) & ~15) − sizeof(CONTEXT)` with `ContextFlags = CONTEXT_FULL`, Rip = `RtlUserThreadStart`, Rcx = the entry, Rdx = the PEB, Rsp = StackBase − 0x28, SegCs 0x33, SegDs, SegEs, SegGs and SegSs 0x2b, SegFs 0, EFlags 0x200, the FPU control word 0x27f and MXCSR 0x1f80;
-  - the main thread's state block: RIP = `LdrInitializeThunk`, RCX = the `CONTEXT`, RDX = the PEB, RSP = the `CONTEXT` − 8, the other GPRs 0, RFLAGS 0x200, MXCSR 0x1f80, FCW 0x27f, GS base = the TEB;
+  - the main thread's state block: RIP = `LdrInitializeThunk`, RCX = the `CONTEXT`, RDX = the PEB, RSP = the `CONTEXT` − 8, the other GPRs 0, RFLAGS 0x200, the `TW_INIT_*` FP state (MXCSR 0x1f80, FCW 0x27f, FTW 0xffff; `abi.md` v5), GS base = the TEB;
 
   then it `longjmp`s back to `boot`, which returns 0. `tw_main_state()` gives the state block's address.
+- **Run mode (M3):** `signal_start_thread` builds the same state and calls `tw_run_loop` on it (section 12) instead of stopping.
+  - `LdrInitializeThunk` runs translated. Wine's PE `signal_start_thread` then calls `NtContinue(context, TRUE)` (`dlls/ntdll/signal_x86_64.c` L1018-1044), which switches to the `CONTEXT`: `RtlUserThreadStart`, and from there the program.
+  - The loop ends only through process exit.
+- **Process exit (M3, patch 0302):**
+  - `exit_process` and `abort_process` (`unix/thread.c` L1520-1524, L1485-1488) first call `tw_process_exit(status)` with the full Windows status, before `get_unix_exit_code` (L89-94) cuts it.
+  - `tw_process_exit` (`boot.c`) `longjmp`s to `boot`, which sets `depth` to 0 (`tw_depth_set`, `abi.md` v5, "Trampoline") and returns the status.
+  - The `longjmp` unwinds the translated frames on the wasm stack as a wasm exception.
+  - msvcrt has flushed stdout by then, in `LdrShutdownProcess` (`abi.md` v5, "Process exit").
+  - The instance is finished after it, and a program runs in a fresh one.
 - **MEMFS gets the boot set** from the JS host before `boot`:
-  - the prefix's `.reg` files, the `dosdevices` symlinks and `drive_c`'s directories;
-  - the PE files the boot opens (`ntdll.dll` and `apisetschema.dll`), the native tree's whole `nls/` directory and `wine.inf` (M3 narrows them to `closure.json`'s `data_files`);
-  - the overlay;
-  - `C:\tempwind\hello.exe` (`tests/native`'s hello), in `drive_c`.
+  - the prefix's `.reg` files, the `dosdevices` symlinks and `drive_c`'s directories, written up front;
+  - the overlay, written up front;
+  - the program, written up front in `drive_c`: `C:\tempwind\<name>.exe` by default (in M2, `tests/native`'s hello);
+  - from M3, as lazy nodes: every closure PE file, rebased (`wine-build.md`, "Packaging"), and `closure.json`'s `data_files`. In M2 these were the two PE files the boot opens, the native tree's whole `nls/` directory and `wine.inf`, written up front.
 
-  `runtime/src/wine/boot-set.mjs` writes it and enters `boot`. The boot test records the files the boot opened. Loading file contents on demand is M3.
+  `runtime/src/wine/boot-set.mjs` writes it and enters `boot`. The boot test records the files the boot opened.
+- **Lazy nodes (M3):**
+  - **The node:** a MEMFS node of our own. Its size comes from the boot-set manifest (path, size and sha256 per file; `wine-build.md`), so a `stat` works before the first read.
+  - **The first read** loads the whole file: `fs` in Node, one synchronous XHR in a Worker.
+  - **Why not `FS.createLazyFile`:** in Node, a `stat` of its node before the first read throws a `TypeError` (`research.md`, 2026-11-14). Wine stats first (`unix/file.c` L2970, `server/fd.c` L1999, `server/mapping.c` L1087 and L1158).
 
 ## 9. Blocking and threads (M2: one thread)
 - **`green.c`:**
-  - `green_block` is the only switch point. Around it, C saves and restores the spike's save set (`abi.md` v5, "Green threads"); `depth` joins the set in M3, once translated code runs.
+  - `green_block` is the only switch point. Around it, C saves and restores the spike's save set (`abi.md` v5, "Green threads"). `depth` joins the set in M3, through `tw_depth_get` and `tw_depth_set`.
   - It provides sleeping until a deadline, yielding, and a wake queue.
   - Wine's blocking libc calls are routed there: `select` and `usleep` sleeps, `sched_yield`, `poll` on the server's pipes and the waits of section 7. A blocking call that green.c doesn't handle stops loudly.
     - green.c defines `select`, `poll`, `usleep`, `nanosleep` and `sched_yield` in place of libc's.
@@ -237,11 +297,142 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
     - NLS loaded;
     - KUSER equal to `kuser.bin`, except the fields Wine fills from the clock, those that come from the CPU profile, and `NumberOfPhysicalPages`, the host's memory (the test lists them, naming this section);
     - the list of files the boot opened: of the boot set, the NLS files it reads, the `.reg` files, the overlay, hello.exe, ntdll and apisetschema in the order of their first open; besides them, only the prefix directory and the server's own files under `/tmp`.
+- **The M3 checks:**
+  - `syscall`, on synthetic state blocks, with no guest code:
+    - register and stack arguments of a call with 7 or more;
+    - both variant entries (`ntsyscalls.h` L295, L360);
+    - a bad id;
+    - a stub's loud stop, alone (`TW_TEST_ONLY`);
+    - `NtContinue` returning `STATUS_UNWIND` with the full state written and `cc_op` 0;
+    - a Get/Set round trip on the current thread with x87 and XMM state;
+    - a unix call;
+    - KUSER's clock advanced by a syscall's entry;
+    - `+syscall` lines in Wine's format.
+  - `virtual`:
+    - the top-down ceiling (section 4);
+    - `tw_image_mapped` after an image map, recorded by the test host;
+    - `tw_invalidate` before an unmap of `PAGE_CODE` pages, and none for pages without it.
+  - `section`: placement against `TW_IMAGE_RANGE_END`.
+  - `boot`: the `PROCESSOR_*` values in `overlay.reg`, and KUSER's `XState` and `ActiveProcessorCount`, against the CPU profile (M2's leftovers).
+- **Programs (M3):** `tests/wine/programs.test.mjs` runs hello.exe, l2_int, l2_crt and l2_float.
+  - Each runs in a fresh Unix-side instance, with both memory checks on.
+  - It compares stdout with `tests/native/<name>.expected` as CRLF, and the exit status with `.exitcode`. No `tempwind:` line may appear.
+  - It records the time from `boot` to exit, the AOT links and run-time fallbacks, and the bytes the lazy nodes loaded.
+- **Browser (M3):** `tests/browser/wine-hello.spec.mjs` runs hello.exe the same way in a Chromium Worker.
+- **`tests/wine/prepare.sh` (M3)** also builds the L2 programs, rebases the closure, and builds the catalog and the boot-set manifest (`wine-build.md`, "Packaging").
 
-## 11. Later
-- **M3:** the typed syscall wrappers, the unix-call dispatcher, `translate` and the run loop; the dispatcher addresses; rebasing the closure DLLs or not.
-- **M4:** threads (the rest of the green pthread layer), win32u, KnownDlls, services, the session shared memory.
-- **M5:** exceptions: the basic raise path.
+## 11. Syscalls, unix calls and contexts (M3)
+`src/signal_wasm64.c` and the generated `DIR/gen/syscall_table.c`. The boundary (addresses, entry, frame record, returns) is `abi.md` v5, "Syscalls and unix calls". This section is the C behind it. Line numbers are in `dlls/ntdll/unix/signal_x86_64.c` unless another file is named.
+
+**The syscall table:**
+- **Wine's list:** `dlls/ntdll/ntsyscalls.h` has the x86-64 entries `SYSCALL_ENTRY(id, name, argbytes)`, ids 0x0000-0x0101 (L270-527).
+  - Two use variant macros (L295, L360), which L538-539 define as plain entries.
+  - Wine's own table is `KeServiceDescriptorTable` (`unix/loader.c` L141-158).
+- **The generator** (`gen-syscalls.mjs`) writes one wrapper per entry, `ULONG_PTR tw_sys_<name>(const ULONG_PTR *args)`, and the table of wrappers by number.
+  - Each wrapper calls the real function with `args[i]` cast to the parameter's type from its `include/winternl.h` prototype, so the compiler does the conversions.
+  - **Why wrappers:** Wine calls its table through a pointer with raw register arguments. In wasm a call through a pointer with another signature traps.
+- **What it checks, failing the build otherwise (gate 4):**
+  - every entry other than a stub has a prototype, and its parameter count equals `argbytes / 8`;
+  - every parameter is a scalar or a pointer, except `NtSetLdtEntries`'s two `LDT_ENTRY`s, passed by value (`winternl.h` L4797). The wrapper copies each from its 8-byte argument;
+  - every return type is `NTSTATUS`, except `NtGetCurrentProcessorNumber`'s `ULONG`, which the wrapper zero-extends.
+- **The six stubs:** `ALL_SYSCALL_STUBS` (`ntsyscalls.h` L531-537) are `static void name(void)` functions that raise a Wine stub exception (`unix/loader.c` L115-139). Their wrappers stop loudly with `tempwind: unsupported: syscall <name>` until M5.
+- **Tables 1-3** stay empty. win32u adds table 1 through `KeAddSystemServiceTable` (`unix/loader.c` L625-634) in M4.
+
+**Dispatch** (`tw_syscall_dispatcher`):
+1. Refresh KUSER's clock: the in-process server's `set_current_time` (`server/fd.c` L418-426), which writes KUSER's time fields.
+2. Build the frame record (`abi.md` v5).
+3. Decode the id. A bad one returns `STATUS_INVALID_SYSTEM_SERVICE`.
+4. Gather `argbytes / 8` arguments into an array: R10, RDX, R8, R9, then the stack.
+5. Trace as Wine does when `WINEDEBUG` turns the `syscall` channel on: `trace_syscall` before the call and `trace_sysret` after it (`unix/loader.c` L636-664; Wine calls them at L3160-3161 and L3293-3322).
+6. Call the wrapper, and return by `restore_flags`.
+
+**Unix calls** (`tw_unix_call_dispatcher`):
+- The handle must be the address of `unix_call_funcs` the Unix side stored in `__wine_unixlib_handle` (section 8), and the code must be below its 8 entries (`unix/loader.c` L1132-1142). Anything else stops loudly.
+- The call is `unix_call_funcs[code](args)`, with `args` a guest pointer, which C can use as it is.
+- It returns as a syscall does.
+
+**The frame record per thread:**
+- Wine keeps a `struct syscall_frame` per thread (L462-495), which `get_syscall_frame()` returns.
+- Our thread data holds the thread's state-block pointer and the frame's other fields: `restore_flags` and the syscall id. The context functions work on the state block.
+
+**Contexts,** ported for the current thread:
+- **`NtGetContextThread`** (L1215-1346) reads the state block:
+  - CONTROL: Rip, Rsp and EFlags (materialized at entry), SegCs 0x33, SegSs 0x2b;
+  - INTEGER: the GPRs;
+  - SEGMENTS: the selectors of section 3;
+  - FLOATING_POINT: `FltSave` and `MxCsr`;
+  - DEBUG_REGISTERS: zeros;
+  - XSTATE: none, since the profile has no AVX.
+- **`NtSetContextThread`** (L1116-1208) writes the fields its flags name into the state block. It then sets `restore_flags |= flags & ~CONTEXT_INTEGER`, as Wine does (L1206).
+- **`signal_set_full_context`** (L1083-1090) adds `CONTEXT_INTEGER` to `restore_flags` when the context carries all integer registers.
+- **`NtContinue`** is Wine's own `NtContinueEx` (`unix/server.c` L848-865): an alertable call polls for APCs with a zero timeout, then calls `signal_set_full_context`.
+- **The FP conversion,** both ways:
+  - FCW, FSW and MXCSR, with `MxCsr_Mask` = `TW_MXCSR_MASK`;
+  - the abridged tag byte: bit p set when R[p] isn't empty. Going back, each register's full tag comes from its contents by the translator's rule (`translator.md`, "x87", Tags);
+  - `FloatRegisters[i]` = ST(i) = R[(TOP + i) mod 8];
+  - XMM0-15.
+
+  It must agree with the translator's `fxsave` (`translator.md`, "fxsave m512"), so a guest `fxsave` and `NtGetContextThread` report the same.
+- **Not in M3, so they stop loudly:**
+  - another thread's context (the server's `get_thread_context` and `set_thread_context`): M4;
+  - `call_user_apc_dispatcher` (L1661-1705): M4. A one-thread start queues no user APC;
+  - the exception paths (`call_user_exception_dispatcher`, `NtRaiseException`): M5;
+  - `KeUserModeCallback` and `NtCallbackReturn`: M4.
+
+## 12. The run loop and translated code (M3)
+`src/run.c` and `src/boot.c` in C, and the JS host in `runtime/src/wine/`. The boundary is `abi.md` v5, "Wine boundary".
+
+**`tw_run_loop(state)`** (`tempwind_private.h`):
+- It calls `tw_run(state)` until the thread ends, and acts on each exit reason:
+  - **`EXIT_LEFT_CODE`:** it finds the view around `rip` whose pages are executable (`pages_vprot`, `VPROT_EXEC`), and calls `tw_translate(rip, view base, view size)`.
+    - With no such view, it stops loudly. On Windows that is an execute access violation, which M5 raises.
+    - If `tw_translate` fails, it stops loudly.
+  - **`EXIT_HOST`:** the host function that stopped recorded why in C, and the loop returns it to its caller. In M3 nothing stops that way, so the main thread's loop stops loudly on one.
+  - **`EXIT_FAULT`:** stops loudly. M5 raises the exception through Wine's dispatcher.
+  - **`EXIT_UNSUPPORTED`:** stops loudly. That includes store-check hits.
+- **The loud stops** print `tempwind: unsupported: run <exit> rip=<hex>`, the fault address and kind, and the page-state byte of the fault address, then `abort()`.
+
+**One process, in order** (the JS host):
+1. Create the shared memory (4 GiB initial, 16 GiB maximum), `env.table` (at least `TW_TABLE_RESERVED` slots) and `env.depth` (0).
+2. Instantiate the bridge (`abi.md` v5, "The bridge").
+3. Instantiate the Unix side. Its imports are:
+   - `tw_run`, `tw_depth_get`, `tw_depth_set` and `tw_flags_materialize`, from the bridge;
+   - the JS imports.
+4. Allocate the lookup header and slots with the raw `malloc`, and get the page-state table from `tw_page_flags()`.
+5. Install `tw_syscall_dispatcher` and `tw_unix_call_dispatcher` in `env.table`, and insert their lookup slots.
+6. Write the boot set, `chdir` to the program's directory, and enter `boot(argc, argv, 0)` through `promising`.
+
+From then on JS links modules on demand: an AOT module through `tw_image_mapped`, a run-time one through `tw_translate`.
+
+**Linking** (JS, both kinds):
+- Grow `env.table`, and instantiate the module with `env.memory`, `env.table`, `env.table_base`, `env.lookup`, `env.depth`, `env.page_flags` and the `fp` namespace.
+- Insert its blocks (first translation wins), and set `PAGE_CODE` on its code pages.
+- The first module linked replaces the bridge's placeholder at `TW_RUN_INDEX` with its `run`.
+- **AOT modules:** the catalog has one per rebased closure file and per test program (`wine-build.md`, "Packaging"). It is linked when the image is mapped at the catalog's base and the file's sha256 matches.
+- **Run-time modules:** `tw_translate` reads the view's bytes from guest memory and calls the run-time translator with `null_check`, `store_check` and `shared_memory`. The known addresses it passes are the linked blocks inside the view.
+- **Both memory checks are on** in every module of a Wine process (`guest-memory.md`, "Phase 2 defaults"):
+  - a NULL access exits with `EXIT_FAULT`;
+  - a store to a `PAGE_CODE` or `PAGE_WATCH` page exits with `EXIT_UNSUPPORTED`.
+  - Both stop loudly in M3.
+- **What the host reports at exit:** the AOT links, the fallbacks (images without an AOT module, and each run-time translation), and the bytes the lazy nodes loaded.
+
+**`depth`:**
+- It starts at 0.
+- `boot` resets it after the exit `longjmp` (section 8).
+- M4's green switches save and restore it (section 9).
+
+## 13. Later
+- **M4:**
+  - threads: the rest of the green pthread layer, and `depth` across switches;
+  - win32u and its syscall table;
+  - KnownDlls, services and the session shared memory;
+  - APCs, `KeUserModeCallback`, thread exit, and another thread's context.
+- **M5:** exceptions: the basic raise path. `EXIT_FAULT` raises, and the syscall stubs raise as Wine's do.
+- **Phase 4:**
+  - a store to translated code invalidates and resumes;
+  - a store-check hit on a write-watched page records the write;
+  - guard pages.
+- **KUSER's clock** advances only at syscall entries, server requests and green switches. A guest that only reads KUSER sees time stand still between syscalls. kernel32's `GetTickCount` is such a read (`dlls/kernel32/sync.c` L102-105). M4 measures whether CoreMark's or 7-Zip's timing hits this.
 
 ## Risks
 - **The first full link** may need many stubs and renames. WP1 reports at its first full link, before the gates are clean.

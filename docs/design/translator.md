@@ -116,9 +116,14 @@ In code: `rip = t; status = (t != ret)` (RETURNED is 0, UNWIND is 1), then the f
 ### Memory checks (M6)
 Both checks are off by default. M6 measures their cost, which feeds `guest-memory.md`'s "Decision".
 - **`Options::null_check`:** before each guest memory access, `addr <u 0x10000` faults: `FaultIf` with `FAULT_READ` or `FAULT_WRITE` and the address. A read-modify-write faults as a write, as x86 reports it. The run then exits with `EXIT_FAULT`, and the state is as it was before the instruction.
-- **`Options::store_check`:** before each store, the page-state byte for `addr` (and for the last byte, when a store crosses a page) is tested against `PAGE_CODE | PAGE_WATCH` (`abi.md`, "Page-state table"). A hit exits with `EXIT_UNSUPPORTED` until code invalidation and write-watch exist (Phase 2).
+- **`Options::store_check`:** before each store, the page-state byte for `addr` (and for the last byte, when a store crosses a page) is tested against `PAGE_CODE | PAGE_WATCH` (`abi.md`, "Page-state table"). A hit exits with `EXIT_UNSUPPORTED`. A Wine process stops loudly on it until Phase 4, which invalidates and resumes, and records write-watched writes (`wine-unix.md`, section 13).
 - **Emission (WP4b):** a check reuses the access's address (the same IR value, so the same local). A failing check branches to its chunk's one cold `$fault` block, passing only what differs per site: in the status local `offset << 2 | kind` (offset of the instruction from the chunk's lowest instruction address; kind 0 `FAULT_READ`, 1 `FAULT_WRITE`, 2 `EXIT_UNSUPPORTED`), the fault address in the scratch local and the dirty set in the mask local. `$fault` sets RIP, the exit and fault fields, and falls into the shared epilogue. A null check on an address known at translation time (an absolute or RIP-relative operand) is decided at translation time: no code at or above 0x10000, an unconditional fault below it.
-- **Placement:** the checks sit in the lifter's central load and store builders. They cover every access form: integer, SSE, x87, and `rep` string ranges (first and last byte). For the store check that leaves a gap: a range over three or more pages is not tested on the pages between. It must close before Phase 2 turns the checks on (`phase-1.md`, "Known issues"). They come before the instruction's first side effect.
+- **Placement:** the checks sit in the lifter's central load and store builders. They cover every access form: integer, SSE, x87, and `rep` string ranges. They come before the instruction's first side effect.
+- **`rep` string ranges** are checked whole, before the first iteration. A range with RCX = 0 accesses nothing and checks nothing.
+  - **The NULL check** tests the range's first and last byte. A range that would wrap past the end of the address space traps anyway.
+  - **The store check** tests the page-state byte of every page the range covers, from its lowest page to its highest (Phase 2 M3). Until M3 it tested only the first and last byte, so a range over three or more pages went untested on the pages between (`phase-1.md`, "Known issues").
+  - Wine's own code has such ranges: PE `signal_start_thread` clears 60 KiB of stack with one `rep stosq` (`dlls/ntdll/signal_x86_64.c` L1020-1028).
+  - A test with a range over three or more pages, `PAGE_CODE` only on a middle page, fails on the old lowering.
 
 ### Counters (M6)
 **`Options::counters`** adds 1 to a slot of the counter block (`abi.md`, "Counter block") at each counted event. The counters exist for measurement. Timed runs build without them.
@@ -163,6 +168,13 @@ Chosen from the M1 measurements (4-core Xeon @ 2.8 GHz cloud VM, release builds,
 - **Jump tables:** absolute tables are already covered by relocation targets. GCC's relative tables (`lea base; movsxd idx, [base + idx*4]; add idx, base; jmp idx` behind a bounds check) are recovered by pattern, and their targets become block leaders. Every target must lie in executable code, otherwise the whole table is rejected. In 7zz.exe, 133 of 138 tables are recovered. A target that recovery misses is translated at run time.
 - **Run-time translation:** a lookup miss inside an executable section returns `EXIT_LEFT_CODE` to the runtime, which translates from that address with the wasm32 build of the translator, links the module and resumes (`runtime.md`). Known addresses are passed in, so nothing is translated twice.
 - **Faults (NULL check, store check):** `EXIT_FAULT` with the fault address and kind in the state block, from M3/M6.
+
+## Wine processes (Phase 2, M3)
+- **Options:** every module of a Wine process is built with `shared_memory`, `null_check` and `store_check`:
+  - AOT: `x64wasm-cli translate-pe --shared --null-check --store-check`, one module per rebased closure file and per program, in the catalog (`wine-build.md`, "Packaging");
+  - run time: the request flags `null_check`, `store_check` and `shared_memory` (bits 0, 1 and 5; `abi.md`, "Run-time translator").
+- **The bridge** (`x64wasm::bridge`, `x64wasm-cli bridge`) is a small module with no guest code: `run` through `env.table[RUN_INDEX]`, `depth_get`, `depth_set` and `flags_materialize` (`abi.md` v5, "The bridge"). `flags_materialize` is the trampoline's own materialization, emitted by the same code, and both are tested against each other.
+- **Nothing else changes in translated code.** Code invalidation uses tombstones, which the lookup probe already passes over (`abi.md`, "Lookup table"). The dispatchers are host functions reached through ordinary lookups.
 
 ## Instruction lowering and lazy flags (M3)
 

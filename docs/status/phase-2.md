@@ -364,7 +364,7 @@ The owner paused at 19:08 UTC (the second pause). WP2 and WP3 were resumed by me
   - **On the merge:** the three gates pass, 78 imports, in 19 s. `wine-unix.wasm` is 926,806 bytes (337,476 gzipped). `npm run test:wine` passes 10 of 10 in 0.5 s. The review found no defects.
   - **Found for later:**
     - A view at the server's slot returns `STATUS_SUCCESS`, because the server compares against `map_addr` (Wine's ASLR semantics). So once a mapping has a slot, a later view at its preferred base returns `STATUS_IMAGE_NOT_AT_BASE`.
-    - A checked write to a write-copy page doesn't turn it into a written page, as the fault would. Neither do translated code's writes (M3).
+    - A checked write to a write-copy page doesn't turn it into a written page. Neither do translated code's writes. (Corrected in M3's planning: Wine 11's fault doesn't either, so this matches Wine; `wine-unix.md` section 6.)
     - `MEM_TOP_DOWN` with no limit starts at 16 GiB. The ceiling from `guest-memory.md` is M3, and `wine-unix.md` section 4 now says so. `guest-memory.md`'s non-LAA sentence is corrected to match section 4.
   - **For WP4:**
     - `virtual_init_user_shared_data` stays untested until `do_cpuid` takes the CPU profile; it still stops loudly.
@@ -485,16 +485,40 @@ Session 3 started fresh from M2's hand-off. The research pass is in `docs/dev/re
 18. **The store check covers every page of a `rep` range;** both checks are on in Wine processes.
 19. **M2's leftovers:** `STATUS_IMAGE_NOT_AT_BASE` after a slot is Wine's semantics, moot once rebased (recorded); the overlay's `PROCESSOR_*` values and KUSER's `XState` and `ActiveProcessorCount` get checks in WP1.
 
+### Decided while writing the contracts (2026-11-14)
+The contracts are `abi.md` v5 (final), `wine-unix.md` v2, and the M3 parts of `translator.md`, `guest-memory.md` and `wine-build.md`. Writing them settled these details. Each Wine line they cite was read again in the sha256-checked tarball first.
+- **The bridge exports `flags_materialize` too.**
+  - Wine's context calls need the exact EFLAGS of the syscall frame, and only the translator can compute it from the lazy flag record.
+  - So the syscall dispatcher calls the bridge's copy of the trampoline's own materialization. C never reimplements the lazy flags.
+- **The bridge fills two reserved table slots:**
+  - `TW_RUN_INDEX` (0) with the placeholder `run`, which returns `EXIT_LEFT_CODE`;
+  - `TW_TOMBSTONE_INDEX` (1) with the tombstone's stop.
+
+  Host functions and modules start at `TW_TABLE_RESERVED` (2).
+- **The tombstone key** is `0xDEAD_0000_0000_0001`. A probe for it hits its slot and stops loudly; on x86-64 a jump to a non-canonical address raises #GP anyway.
+- **The normal syscall return** performs the guest's `ret` with `STATUS_RETURNED`. Wine jumps to the frame's `rip`, `t - 0xb`. For Wine's own thunks both are a `ret` with the same RSP.
+- **Patches:**
+  - The dispatcher addresses go into 0301, edited in place like 0102 and 0201.
+  - The exit hook is the new 0302.
+- **M3's imports are declared once**, in `library.js`, `imports.txt` and `tempwind_private.h`, by the coordinator's constants commit. A work package appends any other import at the end of the list in its own commit.
+- **`tw_image_mapped(fd, base, size)`:** JS finds the file's MEMFS path from the fd. There is no `tw_image_unmapped`, since `tw_invalidate` covers unmaps.
+- **The run-time translator gets request flag bit 5, `shared_memory`.** A module that imports a shared memory must declare it shared.
+- **`TW_NO_DISPATCHER`** is no longer written from M3. It is removed with its last use.
+- **The catalog and manifests are built, not published:**
+  - a session builds the catalog for the modules the test programs load, or all of them with `--all`;
+  - CI builds the whole closure and compiles it in V8 as the translation gate.
+- **A risk for M4:** KUSER's clock advances only at syscall entries, server requests and green switches. A guest reading only KUSER sees time stand still: kernel32's `GetTickCount` is such a read (`wine-unix.md`, section 13).
+
 ### Work packages
 At most two deep-workers at once and three subagents in all. Deep-workers start in this order: WP1 and WP2, then WP3 when WP2 merges, then WP5 when WP1 and WP3 merge. Each brief names its files, the contract sections, its tests and a WIP track `m3-wpN-wip`, and asks the agent to check its worktree base first. Before any agent starts, the coordinator commits the contracts (docs), then the `abi.rs` constants with the regenerated `abi.h`, `abi.mjs` and the `tw_run_loop` declaration.
 
 | WP | Agent | When | Owns | Done when |
 |---|---|---|---|---|
-| WP1: dispatchers and contexts (C) | deep-worker | after the contracts | `signal_wasm64.c` (in run mode `signal_start_thread` calls `tw_run_loop`), `run.c` as a loud stub (it passes to WP5 at the merge), the wrapper generator and its step in `build.sh`, `+syscall` tracing, patches 0102 and 0201 (`TW_IMAGE_RANGE_END`), 0104 (top-down) and 0302 (dispatcher addresses), `tests/syscall.c` and `tests/wine/syscall.test.mjs`, the `section`, `virtual` and `boot` harness updates | the three gates; `test:wine` with `syscall` checks on synthetic state blocks (register and stack args with ≥ 7 arguments, the variant entries, a bad id, a stub's loud stop, `NtContinue` returning UNWIND with the full state, a Get/Set round trip with x87 and XMM, a unix call, KUSER's clock advanced), the top-down check, the `PROCESSOR_*` and `XState` checks |
+| WP1: dispatchers and contexts (C) | deep-worker | after the contracts | `signal_wasm64.c` (in run mode `signal_start_thread` calls `tw_run_loop`), `run.c` as a loud stub (it passes to WP5 at the merge), the wrapper generator and its step in `build.sh`, `+syscall` tracing, patches 0102 and 0201 (`TW_IMAGE_RANGE_END`), 0104 (top-down) and 0301 (dispatcher addresses, edited in place), the virtual backend's `tw_image_mapped` and `tw_invalidate` calls, `tests/syscall.c` and `tests/wine/syscall.test.mjs`, the `section`, `virtual` and `boot` harness updates | the three gates; `test:wine` with `syscall` checks on synthetic state blocks (register and stack args with ≥ 7 arguments, the variant entries, a bad id, a stub's loud stop, `NtContinue` returning UNWIND with the full state, a Get/Set round trip with x87 and XMM, a unix call, KUSER's clock advanced), the top-down check, the `PROCESSOR_*` and `XState` checks |
 | WP2: translator side | deep-worker | after the contracts (small) | `crates/x64wasm` (the rep-range store check; the bridge: `run`, the placeholder, `depth_get`, `depth_set`), `crates/x64wasm-cli` (`translate-pe --shared` if missing, `bridge`), `crates/x64wasm-rt` (a shared-memory flag), the `abi.mjs`↔`abi.h` Node test, L5 snapshots | a rep store check over three or more pages that fails on the old lowering; bridge tests; replay 100 %; `test:node` |
 | WP3: JS host | deep-worker | after WP2 merges | `runtime/src/wine/*` (memory, table, depth, bridge, the Linker in the host region, host functions and slots, `tw_translate`, image notifications and the catalog, `tw_invalidate`, `PAGE_CODE`, FIFO stdio, lazy nodes, chdir, scheduler, exit code), `runtime/src/link.mjs` (injected table, depth and header; tombstones; invalidate), `run-wine.mjs`, `tests/wine/programs.test.mjs`, `boot.test.mjs` | unit tests: invalidate (the whole-module rule, rehash), catalog hit and fallback, a lazy node's stat before its first read in Node, FIFO `fstat`; `test:node` unchanged; `programs.test.mjs` wired |
 | WP4: packaging and CI | builder | after the contracts; the catalog step after WP2 | the LGPL rebase crate under `native/wine/`, packing and `rebase.json`, the catalog builder and the boot-set manifest, `tests/wine/prepare.sh`, `.github/workflows/wine-unix.yml` (catalog gate, programs test, path triggers), `docs/dev/commands.md` | rebase tests (every DIR64 target moves by the delta; otherwise only header fields change); the whole closure's catalog builds and compiles in V8 locally under the job's shell; green in CI |
-| WP5: run path and first light | deep-worker | after WP1 and WP3 merge | `run.c` (`tw_run_loop`), `boot.c` (run mode, the exit longjmp, the depth reset), `green.c` (depth), the exit-hook patch; then integration fixes in `native/wine/**` and `runtime/src/wine/**`, with `/diverge` against native Wine (`+relay`, `+syscall`, `+loaddll`); translator defects go to the coordinator, fixtures first | hello.exe, then the three L2 programs, pass `programs.test.mjs` in Node with both checks; boot-to-exit time, AOT hits and fallbacks and bytes loaded measured |
+| WP5: run path and first light | deep-worker | after WP1 and WP3 merge | `run.c` (`tw_run_loop`), `boot.c` (run mode, the exit longjmp, the depth reset), `green.c` (depth), the exit-hook patch 0302; then integration fixes in `native/wine/**` and `runtime/src/wine/**`, with `/diverge` against native Wine (`+relay`, `+syscall`, `+loaddll`); translator defects go to the coordinator, fixtures first | hello.exe, then the three L2 programs, pass `programs.test.mjs` in Node with both checks; boot-to-exit time, AOT hits and fallbacks and bytes loaded measured |
 | WP6: browser | builder | after WP5's hello passes and WP4 merges | `tests/browser/wine-hello.spec.mjs` and its worker, `server.mjs`, a step in `wine-unix.yml` | hello.exe matches in a Chromium Worker, locally and in CI |
 
 - **Hand-offs:** `run.c` passes from WP1 to WP5 at WP1's merge. `library.js`, `imports.txt`, `config.h`, `stubs.c`, `rename-server.h` and `tempwind_private.h` take appended lines from any package, each with its reason.
