@@ -49,6 +49,7 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
    - `-sSTACK_SIZE=1MB -sSTACK_OVERFLOW_CHECK=2`: with `GLOBAL_BASE` the layout is data, then the stack, then the heap, so the stack grows down into Wine's globals;
    - `-Wl,--wrap=sbrk` (section 5);
    - `-Wl,--fatal-warnings`;
+   - `--no-entry`, and `-Wl,--error-limit=0`, so that one link reports every undefined symbol;
    - `-Wl,--no-gc-sections`: every compiled function stays in the module, so gate 1 covers all of Wine's code. With section GC, wasm-ld drops what the entries don't reach and doesn't report the undefined symbols of dead code; while `boot` and the server's entry are skeletons, that is nearly all of Wine (the first link: a 19 KB module).
    - `-sEXPORTED_RUNTIME_METHODS=FS,ENV`;
    - `-sEXPORTED_FUNCTIONS=` the host entries of `abi.md` v5;
@@ -82,7 +83,7 @@ tests/wine/                  Node tests, prepare.sh, kuser-dump.c
 
 ## 4. Address map and image placement
 `guest-memory.md`, "Address map of one process", is the layout. What it means for Wine's code:
-- **Wine allocates only in the guest regions.** The preloader's reserve list becomes a static list: [0x10000, 0x7ffe_0000), [0x7ffe_0000, 0x7fff_0000) for KUSER and the syscall slot, and [0x1_0000_0000, 0x4_0000_0000). The NULL region, the gap, the host region and everything above 16 GiB are outside it, so `NtQueryVirtualMemory` reports them as reserved.
+- **Wine allocates only in the guest regions.** The preloader's reserve list becomes a static list: [0x10000, 0x7ffe_0000), [0x7ffe_0000, 0x7fff_0000) for KUSER and the syscall slot, and [0x1_0000_0000, 0x4_0000_0000). The NULL region, the gap and the host region are outside it, and `NtQueryVirtualMemory` reports them as reserved. A query at or above 16 GiB, the working-set limit, returns `STATUS_INVALID_PARAMETER` from Wine's own check (`virtual.c` L5740).
 - **Limits:** `address_space_limit`, `user_space_limit`, `working_set_limit` and `host_addr_space_limit` are 0x4_0000_0000 (`virtual.c` L191-199). 64-bit Wine never lowers `user_space_limit` for an EXE without `LARGE_ADDRESS_AWARE`, and neither do we. `address_space_start` starts at 0x110000, Wine's x86 value, which keeps the DOS area clear. `virtual_set_large_address_space` (L5022, called from `env.c` L1849) lowers it to 0x10000 for a 64-bit process, as in Wine. For an EXE with both `HIGH_ENTROPY_VA` and `DYNAMIC_BASE`, it also frees the low region's reservation.
 - **Wine's own bookkeeping lives in the host heap:** the virtual heap (`alloc_virtual_heap`, L3600), `pages_vprot` and the view tree. None of it is in a guest region. `anon_mmap_alloc`, which allocates it (and `server.c`'s fd cache and `sync.c`'s cache), takes zeroed memory from the host heap.
 - **The host region** [0x8000_0000, 0x1_0000_0000) belongs to the Unix side's allocator: Emscripten's static data from `GLOBAL_BASE`, the 1 MiB stack, then the heap up to 0x1_0000_0000. The runtime's data in it (state blocks, the lookup table, the page-state table) comes from the raw `malloc` export.
@@ -154,7 +155,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - `create_server_dir`, which `open_master_socket` runs: the config directory's fd and the server directory, under MEMFS's `/tmp`;
   - `set_current_time`;
   - `init_memory`, with the page size 0x1000 and the ranges of section 4;
-  - `init_directories(load_intl_file())`, with `l_intl.nls` from the constant path of section 8;
+  - `init_directories(load_intl_file())`. `l_intl.nls` is found at `DATADIR "/wine/nls"` (`/wine/share/wine/nls`), `unicode.c`'s fallback, because `server_argv0` is NULL in-process and no other path is set;
   - `init_threading` and `init_registry`.
 
   Then it sets `server_start_time` as `main_loop` does, creates the process and its first thread as `master_socket_poll_event` does (`server/request.c` L543), and the client receives the request fd from the queue.
@@ -169,13 +170,13 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
 `src/boot.c`, `src/signal_wasm64.c` and `03xx` (`loader.c`, `env.c`, `process.c`, `system.c`); the overlay's load is `02xx` (`server/registry.c`).
 - **Entry:** `boot(argc, argv, flags)`, a raw export entered through `WebAssembly.promising` (`abi.md` v5). JS writes argv into the host heap through the raw `malloc`.
   - `argv[0]` is `/wine/bin/wine`, `argv[1]` the program as a DOS path (`C:\tempwind\hello.exe`), then its arguments.
-  - `boot` records the launch directory (the cwd when it is entered: the JS host `chdir`s there first) and sets `WINELOADERNOEXEC=1`, as the wine loader's exec of itself does (`loader_exec`, `loader.c` L525), so `__wine_main` takes argv with no re-exec. Then it runs `__wine_main`.
+  - `boot` records the launch directory (the cwd when it is entered). Its caller `chdir`s there first: in M2 that is the boot test, since `boot-set.mjs`'s `boot()` doesn't, and M3's host must do it too. and sets `WINELOADERNOEXEC=1`, as the wine loader's exec of itself does (`loader_exec`, `loader.c` L525), so `__wine_main` takes argv with no re-exec. Then it runs `__wine_main`.
   - `flags`: `BOOT_STOP_AT_ENTRY` (1) is the only mode in M2. M3 adds running.
   - It returns 0 once it has stopped at the entry. A Wine error ends in `exit()`, which the host sees as the rejection of `boot`'s promise with Emscripten's exit status.
 - **The environment,** set by the JS host in `preRun` (libc builds `environ` from `ENV` during instantiation):
   - `WINEPREFIX=/home/runner/wine-prefix`, the path the prefix was made at (`wine-prefix.path`), since its `.reg` files hold it;
   - `HOME=/home/runner`, `USER=runner`, `LANG=en_US.UTF-8`, `TZ=UTC`;
-  - `WINEDEBUG` passed through from the host.
+  - `WINEDEBUG`, only when a caller puts it in the host's `opts.env`. Nothing reads the host process's own `WINEDEBUG`, and M2's tests set none.
 - **Paths:** `init_paths` (`loader.c` L449) uses constant paths instead of `dladdr`: `/wine/lib/wine/x86_64-windows` for the PE files, `/wine/share/wine` for NLS and `wine.inf`, `/wine/bin` for the loader. `get_initial_directory` (`env.c` L1389) uses the launch directory `boot` recorded, not `getcwd()`, because the server moves the cwd.
 - **stdio:** fds 0-2 are non-tty character devices that the JS host provides (no line buffering, `isatty` false), so `get_initial_console` (`env.c` L1340) passes them to the server as plain handles and kernelbase starts no conhost.
 - **The wineboot skip:** in place of `run_wineboot` (`env.c` L1537), boot creates `\KernelObjects\__wineboot_event`, runs `virtual_init_user_shared_data()`, writes wineboot's seven KUSER fields (NtBuildNumber, NtProductType, ProductTypeIsValid, NtMajorVersion, NtMinorVersion, SuiteMask, NtSystemRoot) as `create_user_shared_data` does (`programs/wineboot/wineboot.c` L319), then sets the event and waits on it as Wine does.
@@ -192,7 +193,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   then it `longjmp`s back to `boot`, which returns 0. `tw_main_state()` gives the state block's address.
 - **MEMFS gets the boot set** from the JS host before `boot`:
   - the prefix's `.reg` files, the `dosdevices` symlinks and `drive_c`'s directories;
-  - the PE files the boot opens (`ntdll.dll` and `apisetschema.dll`), the NLS files and `wine.inf` (`closure.json`'s `data_files`);
+  - the PE files the boot opens (`ntdll.dll` and `apisetschema.dll`), the native tree's whole `nls/` directory and `wine.inf` (M3 narrows them to `closure.json`'s `data_files`);
   - the overlay;
   - `C:\tempwind\hello.exe` (`tests/native`'s hello), in `drive_c`.
 
@@ -208,7 +209,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
     - `sched_yield` lets the runnable green threads run first; with none, it returns at once.
     - The waits of section 7 wait on one wake queue, the server's wakeup pipes'. `send_thread_wakeup` wakes all of it; a woken thread reads its own pipe and waits again if it is empty.
 - **`green_pthread.c`**, the single-thread part of the green pthread layer. The `-ww` libc that `-sSHARED_MEMORY` links without `-pthread` has no pthread functions at all (`research.md`, 2026-11-13), so this is needed from the first link:
-  - mutexes (recursive ones included), condition variables, `pthread_once`, keys, `pthread_self`, `pthread_sigmask` and the attribute functions;
+  - mutexes (recursive ones included), condition variables, `pthread_once`, keys, `pthread_self` and the attribute functions. `pthread_sigmask` stays libc's (`sigprocmask`), since nothing delivers signals in-process;
   - keys are per green thread. `NtCurrentTeb()` (`thread.c`) reads `teb_key`, so it follows the running green thread;
   - a thread that suspends while it holds a mutex is a bug, and the layer asserts on it;
   - a condition wait goes through `green.c` (a wait that nothing can end is the scheduler's deadlock);
