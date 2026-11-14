@@ -45,4 +45,9 @@ Update the current phase's note, `docs/status/phase-N.md` (the highest N there):
 1. Add a `main` line to `docs/dev/agent-runs.jsonl` from `get_session` (the session's usage at the close).
 2. Make sure the status note's "Next step" names the next milestone's first actions, its contracts and where its briefs come from, for a fresh session without this conversation.
 3. Commit by pathspec and push.
-4. End the report with a starter message of at most 3 lines for the next milestone's fresh session, pointing at `docs/plan.md` and that "Next step" (trial 3 in `docs/dev/agent-runs.md`).
+4. List the GitHub branches that can be deleted, at every close (a phase's last included). A session can't delete branches (GitHub answers 403), so the owner does it after the merge. Check every branch except `main`, `bench-data` and branches with an open PR:
+   - a branch whose tip is in `main` or the PR branch (`git merge-base --is-ancestor`) can go;
+   - any other branch can go only with evidence: its patches are in `main` (`git cherry main <tip>`), each line it adds is in `main`'s file, or a later commit of the same work replaced it (compare commit times). Otherwise it stays, with the reason.
+
+   The report gives the list and one `git push origin --delete …` command, and says the PR branch can go after the merge (trial 7 in `docs/dev/agent-runs.md`).
+5. End the report with a starter message of at most 3 lines for the next milestone's fresh session, pointing at `docs/plan.md` and that "Next step" (trial 3 in `docs/dev/agent-runs.md`).

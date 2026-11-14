@@ -54,6 +54,14 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 
 **Problem:** every request re-reads the whole context, so a session that fills half its window while planning pays that half again at every later step. **Lead for M3, not adopted yet:** delegate the research pass's source reading to a subagent, so the coordinator's context holds findings, not sources.
 
+## Trial 7 (started 2026-11-14, the owner's change)
+
+| Change | Applied as | Baseline | Measure | Decided at |
+|---|---|---|---|---|
+| 7. A branch list at each close: the report names the GitHub branches that can be deleted, each with its evidence, and gives the owner one delete command | `milestone-close` step 6, item 4 | At M2's close, 25 branches besides `main` and the PR branch:<br>• the work tracks of M1 (6), M6 (7) and M2 (7);<br>• 4 old session branches and `bench-data`.<br><br>None had been deleted, and a session's delete gets HTTP 403. 23 could go. `bench-data` and Phase 1's branch, which has its own commits, stay. | Branches left after the owner's cleanup at M3's close, other than `main`, `bench-data` and open PRs: 0 | M3's close |
+
+**Problem:** sessions push a work track per agent and can't delete branches, so every milestone left its tracks behind.
+
 ## Trials (started 2026-11-05, decided at the M6 close-out)
 
 | Change | Where | Measure | Kept if |
