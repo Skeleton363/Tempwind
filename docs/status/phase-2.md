@@ -559,7 +559,7 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 
 ## Next step: M3, "Boot: hello.exe on Wine", in a new session
 
-**Start:** read `docs/plan.md` ("Phase 2 milestones", M3), this note's M2 section ("Decisions taken when planning M2", "Second resume", "The close"), `ARCHITECTURE.md`, `docs/design/wine-unix.md` (v1 with M2's amendments) and `abi.md` v5. Then do the research pass into `docs/dev/research.md`.
+**Start:** read `docs/plan.md` ("Phase 2 milestones", M3), this note's M2 section ("Decisions taken when planning M2", "Second resume", "The close"), `ARCHITECTURE.md`, `docs/design/wine-unix.md` (v1 with M2's amendments) and `abi.md` v5. Then do the research pass into `docs/dev/research.md`. M2's retro (`docs/dev/agent-runs.md`) has a lead for it: give the source reading to a subagent, since planning M2 took 27.5M of the coordinator's 112.8M cache reads, at 313k a request.
 
 **M3's scope.** plan.md's done-when: hello.exe and the L2 programs run on Wine in Node, matching native, with both checks on; hello.exe does the same in a Chromium Worker. `wine-unix.md` section 11 adds:
 - the typed syscall wrappers;
@@ -576,7 +576,8 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 - write-copy semantics for translated writes;
 - the host's `chdir` before `boot`, and `WINEDEBUG`;
 - narrowing the boot set to `data_files`, and loading file contents on demand;
-- KUSER's version for a per-program Windows version.
+- KUSER's version for a per-program Windows version;
+- one definition of the initial FP state for C and JS, for example from `gen-header`: M2's x87 tag-word bug came from two copies.
 
 **How:** commit the contracts before agents start. Briefs come from M3's work-package table, as in M2: each names its files, its contract sections, its tests and a WIP track, and asks the agent to check its worktree base first.
 
