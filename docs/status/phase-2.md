@@ -526,6 +526,36 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
 
 ### Checkpoints (trial 6)
 - **At the plan's approval:** 373,677 tokens (37.4 %). The planning stretch cost $14.31 and 32.9M cache reads, 24.2M of them the four agents', so the coordinator read about 8.7M (M2's planning: 27.5M). A compaction was asked for before the contracts.
+- **After the compaction:** 100,894 tokens (10.1 %).
+- **After the contracts, the first briefs and WP4's first pass:** 479,531 tokens (48 %), $42.73 and 107.5M cache reads for the whole session.
+  - Writing the contracts cost the most. It took many turns at a large context, reading the docs and Wine's lines, so about 65M cache reads.
+  - A compaction was asked for.
+
+### Progress (2026-11-14)
+- **Pushed to the PR branch:**
+  - `986f037`, the contracts;
+  - `b3e3bc5`, the constants;
+  - `b1f6262`, `createUnixHost`'s `opts.imports`. M3's imports get defaults there: the bridge's and `tw_translate` stop loudly, while `tw_image_mapped` and `tw_invalidate` do nothing. So WP1 and WP3 don't both edit the hook;
+  - `fe73fe5`, the research note on caveman (not adopted).
+  - The `wine-unix` workflow passed at `b3e3bc5` and `b1f6262`.
+- **Shared inputs:** `target/wine` in the main tree is prepared (`tests/wine/prepare.sh --fetch`; `zstd` installed). Agents read it through `TW_WINE_DIR`.
+- **WP1 and WP2** run in worktrees, on the tracks `m3-wp1-wip` and `m3-wp2-wip`.
+- **Added to WP2: ntdll's `pop qword [rcx+0x44]` at 0x1_7001_0992.**
+  - It is `RtlCaptureContext` saving EFlags (`dlls/ntdll/signal_x86_64.c` L147).
+  - With both checks on, `translate-pe` panics there at `lift/lower.rs:237`: "memory check of an address computed after a side effect". The destination address is computed after RSP's update.
+  - It is the only pop-to-memory form in the programs' closure DLLs (objdump).
+  - The fix comes with tests: an RSP-based destination too, and a store-check hit leaving RSP and memory unchanged. WP2's report must show the whole closure translating with all three flags.
+- **WP4's first pass** is on `m3-wp4-wip`, at `f0ed274` (based on `b1f6262`). It is reviewed, not merged.
+  - **What works:**
+    - `pe-rebase`: 10 unit tests; it rebases the real closure's 59 DLLs, and `--verify` passes;
+    - `tests/wine/catalog.mjs`: the default scope's 7 modules built and compiled in V8, with a stub without `--shared`;
+    - `boot-set.json`: 155 files;
+    - the `prepare.sh` steps and the workflow's catalog gate.
+  - **To do when it is resumed, after WP2 merges:**
+    - fix the doc comment that calls the crate's `RANGE_END` `TW_IMAGE_RANGE_END`. `RANGE_START`, 0x1_6000_0000, is that constant;
+    - add a test that reads `TW_IMAGE_RANGE_END` from `abi.h`, the file only, since the crate stays independent;
+    - drop the gate step's second rebase, which `prepare.sh` already ran and verified;
+    - run `prepare.sh` end to end with `bridge` and `--shared`, and the gate with `--all`.
 
 ## What works
 
