@@ -231,3 +231,32 @@ The M2 planning pass, in a fresh session. Sources:
 ### Not adopted
 - **A socket or a separate Worker for the server:** one Windows process per run makes either pure cost (2026-11-06's decision holds).
 - **Rebasing the closure DLLs in M2:** M3 decides it with the translator's evidence.
+
+## 2026-11-14: claude-mem (persistent memory for Claude Code)
+
+**Sources:**
+- github.com/thedotmack/claude-mem, v15.18.3 (Apache-2.0). Its README was read as a single file through raw.githubusercontent.com.
+- A search for users' reports.
+
+Asked by the owner.
+
+**What it is:**
+- **Capture:** hooks on session start, prompts, tool use, subagent stop and session end feed a local worker (Bun). An "observer" model turns the tool activity into observations, and writes a summary when a session ends.
+- **Storage and recall:** the observations go to `~/.claude-mem` (SQLite, plus Chroma through uv). From the second session in a project, each session starts with an index of them, with details on demand.
+- **Where the observer runs:**
+  - the maker's hosted service, with a 30-day trial and then a subscription;
+  - an OpenRouter or Gemini key;
+  - or the user's Anthropic plan.
+- **Sharing and telemetry:** Cloud Sync to cmem.ai is opt-in. Anonymous telemetry is on by default.
+
+**Not adopted:**
+- **The benefit doesn't reach our sessions.** Each milestone runs in a fresh cloud container, and `~/.claude-mem` goes with it. Carrying memory over needs Cloud Sync, a third-party service that would receive our sessions' contents, and our code is all rights reserved.
+- **It duplicates the hand-off.** Sessions don't share memory by design: decisions live in reviewed, versioned files (the status note, the contracts with their source lines, this log and the ledger). Unreviewed summaries would compete with them. M2's three wrong statements about Wine were corrected in the contract; an observer would have kept the wrong versions too.
+- **It adds cost where our limit binds.** Its hooks see all our tool activity, the agents' included (about 1,300 requests in M2), and its observer model processes it.
+  - On our plan, it spends the same 5-hour window that stopped M2 twice. The other options are paid services.
+  - The one user report found 5.5k-42k tokens of overhead a session; its own figures disagree.
+  - The "10x" claims compare against dumping the full context, not against working without it.
+- **Our measured costs are inside a session,** and it doesn't touch them: the coordinator's context (120M cache reads in M2) and the research pass's source reading. Trial 6 and its research-pass lead do.
+- **Setup:** it installs Bun and uv on first run. In our cloud environment that likely needs a setup script and new network hosts.
+
+**What would change this:** a close that traces rework to lost context (trial 6's measure, 0 so far), or the ledger showing a milestone re-reading the sources the previous one read. Then run a one-milestone trial with telemetry off and the observer on our plan, measured against M2's usage per session.
