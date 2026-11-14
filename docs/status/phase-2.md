@@ -358,7 +358,7 @@ The owner paused at 19:08 UTC (the second pause). WP2 and WP3 were resumed by me
     - a third view comes from the image-range search;
     - a writable shared file view is written back on flush and unmap.
 
-    The `virtual` harness has 12 checks, plus `second_writable_view` run alone (a loud stop).
+    The `virtual` harness has 12 checks, plus `second_writable_view` run alone (a loud stop). The close added a 13th, `reserve_high_no_growth`.
   - **On the merge:** the three gates pass, 78 imports, in 19 s. `wine-unix.wasm` is 926,806 bytes (337,476 gzipped). `npm run test:wine` passes 10 of 10 in 0.5 s. The review found no defects.
   - **Found for later:**
     - A view at the server's slot returns `STATUS_SUCCESS`, because the server compares against `map_addr` (Wine's ASLR semantics). So once a mapping has a slot, a later view at its preferred base returns `STATUS_IMAGE_NOT_AT_BASE`.
@@ -440,7 +440,18 @@ At most two deep-workers at once and three subagents in all. Each brief names it
     - the link's `--no-entry` and `--error-limit=0`.
   - **CI:** `wine-unix.yml` now also runs on the files its build and tests read: `tests/native/hello.c`, `tests/targets/sources.json` and `wine.lock`, `runtime/src/abi.mjs` and `memory.mjs`, `scripts/emcc.sh`, `fetch-artifact.sh` and `release-publish.sh`, and `package*.json`.
   - The rest are under "Known issues and risks".
-- **The code review (step 2.2, `/code-review medium`):** PENDING.
+- **The code review (step 2.2, `/code-review medium`)** found 9 issues.
+  - **Six were fixed by a builder** (`e46fced`). The x87 and reservation fixes have tests, which failed before the fix:
+    - the thread start's x87 tag word was 0, which marks all eight registers in use; it is now 0xffff, as the JS host's `initFpState` sets it, and `boot.c` checks FTW and FSW;
+    - a `PROT_NONE` reservation grew the memory to its end; now only an accessible map or a file view grows it (the new `virtual` check `reserve_high_no_growth`);
+    - `map_file` recorded a writable view before copying it, so a failed `pread` left a record that would write zeros back;
+    - `drop_records` cut a view before its tail record existed, so a failed `dup` or `realloc` lost the tail's write-back;
+    - after a deadlock, `green.c`'s waiter lists point into dead frames, so the scheduler now refuses every later call;
+    - stdin dropped what a read didn't take.
+
+    `boot.test.mjs` now uses `abi.mjs`'s offsets. After the fixes, `build.sh` passes and `test:wine` passes 12 of 12 (`test:node` 261 of 261), and `wine-unix.wasm` is 976,632 bytes (355,633 gzipped).
+  - **One became a contract rule** (`abi.md`, `08a95a6`): a `run` that ends by a trap or a throwing import leaves `depth` at the inner value, and its host restores it, as `callNested` does. Today a trap ends the process.
+  - **Two were recorded** (below): `find_free`'s quadratic search, and the `boot` argv the host never frees.
 - **Checkpoints (trial 6):** 32.3 % before WP2 part 1's merge; 17.6 % before WP3's; 24.8 % before WP2 part 2's; 29.2 % before WP4's; 35.9 % at the restart after the limit, which is over 35 %, so a `/compact` was asked for.
 
 ## What works
@@ -491,7 +502,7 @@ At most two deep-workers at once and three subagents in all. Each brief names it
   - a `green_block` suspend and resume round trip takes 1.2 µs in Node and 0.2 µs in Chromium (10,000 rounds).
 
 - **Wine's Unix side** (M2, Node 24, this container):
-  - `wine-unix.wasm` is 976,581 bytes (355,625 gzipped);
+  - `wine-unix.wasm` is 976,632 bytes (355,633 gzipped) after the close's fixes (976,581 and 355,625 at `3ea7ee4`);
   - `build.sh` takes 17-23 s locally with a warm Emscripten cache; the CI job, prepare included, takes about 3 minutes;
   - `new WebAssembly.Module()` takes 2.8 ms, since V8 compiles lazily, so the compile time lands in the boot; the `link` test (instantiate with the 4 GiB memory, then a raw `malloc`/`free`) takes about 32 ms;
   - the boot to `LdrInitializeThunk` takes 74.7-91 ms, with medians of about 76-79 ms over the runs;
@@ -538,6 +549,8 @@ At most two deep-workers at once and three subagents in all. Each brief names it
   - numbers that no contract fixes: `section.c`'s slot address and 8 GiB bound, the first TEB block in `virtual.c`, the allocator reusing a block in `link.test.mjs`, `boot.test.mjs`'s hard-coded state offsets and its `/tmp/.wine-0`.
 - **M2's, other:**
   - `imports.txt`'s `__syscall_poll` line is unused;
+  - `find_free` (a map at no fixed address) tries every 64 KiB start and checks each page, which is quadratic. Wine rarely calls it, since `map_view` picks its own addresses;
+  - `boot-set.mjs` never frees `boot`'s argv, a few hundred bytes for a boot that runs once;
   - Emscripten 7.0 caps pipes at 64 KiB, so a partial reply write would then need `main_loop`.
 - **Carried from Phase 1** (`phase-1.md`, "Known issues"):
   - the two store-check gaps, which close in M3;
