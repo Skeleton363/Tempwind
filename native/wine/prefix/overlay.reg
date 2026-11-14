@@ -1,0 +1,56 @@
+WINE REGISTRY Version 2
+;; All keys relative to \\Registry
+;;
+;; Tempwind's overlay (docs/design/wine-unix.md, section 8): the per-boot
+;; keys wineboot would write (programs/wineboot/wineboot.c), since no
+;; wineboot process runs. The server loads it right after user.reg.
+;; - the computer name (create_computer_name_keys): TEMPWIND, not the host's;
+;; - the hardware description (create_hardware_registry_keys) with the CPU
+;;   from the translator's profile (abi.h, TW_CPUID_LEAVES): vendor
+;;   TempwindVCPU, family 6 model 0 stepping 0, the brand string, the
+;;   features Wine derives from it (get_cpu_features), one processor, and
+;;   ntdll's 1000 MHz for a host whose frequency it cannot read;
+;; - the volatile environment (create_volatile_environment_registry_key)
+;;   for the prefix's user, runner.
+;; Paths use ControlSet001: the server does not follow CurrentControlSet's
+;; link while it loads.
+
+[Machine\\Hardware\\Description\\System]
+"Identifier"="AT compatible"
+"SystemBiosDate"="01/01/70"
+
+[Machine\\Hardware\\Description\\System\\CentralProcessor\\0]
+"FeatureSet"=dword:20113dfe
+"Identifier"="Intel64 Family 6 Model 0 Stepping 0"
+"ProcessorNameString"="Tempwind virtual x86-64 CPU"
+"VendorIdentifier"="TempwindVCPU"
+"~MHz"=dword:000003e8
+
+[Machine\\Hardware\\Description\\System\\FloatingPointProcessor\\0]
+"Identifier"="Intel64 Family 6 Model 0 Stepping 0"
+
+[Machine\\System\\ControlSet001\\Control\\Session Manager\\Environment]
+"NUMBER_OF_PROCESSORS"="1"
+"PROCESSOR_ARCHITECTURE"="AMD64"
+"PROCESSOR_IDENTIFIER"="Intel64 Family 6 Model 0 Stepping 0, TempwindVCPU"
+"PROCESSOR_LEVEL"="6"
+"PROCESSOR_REVISION"="0000"
+
+[Machine\\System\\ControlSet001\\Control\\ComputerName\\ComputerName]
+"ComputerName"="TEMPWIND"
+
+[Machine\\System\\ControlSet001\\Control\\ComputerName\\ActiveComputerName]
+"ComputerName"="TEMPWIND"
+
+[User\\S-1-5-21-0-0-0-1000\\Volatile Environment]
+"APPDATA"="C:\\users\\runner\\AppData\\Roaming"
+"CLIENTNAME"="Console"
+"HOMEDRIVE"="C:"
+"HOMEPATH"="\\users\\runner"
+"HOMESHARE"=""
+"LOCALAPPDATA"="C:\\users\\runner\\AppData\\Local"
+"LOGONSERVER"="\\\\TEMPWIND"
+"SESSIONNAME"="Console"
+"USERDOMAIN"="TEMPWIND"
+"USERNAME"="runner"
+"USERPROFILE"="C:\\users\\runner"

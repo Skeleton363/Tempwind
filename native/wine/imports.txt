@@ -101,3 +101,7 @@ env.emscripten_num_logical_cores  sysconf(_SC_NPROCESSORS_ONLN) (system.c; the p
 
 # ---- -sSTACK_OVERFLOW_CHECK=2 ----
 env.__handle_stack_overflow    the shadow stack's overflow check reports here (section 2)
+
+# ---- The boot (WP4, section 8): libc calls the boot path reaches ----
+env.__syscall_faccessat        access(): check_command_line looks for a builtin exe named like argv[0] (loader.c; boot passes WINELOADERNOEXEC, section 8)
+env.__syscall_umask            umask: init_files reads the start umask for new files' modes (file.c)
