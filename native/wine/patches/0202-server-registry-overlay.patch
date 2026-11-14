@@ -1,0 +1,35 @@
+The overlay of wineboot's per-boot keys, loaded by the in-process server
+(docs/design/wine-unix.md, section 8).
+
+No wineboot process runs, so the keys it would write at each boot (the
+computer name, the hardware description with the CPU from the profile, the
+volatile environment) come from native/wine/prefix/overlay.reg, which the
+JS host's boot set puts at /wine/share/tempwind/overlay.reg.
+- init_registry (server/registry.c) loads it right after user.reg, with its
+  keys relative to \Registry, and registers no save branch for it.
+- Without the file (the C harnesses other than boot), nothing is loaded.
+
+The diff is WP4's (M2), added by the coordinator: server/* is 02xx's.
+
+diff --git a/server/registry.c b/server/registry.c
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -1955,6 +1955,18 @@
+         fatal_error( "could not create HKEY_CURRENT_USER registry key\n" );
+     free( current_user_path );
+     load_init_registry_from_file( "user.reg", hkcu );
++#ifdef __EMSCRIPTEN__
++    /* Tempwind (wine-unix.md, section 8): the overlay of wineboot's per-boot
++     * keys, relative to \Registry. Loaded only: it is no save branch. */
++    {
++        FILE *f = fopen( "/wine/share/tempwind/overlay.reg", "r" );
++        if (f)
++        {
++            load_keys( root_key, "overlay.reg", f, 0 );
++            fclose( f );
++        }
++    }
++#endif
+ 
+     /* set the shared flag on Software\Classes\Wow6432Node for all platforms */
+     for (i = 1; i < supported_machines_count; i++)
