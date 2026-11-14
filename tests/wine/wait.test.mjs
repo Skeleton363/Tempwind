@@ -59,6 +59,8 @@ test('wait: the harness checks pass', async () => {
 test('wait: wait_forever_stops stops loudly (the deadlock)', async () => {
   const { host, out } = await start({ TW_TEST_ONLY: 'wait_forever_stops' });
   await assert.rejects(host.call('tw_test_main'), (e) => e.message.startsWith('tempwind: green: deadlock: '));
+  // C's waiter lists still point into the dead frames: no call may enter.
+  await assert.rejects(host.call('tw_test_main'), (e) => e.message.startsWith('tempwind: green: stopped after a deadlock'));
   const lines = out.stderr.split('\n');
   assert.ok(lines.includes('tempwind: green: thread 1 waits on its server wakeup pipe (a server wait) with no deadline'),
     `stderr: ${out.stderr}`);

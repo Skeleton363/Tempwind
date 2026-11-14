@@ -143,6 +143,7 @@ function createScheduler(getRaw, stderr, encoder) {
   let entries = 0;           // promising entries in flight
   let queued = false;
   let timer = null;
+  let stopped = null;        // the error every later call gets
 
   const schedule = () => {
     if (queued) return;
@@ -189,7 +190,11 @@ function createScheduler(getRaw, stderr, encoder) {
 
   // Throws err into every blocked thread: its green_block throws, and its
   // promising entry rejects.
+  // After it, the module's waiter lists point into frames that are gone, so
+  // no call may enter it again: enter and block reject, wake is ignored.
   function stop(err) {
+    if (!stopped) stopped = new Error(`tempwind: green: stopped after a deadlock: ${err.message}`);
+    woken.clear();
     for (const [thread, b] of blocked) {
       blocked.delete(thread);
       b.reject(err);
@@ -198,16 +203,19 @@ function createScheduler(getRaw, stderr, encoder) {
 
   return {
     block(thread) {
+      if (stopped) return Promise.reject(stopped);
       return new Promise((resolve, reject) => {
         blocked.set(thread, { resolve, reject });
         schedule();
       });
     },
     wake(thread) {
+      if (stopped) return;
       woken.add(thread);
       schedule();
     },
     enter(start) {
+      if (stopped) return Promise.reject(stopped);
       entries++;
       let p;
       try {
@@ -226,16 +234,19 @@ function createScheduler(getRaw, stderr, encoder) {
 // server as plain handles.
 function createStdio(FS, { stdin, stdout, stderr }) {
   const device = (minor, path, ops, flags) => {
+    let pending = null; // what ops.read returned beyond the last read's length
     const dev = FS.makedev(STDIO_MAJOR, minor);
     FS.registerDevice(dev, {
       open(stream) { stream.seekable = false; },
       close() {},
       read(stream, buffer, offset, length) {
         if (!ops.read) throw new FS.ErrnoError(28 /* EINVAL */);
-        const bytes = ops.read(length);
+        const bytes = pending ?? ops.read(length);
+        pending = null;
         if (!bytes || bytes.length === 0) return 0;
         const n = Math.min(length, bytes.length);
         buffer.set(bytes.subarray(0, n), offset);
+        if (n < bytes.length) pending = bytes.subarray(n);
         return n;
       },
       write(stream, buffer, offset, length) {

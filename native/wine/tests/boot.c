@@ -184,6 +184,8 @@ static const char *context_and_state( void )
     TW_EXPECT( *(const UINT64 *)(state + TW_STATE_RFLAGS) == 0x200 );
     TW_EXPECT( *(const UINT32 *)(state + TW_STATE_MXCSR) == 0x1f80 );
     TW_EXPECT( *(const UINT16 *)(state + TW_STATE_FCW) == 0x27f );
+    TW_EXPECT( *(const UINT16 *)(state + TW_STATE_FTW) == 0xffff );  /* all x87 registers empty */
+    TW_EXPECT( *(const UINT16 *)(state + TW_STATE_FSW) == 0 );
     TW_EXPECT( *(const UINT64 *)(state + TW_STATE_GS_BASE) == (ULONG_PTR)teb );
     TW_EXPECT( teb->Tib.Self == &teb->Tib );
     return NULL;

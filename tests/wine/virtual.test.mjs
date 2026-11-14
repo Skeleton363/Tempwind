@@ -42,7 +42,7 @@ async function start(opts = {}) {
 }
 
 // In the harness's order (it runs them in one instance).
-const CHECKS = ['init_first_teb', 'kuser_committed', 'reserve_commit_free', 'fixed_high_grows',
+const CHECKS = ['init_first_teb', 'kuser_committed', 'reserve_commit_free', 'fixed_high_grows', 'reserve_high_no_growth',
   'zero_on_recommit', 'protect_query', 'write_watch_page_watch', 'guest_regions_only',
   'heap_cap_after_growth', 'file_view_copy', 'file_view_write_back', 'pointer_validation'];
 

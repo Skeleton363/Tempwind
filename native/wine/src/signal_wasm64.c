@@ -120,6 +120,7 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     *(UINT64 *)(state + TW_STATE_GS_BASE) = (ULONG_PTR)teb;
     *(UINT32 *)(state + TW_STATE_MXCSR) = 0x1f80;
     *(UINT16 *)(state + TW_STATE_FCW) = 0x27f;
+    *(UINT16 *)(state + TW_STATE_FTW) = 0xffff;                 /* all x87 registers empty */
     main_state = state;
 
     tw_boot_stopped();

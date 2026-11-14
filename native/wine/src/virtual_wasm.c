@@ -231,8 +231,15 @@ static int drop_records( uint64_t start, uint64_t end )
             tail.size = re - to;
             tail.offset = rec->offset + (off_t)(to - rs);
             tail.fd = dup( rec->fd );
-            rec->size = from - rs;
-            if (tail.fd < 0 || add_record( &tail )) ret = -1;
+            if (tail.fd < 0) { ret = -1; i++; continue; }
+            if (add_record( &tail ))
+            {
+                close( tail.fd );
+                ret = -1;
+                i++;
+                continue;
+            }
+            records[i].size = from - rs;  /* add_record may have moved the array */
             i++;
         }
         else if (from > rs)
@@ -264,6 +271,7 @@ static int map_file( uint64_t start, uint64_t size, int prot, int flags, int fd,
     struct stat st;
     uint64_t done = 0;
     unsigned int i;
+    int writable = 0;
 
     if (fstat( fd, &st )) return -1;
     if ((flags & MAP_SHARED) && (prot & PROT_WRITE) && offset < st.st_size)
@@ -282,13 +290,7 @@ static int map_file( uint64_t start, uint64_t size, int prot, int flags, int fd,
                 r->offset < rec.offset + (off_t)rec.size && rec.offset < r->offset + (off_t)r->size)
                 tw_unsupported( "second writable view" );
         }
-        if ((rec.fd = dup( fd )) < 0) return -1;
-        if (add_record( &rec ))
-        {
-            close( rec.fd );
-            errno = ENOMEM;
-            return -1;
-        }
+        writable = 1;
     }
     while (done < size)
     {
@@ -300,6 +302,17 @@ static int map_file( uint64_t start, uint64_t size, int prot, int flags, int fd,
         }
         if (!n) break;  /* past the end of the file: the rest stays zero */
         done += n;
+    }
+    /* the record, with its own fd, only once the copy has succeeded */
+    if (writable)
+    {
+        if ((rec.fd = dup( fd )) < 0) return -1;
+        if (add_record( &rec ))
+        {
+            close( rec.fd );
+            errno = ENOMEM;
+            return -1;
+        }
     }
     return 0;
 }
@@ -313,7 +326,11 @@ static void *map_range( uint64_t start, uint64_t size, int prot, int flags, int 
     int file = !(flags & MAP_ANON) && fd != -1;
     uint64_t end = start + size;
 
-    if (grow_to( end )) return MAP_FAILED;
+    /* A PROT_NONE anonymous map is a reservation: it needs no memory until
+     * tw_mprotect makes a page accessible. zero_dirty never reaches past the
+     * memory: a page is dirty only if it was mapped accessible or as a file
+     * view, and both grew the memory to cover it. */
+    if ((prot != PROT_NONE || file) && grow_to( end )) return MAP_FAILED;
     if (drop_records( start, end )) return MAP_FAILED;
     zero_dirty( start, end );
     set_state( start, end, (prot != PROT_NONE || file) ? VM_DIRTY : 0, VM_FREE );

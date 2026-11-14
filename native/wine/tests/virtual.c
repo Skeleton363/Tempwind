@@ -199,6 +199,34 @@ static const char *fixed_high_grows( void )
     return NULL;
 }
 
+/* A PROT_NONE reservation, which is how Wine reserves, grows nothing; only
+ * committing grows the memory. */
+static const char *reserve_high_no_growth( void )
+{
+    uint64_t base = 0x300000000ull, size = 0x40000000ull, before, commit = base;
+    volatile uint64_t *p;
+
+    ensure_init();
+    before = memory_bytes();
+    TW_EXPECT( before < base );
+    TW_EXPECT( !alloc( &base, size, MEM_RESERVE, PAGE_READWRITE ) );
+    TW_EXPECT( base == 0x300000000ull );
+    TW_EXPECT( memory_bytes() == before );
+    size = 0x10000;
+    TW_EXPECT( !alloc( &commit, size, MEM_COMMIT, PAGE_READWRITE ) );
+    TW_EXPECT( commit == base );
+    TW_EXPECT( memory_bytes() >= base + 0x10000 );
+    EXPECT_REGION( base, base, 0x10000, MEM_COMMIT, PAGE_READWRITE, MEM_PRIVATE );
+    EXPECT_REGION( base + 0x10000, base + 0x10000, 0x40000000ull - 0x10000, MEM_RESERVE, 0, MEM_PRIVATE );
+    p = (volatile uint64_t *)(uintptr_t)base;
+    TW_EXPECT( p[0] == 0 && p[0x1fff] == 0 );
+    p[0x1fff] = 0x0123456789abcdefull;
+    TW_EXPECT( p[0x1fff] == 0x0123456789abcdefull );
+    TW_EXPECT( !release( base, 0, MEM_RELEASE ) );
+    EXPECT_FREE( base );
+    return NULL;
+}
+
 /* Decommitted pages read zero when recommitted, and a released range
  * allocated again reads zero (section 6: Wine's decommit is a fixed map). */
 static const char *zero_on_recommit( void )
@@ -576,6 +604,7 @@ static const struct tw_check checks[] =
     { "kuser_committed", kuser_committed },
     { "reserve_commit_free", reserve_commit_free },
     { "fixed_high_grows", fixed_high_grows },
+    { "reserve_high_no_growth", reserve_high_no_growth },
     { "zero_on_recommit", zero_on_recommit },
     { "protect_query", protect_query },
     { "write_watch_page_watch", write_watch_page_watch },

@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, readlinkSync, lstatSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { STATE_RIP, STATE_GS_BASE } from '../../runtime/src/abi.mjs';
 import { createUnixHost, DEFAULT_ENV } from '../../runtime/src/wine/unix-host.mjs';
 import { installBootSet, recordOpens, boot, BOOT_DLLS, OVERLAY_PATH, PE_DIR } from '../../runtime/src/wine/boot-set.mjs';
 
@@ -127,8 +128,8 @@ test('boot: wine-unix stops at LdrInitializeThunk (measured)', async (t) => {
   const dll = SET.dlls['ntdll.dll'];
   const file = new DataView(dll.buffer, dll.byteOffset, dll.byteLength);
   const base = Number(file.getBigUint64(file.getUint32(0x3c, true) + 0x18 + 0x18, true));
-  assert.equal(mem().getBigUint64(state + 0x80, true), BigInt(base + exportRva(mem(), base, 'LdrInitializeThunk')));
-  assert.notEqual(mem().getBigUint64(state + 0xb8, true), 0n); // GS base: the TEB
+  assert.equal(mem().getBigUint64(state + STATE_RIP, true), BigInt(base + exportRva(mem(), base, 'LdrInitializeThunk')));
+  assert.notEqual(mem().getBigUint64(state + STATE_GS_BASE, true), 0n); // GS base: the TEB
   const pages = host.memory.buffer.byteLength / 65536;
   t.diagnostic(`boot to LdrInitializeThunk: ${ms.toFixed(1)} ms; memory after boot: ${pages} pages of 64 KiB`);
 });
