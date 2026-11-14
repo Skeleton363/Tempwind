@@ -175,6 +175,9 @@ enum Label {
     /// Labels of a string instruction's loop.
     StrDone,
     StrLoop,
+    /// Labels of [`Op::PageRangeCheck`]'s walk over the pages.
+    PagesDone,
+    PagesLoop,
 }
 
 struct ChunkEmitter<'p> {
@@ -548,6 +551,7 @@ impl ChunkEmitter<'_> {
                 code,
                 when,
             } => self.mem_check(f, addr, len, write, null, code, when),
+            Op::PageRangeCheck { lo, hi, when } => self.page_range_check(f, lo, hi, when),
             Op::DivWide {
                 q,
                 r,
@@ -849,6 +853,64 @@ impl ChunkEmitter<'_> {
             f.end();
             self.labels.pop();
         }
+        if when.is_some() {
+            f.end();
+            self.labels.pop();
+        }
+    }
+
+    /// `Op::PageRangeCheck`: walks the page-state bytes from `lo`'s page up
+    /// to `hi`'s, the page index in the scratch local (an
+    /// `EXIT_UNSUPPORTED` site doesn't pass the scratch local to `$fault`).
+    fn page_range_check(
+        &mut self,
+        f: &mut InstructionSink<'_>,
+        lo: Value,
+        hi: Value,
+        when: Option<Value>,
+    ) {
+        if let Some(w) = when {
+            self.value(f, w);
+            f.i64_const(0);
+            f.i64_ne();
+            f.if_(BlockType::Empty);
+            self.labels.push(Label::If);
+        }
+        self.value(f, lo);
+        f.i64_const(abi::PAGE_FLAGS_SHIFT as i64);
+        f.i64_shr_u();
+        f.local_set(L_SCRATCH);
+        f.block(BlockType::Empty);
+        self.labels.push(Label::PagesDone);
+        f.loop_(BlockType::Empty);
+        self.labels.push(Label::PagesLoop);
+        f.global_get(g_page_flags(self.counters));
+        f.local_get(L_SCRATCH);
+        f.i64_add();
+        f.i32_load8_u(mem(0));
+        f.i32_const(i32::from(abi::PAGE_CODE | abi::PAGE_WATCH));
+        f.i32_and();
+        f.if_(BlockType::Empty);
+        self.labels.push(Label::If);
+        self.fault_site(f, SITE_UNSUPPORTED, Value::Imm(0));
+        f.end();
+        self.labels.pop();
+        // The last page tested: done. A wrapped range stops after `lo`'s.
+        f.local_get(L_SCRATCH);
+        self.value(f, hi);
+        f.i64_const(abi::PAGE_FLAGS_SHIFT as i64);
+        f.i64_shr_u();
+        f.i64_ge_u();
+        f.br_if(self.depth(Label::PagesDone));
+        f.local_get(L_SCRATCH);
+        f.i64_const(1);
+        f.i64_add();
+        f.local_set(L_SCRATCH);
+        f.br(self.depth(Label::PagesLoop));
+        f.end();
+        self.labels.pop();
+        f.end();
+        self.labels.pop();
         if when.is_some() {
             f.end();
             self.labels.pop();
@@ -1522,6 +1584,7 @@ fn operands(op: &Op) -> [Option<Value>; 4] {
         Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. } => [None; 4],
         Op::FaultIf { cond, .. } => [Some(cond), None, None, None],
         Op::MemCheck { addr, when, .. } => [Some(addr), when, None, None],
+        Op::PageRangeCheck { lo, hi, when } => [Some(lo), Some(hi), when, None],
         Op::DivWide { hi, lo, d, .. } => [Some(hi), Some(lo), Some(d), None],
         Op::RepString { delta, .. } => [Some(delta), None, None, None],
         Op::VLoad {
@@ -1987,7 +2050,7 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
         let t = insns().map(|i| i.temps).max().unwrap_or(0);
         let has_fault = insns()
             .flat_map(|i| i.ops.iter())
-            .any(|o| matches!(o, Op::MemCheck { .. }));
+            .any(|o| matches!(o, Op::MemCheck { .. } | Op::PageRangeCheck { .. }));
         let site_base = insns().map(|i| i.addr).min().unwrap_or(0);
         let vt = insns().map(|i| i.vtemps).max().unwrap_or(0);
         let uses_fp = insns().flat_map(|i| i.ops.iter()).any(Op::is_fp);

@@ -48,7 +48,7 @@ impl Lower<'_> {
             (true, _, true) => Rep::Repe,
             (false, true, true) => Rep::Repne,
         };
-        self.string_checks(op, size, rep, delta);
+        self.string_checks(op, size, rep, delta, df);
         self.push_op(Op::RepString {
             op,
             width,
@@ -59,10 +59,12 @@ impl Lower<'_> {
     }
 
     /// The memory checks of a string instruction: the first element at RSI
-    /// and RDI, and for `rep` (when RCX != 0) the last one too, at
-    /// `ptr + (RCX - 1) * delta`. `repe`/`repne` may stop early, so they
-    /// check only the first.
-    fn string_checks(&mut self, op: StrOp, size: u64, rep: Rep, delta: Value) {
+    /// and RDI. A `rep` range (when RCX != 0) checks NULL at its last
+    /// element too, at `ptr + (RCX - 1) * delta`, and the store check tests
+    /// every page from its lowest byte to its highest (`translator.md`,
+    /// "Memory checks"). `repe`/`repne` may stop early, so they check only
+    /// the first element.
+    fn string_checks(&mut self, op: StrOp, size: u64, rep: Rep, delta: Value, df: Value) {
         let ptrs: &[(Gpr, bool)] = match op {
             StrOp::Movs => &[(RSI, false), (RDI, true)],
             StrOp::Stos => &[(RDI, true)],
@@ -70,22 +72,34 @@ impl Lower<'_> {
             StrOp::Cmps => &[(RSI, false), (RDI, false)],
             StrOp::Scas => &[(RDI, false)],
         };
-        let wanted = |w: bool| self.checks.null || (w && self.checks.store);
-        if !ptrs.iter().any(|&(_, w)| wanted(w)) {
+        let (null, store) = (self.checks.null, self.checks.store);
+        if !ptrs.iter().any(|&(_, w)| null || (w && store)) {
             return;
         }
-        let size = size as u32;
         let when = (rep != Rep::Once).then_some(Value::Reg(RCX));
-        let span = (rep == Rep::Rep).then(|| {
-            let n = self.bin(BinOp::Sub, Value::Reg(RCX), Value::Imm(1));
-            self.bin(BinOp::Mul, n, delta)
-        });
+        if rep != Rep::Rep {
+            for &(reg, write) in ptrs {
+                self.mem_check_when(Value::Reg(reg), size as u32, write, when);
+            }
+            return;
+        }
+        let n = self.bin(BinOp::Sub, Value::Reg(RCX), Value::Imm(1));
+        let span = self.bin(BinOp::Mul, n, delta);
         for &(reg, write) in ptrs {
             let p = Value::Reg(reg);
-            self.mem_check_when(p, size, write, when);
-            if let Some(span) = span {
-                let last = self.bin(BinOp::Add, p, span);
-                self.mem_check_when(last, size, write, when);
+            let last = self.bin(BinOp::Add, p, span);
+            for at in [p, last] {
+                self.mem_check_kinds(at, size as u32, write, when, null, false);
+            }
+            if write && store {
+                // DF = 1 runs from `p` down to `last`.
+                let lo = self.select(df, last, p);
+                let top = self.select(df, p, last);
+                let hi = match size {
+                    1 => top,
+                    _ => self.bin(BinOp::Add, top, Value::Imm(size - 1)),
+                };
+                self.page_range_check(lo, hi, when);
             }
         }
     }

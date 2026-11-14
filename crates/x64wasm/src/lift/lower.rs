@@ -188,6 +188,20 @@ impl Lower<'_> {
     ) {
         let null = self.checks.null;
         let code = write && self.checks.store;
+        self.mem_check_kinds(addr, len, write, when, null, code);
+    }
+
+    /// [`Lower::mem_check_when`] with the checks to make given: `null`, and
+    /// `code` (the page bytes of the first and last byte).
+    pub(super) fn mem_check_kinds(
+        &mut self,
+        addr: Value,
+        len: u32,
+        write: bool,
+        when: Option<Value>,
+        null: bool,
+        code: bool,
+    ) {
         if !null && !code {
             return;
         }
@@ -223,6 +237,27 @@ impl Lower<'_> {
             code,
             when,
         };
+        self.insert_check(at, check, &[Some(addr), when]);
+    }
+
+    /// The store check of a `rep` range from byte `lo` to byte `hi`
+    /// (`Op::PageRangeCheck`), before the instruction's first side effect.
+    pub(super) fn page_range_check(&mut self, lo: Value, hi: Value, when: Option<Value>) {
+        if !self.checks.store {
+            return;
+        }
+        let at = self
+            .ops
+            .iter()
+            .position(Op::has_side_effect)
+            .unwrap_or(self.ops.len());
+        let check = Op::PageRangeCheck { lo, hi, when };
+        self.insert_check(at, check, &[Some(lo), Some(hi), when]);
+    }
+
+    /// Inserts `check` at op `at`, whose `values` must hold there what they
+    /// hold at the end of the instruction so far.
+    fn insert_check(&mut self, at: usize, check: Op, values: &[Option<Value>]) {
         if at < self.ops.len() {
             // The values must be the same before the side effect.
             let written: crate::sync::Set = self.ops[at..]
@@ -235,7 +270,7 @@ impl Lower<'_> {
                 Value::Imm(_) => true,
             };
             assert!(
-                before(addr) && when.is_none_or(before),
+                values.iter().flatten().all(|&v| before(v)),
                 "memory check of an address computed after a side effect"
             );
         }
