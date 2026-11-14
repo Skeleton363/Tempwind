@@ -53,6 +53,7 @@ Phase 0's lessons still hold. New ones from M1:
 - **A zeroed state block isn't a thread's state.** With MXCSR = 0 every SSE exception is unmasked; hosts must set the FP defaults a real thread starts with.
 - **A worker restart stops background agents, but their transcripts survive.** A message resumes them where they were; the coordinator commits their uncommitted files in the meantime.
 - **A completion notice's token count is not a run's cost.** It is the context size of the run's last request. A run's real usage is in its transcript (`node scripts/agent-usage.mjs --agent ID`), and cache reads are most of it.
+- **The container's disk is a fixed allowance, and `target/` eats it.** In M6 it reached 100 % (53 MB free) with `target/` at 16 GB, a worktree's own `target/` at 4.2 GB and 2.9 GB of scratch files, and a test run was blocked. Cargo keeps every superseded test executable (about 280 MB each) in `target/debug/deps`. At each milestone close, free the space as `docs/dev/commands.md`, "Disk", says: merged worktrees, old scratch directories and superseded test executables. That freed 10 GB in M6.
 - **Measure a speedup within one run, against the reference build.** This VM's speed drifts by up to 10 % between sessions (wine64 itself ran 8-9 % slower on 2026-11-06), so ratios from different sessions don't compare. `tests/bench/memchecks.mjs --variants none,reference` interleaves the two builds.
 
 ## Decisions taken when planning (2026-10-22)
@@ -314,6 +315,7 @@ The plan you approved on 2026-11-04. Research: `docs/dev/research.md`, "2026-11-
   - **Earlier copies:** copies already made under MIT (clones and forks up to `3a506d7`) keep that license, which can't be revoked.
   - **CI stays free,** because the repository stays public.
   - **What stays open:** dependencies keep their own licenses, and a new one must be permissive or LGPL, never GPL. Our patches to Wine stay LGPL, as Wine's license requires.
+  - **The copyright holder** is named as `Skeleton363`, the GitHub account, which was a default of the session. The owner hasn't given a legal name, and can replace it at any time.
   - **For the owner:** copyright in AI-written code is legally unsettled. Before relying on the license commercially, check it with an IP lawyer.
   - **Later (Phase 3, the public demo):** a third-party notices file for the dependencies whose licenses ask for one.
 
