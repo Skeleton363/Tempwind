@@ -166,10 +166,10 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
 - **Registry saves** go to MEMFS as in Wine (on its timer and at exit). MEMFS is not persisted in M2.
 
 ## 8. Startup
-`src/boot.c` and `03xx` (`loader.c`, `env.c`, `server.c`, `system.c`, `thread.c`).
+`src/boot.c`, `src/signal_wasm64.c` and `03xx` (`loader.c`, `env.c`, `process.c`, `system.c`); the overlay's load is `02xx` (`server/registry.c`).
 - **Entry:** `boot(argc, argv, flags)`, a raw export entered through `WebAssembly.promising` (`abi.md` v5). JS writes argv into the host heap through the raw `malloc`.
   - `argv[0]` is `/wine/bin/wine`, `argv[1]` the program as a DOS path (`C:\tempwind\hello.exe`), then its arguments.
-  - `boot` records the launch directory, then runs Wine's `__wine_main`.
+  - `boot` records the launch directory (the cwd when it is entered: the JS host `chdir`s there first) and sets `WINELOADERNOEXEC=1`, as the wine loader's exec of itself does (`loader_exec`, `loader.c` L525), so `__wine_main` takes argv with no re-exec. Then it runs `__wine_main`.
   - `flags`: `BOOT_STOP_AT_ENTRY` (1) is the only mode in M2. M3 adds running.
   - It returns 0 once it has stopped at the entry. A Wine error ends in `exit()`, which the host sees as the rejection of `boot`'s promise with Emscripten's exit status.
 - **The environment,** set by the JS host in `preRun` (libc builds `environ` from `ENV` during instantiation):
@@ -178,8 +178,11 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - `WINEDEBUG` passed through from the host.
 - **Paths:** `init_paths` (`loader.c` L449) uses constant paths instead of `dladdr`: `/wine/lib/wine/x86_64-windows` for the PE files, `/wine/share/wine` for NLS and `wine.inf`, `/wine/bin` for the loader. `get_initial_directory` (`env.c` L1389) uses the launch directory `boot` recorded, not `getcwd()`, because the server moves the cwd.
 - **stdio:** fds 0-2 are non-tty character devices that the JS host provides (no line buffering, `isatty` false), so `get_initial_console` (`env.c` L1340) passes them to the server as plain handles and kernelbase starts no conhost.
-- **The wineboot skip:** in place of `run_wineboot` (`env.c` L1537), boot creates `\KernelObjects\__wineboot_event`, runs `virtual_init_user_shared_data()`, writes wineboot's seven KUSER fields (NtBuildNumber, NtProductType, ProductTypeIsValid, NtMajorVersion, NtMinorVersion, SuiteMask, NtSystemRoot) from the PEB's version as `create_user_shared_data` does (`programs/wineboot/wineboot.c` L319), then sets the event.
-- **The overlay:** `native/wine/prefix/overlay.reg`, loaded right after `user.reg`. It holds the computer name, the hardware description with the CPU from the profile, and the volatile environment.
+- **The wineboot skip:** in place of `run_wineboot` (`env.c` L1537), boot creates `\KernelObjects\__wineboot_event`, runs `virtual_init_user_shared_data()`, writes wineboot's seven KUSER fields (NtBuildNumber, NtProductType, ProductTypeIsValid, NtMajorVersion, NtMinorVersion, SuiteMask, NtSystemRoot) as `create_user_shared_data` does (`programs/wineboot/wineboot.c` L319), then sets the event and waits on it as Wine does.
+  - The values: the version `init_peb` gives the PEB (10.0, build 19045), `NtProductWinNt`, SuiteMask 0 and `C:\windows`. The PEB itself isn't set yet at that point (`init_peb` runs after `build_initial_params`), and native wineboot, which reads the version from the prefix's registry, writes these (`kuser.bin`).
+- **The overlay:** `native/wine/prefix/overlay.reg`, the per-boot keys wineboot would write. The JS host puts it at `/wine/share/tempwind/overlay.reg`; the server's `init_registry` loads it right after `user.reg`, with its keys relative to `\Registry` and as no save branch.
+  - It holds the computer name (`TEMPWIND`, not the host's), the hardware description with the CPU from the profile (the values `create_hardware_registry_keys` derives from it: vendor, family, model and stepping, brand string, `FeatureSet`, one processor, ntdll's 1000 MHz), the processor variables of the system environment, and the volatile environment of the prefix's user.
+  - Its keys name `ControlSet001`: the loader does not follow `CurrentControlSet`'s link.
 - **No child processes:** `NtCreateUserProcess` returns `STATUS_NOT_SUPPORTED` and prints `tempwind: unsupported: NtCreateUserProcess <image>`.
 - **The host-pointer slots in ntdll.dll:** `load_ntdll_functions` writes the poison value `TW_NO_DISPATCHER` (`abi.h`, non-canonical) into `__wine_syscall_dispatcher` and `__wine_unix_call_dispatcher`, and `signal_wasm64.c` commits the page at 0x7ffe1000 and writes it there too. `__wine_unixlib_handle` gets the host address of `unix_call_funcs`, an opaque handle. M3 writes the dispatcher addresses.
 - **`BOOT_STOP_AT_ENTRY`:** `signal_start_thread` builds the start state as `init_syscall_frame` does (`signal_x86_64.c` L2896):
@@ -189,10 +192,11 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   then it `longjmp`s back to `boot`, which returns 0. `tw_main_state()` gives the state block's address.
 - **MEMFS gets the boot set** from the JS host before `boot`:
   - the prefix's `.reg` files, the `dosdevices` symlinks and `drive_c`'s directories;
-  - the PE files the boot opens, the NLS files and `wine.inf` (`closure.json`'s `data_files`);
-  - `C:\tempwind\hello.exe` (`tests/native`'s hello).
+  - the PE files the boot opens (`ntdll.dll` and `apisetschema.dll`), the NLS files and `wine.inf` (`closure.json`'s `data_files`);
+  - the overlay;
+  - `C:\tempwind\hello.exe` (`tests/native`'s hello), in `drive_c`.
 
-  The boot test records the files the boot opened. Loading file contents on demand is M3.
+  `runtime/src/wine/boot-set.mjs` writes it and enters `boot`. The boot test records the files the boot opened. Loading file contents on demand is M3.
 
 ## 9. Blocking and threads (M2: one thread)
 - **`green.c`:**
@@ -230,8 +234,8 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
     - `PEB->ApiSetMap` inside apisetschema's view;
     - prefix and overlay values read through `NtQueryValueKey`;
     - NLS loaded;
-    - KUSER equal to `kuser.bin`, except the fields Wine fills from the clock and those that come from the CPU profile (the test lists them, naming this section);
-    - the list of files the boot opened.
+    - KUSER equal to `kuser.bin`, except the fields Wine fills from the clock, those that come from the CPU profile, and `NumberOfPhysicalPages`, the host's memory (the test lists them, naming this section);
+    - the list of files the boot opened: of the boot set, the NLS files it reads, the `.reg` files, the overlay, hello.exe, ntdll and apisetschema in the order of their first open; besides them, only the prefix directory and the server's own files under `/tmp`.
 
 ## 11. Later
 - **M3:** the typed syscall wrappers, the unix-call dispatcher, `translate` and the run loop; the dispatcher addresses; rebasing the closure DLLs or not.
