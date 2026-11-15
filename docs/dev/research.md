@@ -260,3 +260,30 @@ Asked by the owner.
 - **Setup:** it installs Bun and uv on first run. In our cloud environment that likely needs a setup script and new network hosts.
 
 **What would change this:** a close that traces rework to lost context (trial 6's measure, 0 so far), or the ledger showing a milestone re-reading the sources the previous one read. Then run a one-milestone trial with telemetry off and the observer on our plan, measured against M2's usage per session.
+
+## 2026-11-15: Claude Code workflow digest
+
+Proposals only. Window: since the 11-04 digest (changelog 2.1.319 to 2.1.325).
+
+### 1. A compaction backstop for trial 6
+- Source: [env vars](https://code.claude.com/docs/en/env-vars), [settings](https://code.claude.com/docs/en/settings-reference), [changelog](https://code.claude.com/docs/en/changelog) 2.1.319 to 2.1.323.
+- Says: `autoCompactWindow` (per model, 100000 to 1000000 tokens) sets how full the context gets before compaction; `/autocompact` overrides it per model. Three fixes make compaction safer with background agents (lost reports, unanswered messages, false notices).
+- Why: M2's fourth segment ran 155 requests uncompacted: 320k a request, peak 555k, 44 % of the coordinator's reads. Its checkpoints read under 35 %, and `/compact` came 45 requests late. The miss rested on a reading and the owner's timing.
+- Proposal: `.claude/settings.json`: `"autoCompactWindow": 400000`, above where compacted segments peaked (~325k) and below the 555k miss. Trial 6 keeps its asks and counts each auto-compaction as a missed checkpoint.
+- Benefit/cost: the retro's estimate for splitting that segment is 16M fewer cache reads, 6 % of the session. One line. Not read: the key's own entry (range, trigger point); the first compaction shows the trigger. Revert if rework from lost context rises above 0.
+
+### 2. Background output is cut
+- Source: [changelog 2.1.321](https://code.claude.com/docs/en/changelog).
+- Says: notices of finished background commands show only the start and end of output over 1,000 characters.
+- Why: our rule says to wait for a backgrounded command, never re-run it. A failure mid-log in a long cargo or 7-Zip run would not show.
+- Proposal: add to the 3-minute rule in `builder.md` and `deep-worker.md`: "Write its output to a scratchpad log and grep that; the notice shows only the start and end."
+- Benefit/cost: no blind re-runs; about 20 words per agent. No incident yet.
+
+### 3. Lead: Fable 5.2 (2026-11-09)
+- Source: [guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-2), [model config](https://code.claude.com/docs/en/model-config).
+- Says: `fable` now means Fable 5.2. Subagents with no pinned model take the session's. The guide: subagents "can account for a large part of what a session costs".
+- Why: the coordinator runs Opus at `max`. Plan and general-purpose agents (12 ledger runs) are unpinned and would follow a switch to Fable.
+- Proposal: none now. Before any switch, pin their model (`CLAUDE_CODE_SUBAGENT_MODEL`, not read in detail).
+- Cost: none.
+
+**Checked, nothing new:** Hacker News; Reddit (blocked for search); the engineering blog's one new item, [The components of agent memory](https://www.anthropic.com/research/components-of-agent-memory) (11-06), not read; the 11-14 decision stands until it is.
