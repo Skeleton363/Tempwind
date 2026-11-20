@@ -23,6 +23,7 @@ import { RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_FLAG_SHARED_MEMORY } from '
 
 const PROGRAMS = ['hello', 'l2_int', 'l2_crt', 'l2_float'];
 const NATIVE = new URL('../native/', import.meta.url);
+const PROGRAM_DLLS = ['ntdll.dll', 'kernel32.dll', 'kernelbase.dll', 'msvcrt.dll'].map((n) => `/wine/lib/wine/x86_64-windows/${n}`);
 
 const dirs = wineDirs();
 const inputs = await loadWineInputs(dirs); // compiled once; each program gets its own instance
@@ -57,6 +58,12 @@ for (const name of PROGRAMS) {
     const lines = out.stderr.split('\n').filter((l) => l.startsWith('tempwind:'));
     assert.deepEqual(lines, [], out.stderr);
     assert.equal(error, undefined, `the process stopped: ${error?.message}\n${out.stderr}`);
+    // Every image mapped links its AOT module (wine-build.md, "The catalog"):
+    // the program and the four DLLs each of these programs loads (closure.json;
+    // apisetschema is data). Run-time translations stay allowed: they cover
+    // code the AOT pass didn't find, such as jump-table targets.
+    assert.deepEqual(s.imageFallbacks, [], 'an image mapped without its AOT module');
+    assert.deepEqual(s.aot.map((a) => a.path).sort(), [proc.programPath, ...PROGRAM_DLLS].sort());
     const expected = readFileSync(new URL(`${name}.expected`, NATIVE), 'utf8').replace(/\n/g, '\r\n');
     assert.equal(out.stdout, expected);
     const code = new URL(`${name}.exitcode`, NATIVE);
