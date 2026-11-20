@@ -635,16 +635,15 @@ The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarte
     - the `abi.h`↔`abi.mjs` Node test (54 constants).
   - **What WP2 found:**
     - abi.md's tombstone sentence was wrong. A transfer to `LOOKUP_TOMBSTONE` hits a tombstone only when one lies on its probe path; otherwise it misses, and the run loop stops. It stops loudly either way, and abi.md now says so (`3035af6`).
-    - The load plan's options drop `--shared`, while abi.md (L262) has the runtime pass a plan's options as the request flags. WP2 is adding `sharedMemory` as a follow-up.
+    - The load plan's options dropped `--shared`, while abi.md (L262) has the runtime pass a plan's options as the request flags. WP2's follow-up adds `sharedMemory` (runtime.md first, `420e541`; code `ed0543c`; `requestFlags` in `process.mjs`), merged as `41360d2` after the coordinator reran the tests it touches. WP2 is done.
 - **Running:**
-  - WP2's follow-up, on `m3-wp2-wip`;
   - WP4, resumed with its four items after merging the PR branch;
   - WP3, a new deep-worker on `m3-wp3-wip` from `ee7884f`. Until WP5 writes the run loop, its `programs.test.mjs` asserts the furthest real point: the run loop's loud stop, with every image mapped so far linked from the catalog.
 - **Next:**
   - on each report: review, verify, merge, ledger line, checkpoint;
   - tell WP3 when WP4 merges, since its programs test needs the catalog builder;
   - WP5 after WP3; WP6 after WP5's hello and WP4.
-- **Disk:** 11 GB free after deleting rebuildable outputs. WP2's `target/` (12 GB) goes once its follow-up merges.
+- **Disk:** 20 GB free once the merged worktrees' `target/` directories were deleted (WP2's held 12 GB).
 
 ## What works
 
