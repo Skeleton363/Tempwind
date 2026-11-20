@@ -514,11 +514,11 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
 
 | WP | Agent | When | Owns | Done when |
 |---|---|---|---|---|
-| WP1: dispatchers and contexts (C) | deep-worker | after the contracts | `signal_wasm64.c` (in run mode `signal_start_thread` calls `tw_run_loop`), `run.c` as a loud stub (it passes to WP5 at the merge), the wrapper generator and its step in `build.sh`, `+syscall` tracing, patches 0102 and 0201 (`TW_IMAGE_RANGE_END`), 0104 (top-down) and 0301 (dispatcher addresses, edited in place), the virtual backend's `tw_image_mapped` and `tw_invalidate` calls, `tests/syscall.c` and `tests/wine/syscall.test.mjs`, the `section`, `virtual` and `boot` harness updates | the three gates; `test:wine` with `syscall` checks on synthetic state blocks (register and stack args with ≥ 7 arguments, the variant entries, a bad id, a stub's loud stop, `NtContinue` returning UNWIND with the full state, a Get/Set round trip with x87 and XMM, a unix call, KUSER's clock advanced), the top-down check, the `PROCESSOR_*` and `XState` checks |
-| WP2: translator side | deep-worker | after the contracts (small) | `crates/x64wasm` (the rep-range store check; the bridge: `run`, the placeholder, `depth_get`, `depth_set`), `crates/x64wasm-cli` (`translate-pe --shared` if missing, `bridge`), `crates/x64wasm-rt` (a shared-memory flag), the `abi.mjs`↔`abi.h` Node test, L5 snapshots | a rep store check over three or more pages that fails on the old lowering; bridge tests; replay 100 %; `test:node` |
-| WP3: JS host | deep-worker | after WP2 merges | `runtime/src/wine/*` (memory, table, depth, bridge, the Linker in the host region, host functions and slots, `tw_translate`, image notifications and the catalog, `tw_invalidate`, `PAGE_CODE`, FIFO stdio, lazy nodes, chdir, scheduler, exit code), `runtime/src/link.mjs` (injected table, depth and header; tombstones; invalidate), `run-wine.mjs`, `tests/wine/programs.test.mjs`, `boot.test.mjs` | unit tests: invalidate (the whole-module rule, rehash), catalog hit and fallback, a lazy node's stat before its first read in Node, FIFO `fstat`; `test:node` unchanged; `programs.test.mjs` wired |
-| WP4: packaging and CI | builder | after the contracts; the catalog step after WP2 | the LGPL rebase crate under `native/wine/`, packing and `rebase.json`, the catalog builder and the boot-set manifest, `tests/wine/prepare.sh`, `.github/workflows/wine-unix.yml` (catalog gate, programs test, path triggers), `docs/dev/commands.md` | rebase tests (every DIR64 target moves by the delta; otherwise only header fields change); the whole closure's catalog builds and compiles in V8 locally under the job's shell; green in CI |
-| WP5: run path and first light | deep-worker | after WP1 and WP3 merge | `run.c` (`tw_run_loop`), `boot.c` (run mode, the exit longjmp, the depth reset), `green.c` (depth), the exit-hook patch 0302; then integration fixes in `native/wine/**` and `runtime/src/wine/**`, with `/diverge` against native Wine (`+relay`, `+syscall`, `+loaddll`); translator defects go to the coordinator, fixtures first | hello.exe, then the three L2 programs, pass `programs.test.mjs` in Node with both checks; boot-to-exit time, AOT hits and fallbacks and bytes loaded measured |
+| WP1: dispatchers and contexts (C) (merged, `c67bc06`) | deep-worker | after the contracts | `signal_wasm64.c` (in run mode `signal_start_thread` calls `tw_run_loop`), `run.c` as a loud stub (it passes to WP5 at the merge), the wrapper generator and its step in `build.sh`, `+syscall` tracing, patches 0102 and 0201 (`TW_IMAGE_RANGE_END`), 0104 (top-down) and 0301 (dispatcher addresses, edited in place), the virtual backend's `tw_image_mapped` and `tw_invalidate` calls, `tests/syscall.c` and `tests/wine/syscall.test.mjs`, the `section`, `virtual` and `boot` harness updates | the three gates; `test:wine` with `syscall` checks on synthetic state blocks (register and stack args with ≥ 7 arguments, the variant entries, a bad id, a stub's loud stop, `NtContinue` returning UNWIND with the full state, a Get/Set round trip with x87 and XMM, a unix call, KUSER's clock advanced), the top-down check, the `PROCESSOR_*` and `XState` checks |
+| WP2: translator side (merged, `7bbb63a`, follow-up `41360d2`) | deep-worker | after the contracts (small) | `crates/x64wasm` (the rep-range store check; the bridge: `run`, the placeholder, `depth_get`, `depth_set`), `crates/x64wasm-cli` (`translate-pe --shared` if missing, `bridge`), `crates/x64wasm-rt` (a shared-memory flag), the `abi.mjs`↔`abi.h` Node test, L5 snapshots | a rep store check over three or more pages that fails on the old lowering; bridge tests; replay 100 %; `test:node` |
+| WP3: JS host (merged, `272fa1f`) | deep-worker | after WP2 merges | `runtime/src/wine/*` (memory, table, depth, bridge, the Linker in the host region, host functions and slots, `tw_translate`, image notifications and the catalog, `tw_invalidate`, `PAGE_CODE`, FIFO stdio, lazy nodes, chdir, scheduler, exit code), `runtime/src/link.mjs` (injected table, depth and header; tombstones; invalidate), `run-wine.mjs`, `tests/wine/programs.test.mjs`, `boot.test.mjs` | unit tests: invalidate (the whole-module rule, rehash), catalog hit and fallback, a lazy node's stat before its first read in Node, FIFO `fstat`; `test:node` unchanged; `programs.test.mjs` wired |
+| WP4: packaging and CI (merged, `30dcc06`) | builder | after the contracts; the catalog step after WP2 | the LGPL rebase crate under `native/wine/`, packing and `rebase.json`, the catalog builder and the boot-set manifest, `tests/wine/prepare.sh`, `.github/workflows/wine-unix.yml` (catalog gate, programs test, path triggers), `docs/dev/commands.md` | rebase tests (every DIR64 target moves by the delta; otherwise only header fields change); the whole closure's catalog builds and compiles in V8 locally under the job's shell; green in CI |
+| WP5: run path and first light (merged, `c093cbc`) | deep-worker | after WP1 and WP3 merge | `run.c` (`tw_run_loop`), `boot.c` (run mode, the exit longjmp, the depth reset), `green.c` (depth), the exit-hook patch 0302; then integration fixes in `native/wine/**` and `runtime/src/wine/**`, with `/diverge` against native Wine (`+relay`, `+syscall`, `+loaddll`); translator defects go to the coordinator, fixtures first | hello.exe, then the three L2 programs, pass `programs.test.mjs` in Node with both checks; boot-to-exit time, AOT hits and fallbacks and bytes loaded measured |
 | WP6: browser | builder | after WP5's hello passes and WP4 merges | `tests/browser/wine-hello.spec.mjs` and its worker, `server.mjs`, a step in `wine-unix.yml` | hello.exe matches in a Chromium Worker, locally and in CI |
 
 - **Hand-offs:** `run.c` passes from WP1 to WP5 at WP1's merge. `library.js`, `imports.txt`, `config.h`, `stubs.c`, `rename-server.h` and `tempwind_private.h` take appended lines from any package, each with its reason.
@@ -737,12 +737,49 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
   - **Result:** with WP5's narrower local version, hello.exe already matched `hello.expected` and native Wine byte for byte, exiting 0 with no `tempwind:` line. WP5's figures, to be checked at the merge: 1,339 ms to exit, 5 AOT links, 0 image fallbacks, 11 run-time translations, 12 lazy files and 9.57 MB.
 - **No `\KnownDlls` until M4:** the wineboot skip creates none, so a KnownDll in a program's own directory would win over system32's, which natively it doesn't. This is recorded in section 8; no M3 program ships one.
 - **After the compaction (23:00 UTC):**
-  - `get_session` read 328,732 tokens (32.9 %), probably still the pre-compaction figure, since the reading lags. It is read again at WP5's merge.
+  - `get_session` read 328,732 tokens (32.9 %). That was still the pre-compaction figure: the reading lags, and at WP5's merge it read 188,089.
   - Session: $98.13 and 249.6M cache reads.
   - The seven-day rate limit shows a warning again; it resets at 01:00 UTC on 2026-11-21.
+- **WP5 merged (`c093cbc`, 23:25 UTC):** WP5 ran for 17 minutes and reported at 23:10.
+  - **What it did:**
+    - the run loop (`run.c`);
+    - run mode's exit status through the exit longjmp, with `depth` reset after it (`boot.c`);
+    - `depth` in `green_switch`'s save set;
+    - patch 0106, `tw_exec_range`: the run of committed executable pages around rip in its view, which `tw_translate` gets;
+    - patch 0302, the exit hook;
+    - the install copies;
+    - the programs test's real assertions.
+  - **The review:**
+    - the code matches the contracts;
+    - the Wine lines its patch headers cite are right;
+    - its rewrite of `programs.test` had dropped the old catalog assertions. The coordinator restored them in a stronger form (`360efec`): no image fallbacks, and the AOT links are exactly the program, ntdll, kernel32, kernelbase and msvcrt. Run-time translations stay allowed.
+  - **Rerun on the merge candidate:**
+    - `build.sh` with its four gates (18 s, 13 patches);
+    - `test:wine` 33 of 33;
+    - `test:node` 265 of 265, in WP5's worktree, which has the spike and `pe`/`native` inputs;
+    - by hand, `run-wine.mjs target/wine/hello.exe` printed `hello.expected` as CRLF byte for byte, exited 0 and printed no `tempwind:` line.
+  - **Measured** with `run-wine.mjs --stats`, one process per program:
+
+    | Program | Boot to exit | Status | Run-time translations |
+    |---|---|---|---|
+    | hello | 385 ms | 0 | 11 |
+    | l2_int | 370 ms | 0 | 9 |
+    | l2_crt | 400 ms | 0x25 (37) | 17 |
+    | l2_float | 386-433 ms | 0x17 (23) | 16 |
+
+    - Each program has 5 AOT links, no image fallbacks, and 12 lazy files loaded, 9,571,573 bytes.
+    - The run-time translations cover code the AOT pass didn't find. WP5 checked one, ntdll+0x60b5f, a switch target in `pf_vsnprintf_a`: that is the known jump-table limit.
+    - The counts were stable over three runs. WP5 reported 15 for l2_float.
+  - **Known issue, a Wine fixme on stderr at every start:** "fixme:file:get_device_info device info not properly supported on this platform".
+    - `server_init_process_done` (`dlls/ntdll/unix/server.c` L1739) asks for the device info of the start directory.
+    - Our build defines no `linux`, so a directory takes the other-platform branch (`unix/file.c` L7308-7311). That branch sets the same `FILE_DEVICE_DISK_FILE_SYSTEM` that native Linux sets for a disk, and warns once.
+    - Only the line differs from native. A patch with an Emscripten branch would remove it; it is deferred, since no test compares stderr beyond `tempwind:` lines.
+  - **Not covered yet:**
+    - no test checks `depth` across `green_switch`; M4's two-thread test is meant to;
+    - WP1's three open questions never came up, because no divergence pointed at them.
+  - **Checkpoint:** 188,089 tokens (18.8 %). Session: $104.71 and 267.8M cache reads.
 - **Next:**
-  - on WP5's report: review, rerun the checks on the merge candidate, merge, ledger line, checkpoint;
-  - WP6 after WP5's hello passes;
+  - WP6 (builder), hello.exe in a Chromium Worker. Its contract comes first: how a browser host gets the prefix's listing;
   - then `/milestone-close`.
 
 ## What works
@@ -850,7 +887,7 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
 
 ## Next step: M3, "Boot: hello.exe on Wine", in a new session
 
-**M3 is under way: WP1 to WP4 are merged, and WP5 has run since 22:50 UTC on 2026-11-20.** Its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. The current state is in "M3 progress (paused 2026-11-20)", its "How to resume" and "Second resume", not in the start below.
+**M3 is under way: WP1 to WP5 are merged (hello.exe and the three L2 programs match native on Wine in Node), and WP6, the browser, is next.** Its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. The current state is in "M3 progress (paused 2026-11-20)", its "How to resume" and "Second resume", not in the start below.
 
 **Start:** read `docs/plan.md` ("Phase 2 milestones", M3), this note's M2 section ("Decisions taken when planning M2", "Second resume", "The close"), `ARCHITECTURE.md`, `docs/design/wine-unix.md` (v1 with M2's amendments) and `abi.md` v5. Then do the research pass into `docs/dev/research.md`. M2's retro (`docs/dev/agent-runs.md`) has a lead for it: give the source reading to a subagent, since planning M2 took 27.5M of the coordinator's 112.8M cache reads, at 313k a request.
 
