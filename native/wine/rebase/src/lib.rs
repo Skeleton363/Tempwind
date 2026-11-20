@@ -19,9 +19,9 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// `TW_IMAGE_RANGE_END`: the first base of the DLLs that keep their own.
+/// The first base of the DLLs that keep their own: the packing starts below it.
 pub const RANGE_END: u64 = 0x1_7000_0000;
-/// The packing fails below this base.
+/// `TW_IMAGE_RANGE_END` (native/wine/include/tempwind/abi.h): the packing fails below this base.
 pub const RANGE_START: u64 = 0x1_6000_0000;
 /// Modules that keep their bases (and `apisetschema.dll`, which is data).
 pub const KEEP: [&str; 4] = [
@@ -695,6 +695,25 @@ mod tests {
                 .to_string()
                 .contains("big.dll")
         );
+    }
+
+    /// The packing's lower bound is the ABI's `TW_IMAGE_RANGE_END`, read from the header file
+    /// only (the crate depends on none of ours).
+    #[test]
+    fn range_start_is_the_abi_headers_image_range_end() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../include/tempwind/abi.h");
+        let text = std::fs::read_to_string(path).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("#define TW_IMAGE_RANGE_END"))
+            .expect("abi.h defines TW_IMAGE_RANGE_END");
+        let value = line
+            .split("UINT64_C(")
+            .nth(1)
+            .and_then(|r| r.split(')').next())
+            .unwrap();
+        let value = u64::from_str_radix(value.trim_start_matches("0x"), 16).unwrap();
+        assert_eq!(value, RANGE_START);
     }
 
     #[test]

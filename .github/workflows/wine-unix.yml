@@ -98,15 +98,12 @@ jobs:
           sudo apt-get install -y -qq zstd gcc-mingw-w64-x86-64
           tests/wine/prepare.sh
 
-      # The catalog gate (docs/design/wine-build.md, "Where it is built"): the
-      # whole closure rebased and verified, translated with the shared-memory
+      # The catalog gate (docs/design/wine-build.md, "Where it is built"): prepare.sh
+      # rebased and verified the whole closure; this translates it with the shared-memory
       # options, and every module compiled in V8. A failure names the file.
-      - name: Catalog gate (rebase, verify, translate the whole closure, compile in V8)
+      - name: Catalog gate (translate the whole closure, compile in V8)
         run: |
           set -euo pipefail
-          t=target/wine
-          target/release/pe-rebase --tree $t/pe --closure $t/closure.json --out $t/rebased
-          target/release/pe-rebase --verify --tree $t/pe --closure $t/closure.json --out $t/rebased
           node tests/wine/catalog.mjs --all
           node tests/wine/catalog.mjs --check --all
 
