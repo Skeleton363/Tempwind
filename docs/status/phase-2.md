@@ -531,6 +531,7 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
   - Writing the contracts cost the most. It took many turns at a large context, reading the docs and Wine's lines, so about 65M cache reads.
   - A compaction was asked for.
 - **At the owner's pause:** 101,742 tokens (10.2 %) after the second compaction. The whole session, agents included, cost $52.90 and 138.2M cache reads.
+- **After WP1's merge (2026-11-20):** 193,840 tokens (19.4 %); $63.06 and 156.6M cache reads for the whole session.
 
 ### Progress (2026-11-14)
 - **Pushed to the PR branch:**
@@ -605,6 +606,23 @@ The owner paused M3 at 20:15 UTC, when the five-hour rate limit read `allowed_wa
      - WP6 after WP5's hello and WP4.
   4. For each report: review the diff against the contracts, merge it into the PR branch, log its ledger line, and checkpoint.
 - **Ledger:** the three runs' segments up to the pause and a `main` snapshot are logged. Transcripts live only as long as the container, so they couldn't wait.
+
+### Resumed (2026-11-20)
+The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarted, but its disk survived, so WP1 and WP2 were messaged and kept their context.
+- **WP1 is merged** (`c67bc06`, from `35e2f08`).
+  - **Checks:** the coordinator rebuilt the final commit. The four build gates pass (258 syscalls, 6 of them stubs), and `test:wine` passes 16 of 16, the `syscall` checks included.
+  - **Patches:**
+    - 0104 adds the top-down ceiling;
+    - 0105 calls `tw_image_mapped` from `virtual_map_image`;
+    - 0301 also gives the unix-call dispatcher ntdll's table (`tw_unix_call_funcs`, `tw_unix_call_count`).
+
+    `tw_invalidate` is called from the backend, `virtual_wasm.c`, with no patch.
+  - **Run mode:** `tw_boot_flags`, set by `boot`, picks it in `signal_start_thread`. `tw_run_loop` stays WP5's loud stub.
+  - **Open questions from WP1's report**, not checked against Wine 11 yet (for WP5's `/diverge`, if they matter):
+    - which values `NtGetContextThread` should return for RCX, RDX and R8-R11 during a syscall (ours: the values at entry);
+    - MXCSR's reserved bits in a context: we mask them, where an `fxrstor` would fault;
+    - RAX's upper half after a syscall: we zero-extend the 32-bit status.
+  - **`TW_NO_DISPATCHER`** has no use left. The coordinator removes it after WP2 merges, since WP2 edits `abi.rs`.
 
 ## What works
 
