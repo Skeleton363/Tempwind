@@ -649,12 +649,20 @@ The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarte
     - `tests/wine/catalog.mjs`, which writes the catalog and the boot-set manifest;
     - `prepare.sh`'s packaging step;
     - the workflow's catalog gate, plus path triggers for `crates/x64wasm*` and `tests/native/**`.
+- **boot's run mode** (`e53700d`, by the coordinator):
+  - **The problem,** from WP3: `boot` still refused flags 0, so run mode never reached `tw_run_loop`.
+  - **The fix:** `boot` now accepts 0, as `wine-unix.md` section 8 (L210) specifies. Any value other than 0 or 1 stops loudly.
+  - **Checks:** a scratch boot of hello.exe with flags 0 stops at "tw_run_loop (M3 WP5)". The gates pass, and `test:wine` passes 16 of 16.
+  - **Who owns `boot.c`:** it stays WP5's, apart from this line.
 - **Running:** WP3, a new deep-worker on `m3-wp3-wip` from `ee7884f`, which since merged `41360d2`. It was told to merge `30dcc06` for the catalog builder. The shared `target/wine` holds the whole closure's catalog from the merged code. Until WP5 writes the run loop, its `programs.test.mjs` asserts the furthest real point: the run loop's loud stop, with every image mapped so far linked from the catalog.
 - **Next:**
   - on WP3's report: review, verify, merge, ledger line, checkpoint;
   - WP5 after WP3 (WP1 is merged);
   - WP6 after WP5's hello (WP4 is merged).
-- **CI:** `wine-unix` passed at `ee7884f`, which contains WP1's and WP2's merges, in about 3 minutes. The earlier run at `c67bc06` has sat in its prepare step since 15:09 UTC and was still running at 15:30. The job's timeout is 60 minutes. Its log will say which command hung; the native Wine run in `prepare.sh` has no timeout of its own.
+- **CI (`wine-unix`):**
+  - **At `ee7884f`,** which contains WP1's and WP2's merges, it passed in about 3 minutes.
+  - **At WP4's merge `30dcc06`** it passed in 2.5 minutes, catalog gate included. The gate step took 3 s. Its `--check --all` fails on any closure file missing from the catalog, so the pass covers the whole closure. The log's tail doesn't reach the gate's own lines, and the full log's host is blocked by the session's proxy.
+  - **At `c67bc06`** the run has sat in its prepare step since 15:09 UTC and was still running at 15:35. The job's timeout is 60 minutes. Its log will say which command hung; the native Wine run in `prepare.sh` has no timeout of its own.
 - **Disk:** 20 GB free once the merged worktrees' `target/` directories were deleted (WP2's held 12 GB).
 
 ## What works

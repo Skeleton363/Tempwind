@@ -19,7 +19,10 @@
 #    (native/wine/rebase, then its --verify), writes target/wine/bridge.wasm
 #    (x64wasm-cli bridge) and runs tests/wine/catalog.mjs: catalog/ (an AOT
 #    module per PE file) and boot-set.json. The catalog covers the modules the
-#    test programs load; --all covers the whole closure.
+#    test programs load; --all covers the whole closure. It also builds the
+#    run-time translator and the floating-point helper for wasm32
+#    (target/wasm32-unknown-unknown/release/x64wasm_{rt,fp}.wasm), which the
+#    Wine processes of test:wine load.
 #
 # Needs curl, zstd, tar, x86_64-w64-mingw32-gcc, cargo, node; Docker for build.sh.
 set -euo pipefail
@@ -101,6 +104,7 @@ fi
 tests/native/build.sh >/dev/null
 for p in hello l2_int l2_crt l2_float; do cp "target/native/$p.exe" "$out/$p.exe"; done
 cargo build -q --release -p pe-rebase -p x64wasm-cli
+cargo build -q --release -p x64wasm-rt -p x64wasm-fp --target wasm32-unknown-unknown
 target/release/pe-rebase --tree "$out/pe" --closure "$out/closure.json" --out "$out/rebased"
 target/release/pe-rebase --verify --tree "$out/pe" --closure "$out/closure.json" --out "$out/rebased"
 target/release/x64wasm bridge --out "$out/bridge.wasm"
