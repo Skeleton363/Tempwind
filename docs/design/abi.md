@@ -74,7 +74,7 @@ Translated code reads the header on every probe.
 **Host rules:**
 - Keep `2 * used <= mask + 1`. To grow, build a new slot array with only the live keys, then update `slots` and `mask`. Growing drops the tombstones.
 - **Removing a key** (v5, code invalidation) turns its slot into a tombstone: key `LOOKUP_TOMBSTONE` (`0xDEAD_0000_0000_0001`), func `TOMBSTONE_INDEX`, entry 0. The probe passes over it, since it misses only on key 0, so translated code doesn't change. `used` keeps counting the slot until the next growth; a host that needs the number of live keys keeps it separately.
-  - The tombstone key is non-canonical and is neither `NO_RET` nor `NO_DISPATCHER`. A transfer to that exact address hits the slot and stops ("Wine boundary", "The bridge"). On x86-64 a jump to a non-canonical address raises #GP anyway.
+  - The tombstone key is non-canonical and is not `NO_RET`. A transfer to that exact address stops loudly either way. If a tombstone lies on its probe path, the probe hits it and the tombstone's function stops ("Wine boundary", "The bridge"). Otherwise the probe misses, and the run loop, which finds no executable view at a non-canonical address, stops ("Who calls whom"). On x86-64 a jump to a non-canonical address raises #GP anyway.
   - A removed key may be inserted again later. The insert reuses the first tombstone on its probe path or the empty slot that ends it.
 - Guest threads stay cooperative until Phase 4, so no locking.
 - Address 0 is never a key: the NULL region holds no code.
@@ -481,7 +481,6 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
   - the lookup: the header offsets, the slot size, `TW_LOOKUP_HASH_MUL`, `TW_LOOKUP_HASH_SHIFT`, and an inline `tw_lookup_hash(key, mask)` equal to `abi::lookup_hash`;
   - `TW_NO_RET`, `TW_SENTINEL_RET`, `TW_NULL_LIMIT` and `TW_MAX_MEMORY_PAGES`;
   - the CPU profile: `TW_CPUID_LEAVES`, an initializer of `{ leaf, eax, ebx, ecx, edx }` rows from the table the translator's `cpuid` returns (`instruction-scope.md`, "`cpuid` results"), with `TW_CPUID_LEAF_COUNT`; `TW_MXCSR_MASK`, the value the translator's `fxsave` stores (0xFFFF); `TW_XCR0` (3);
-  - `TW_NO_DISPATCHER` = 0xDEAD_0000_0000_0000, M2's non-canonical poison value for the host-pointer slots in ntdll.dll. A guest call through it misses the lookup, and translating a non-canonical address stops loudly. From M3 the slots hold the dispatcher addresses, and the constant goes with its last use;
   - from M3:
     - `TW_SYSCALL_DISPATCHER` (0x7ffe_1100) and `TW_UNIX_CALL_DISPATCHER` (0x7ffe_1110);
     - `TW_RUN_INDEX` (0), `TW_TOMBSTONE_INDEX` (1) and `TW_TABLE_RESERVED` (2);

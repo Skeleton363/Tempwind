@@ -205,3 +205,65 @@ fn reference_mode_flags_set_the_options() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The memory import of a translated module.
+fn memory_import(wasm: &[u8]) -> wasmparser::MemoryType {
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let wasmparser::Payload::ImportSection(r) = payload.unwrap() {
+            for i in r.into_imports() {
+                if let wasmparser::TypeRef::Memory(m) = i.unwrap().ty {
+                    return m;
+                }
+            }
+        }
+    }
+    panic!("no memory import");
+}
+
+/// `--shared` builds a Wine process's module (`translator.md`, "Wine
+/// processes"): a shared memory64 with a maximum of 16 GiB; `bridge`
+/// writes the bridge module (`abi.md` v5, "The bridge").
+#[test]
+fn shared_modules_and_the_bridge() {
+    let dir = std::env::temp_dir().join(format!("x64wasm-shared-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("tiny.exe");
+    std::fs::write(&exe, minimal_image()).unwrap();
+    for (flags, shared) in [
+        (&[][..], false),
+        (&["--shared", "--null-check", "--store-check"][..], true),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
+            .arg("translate-pe")
+            .arg(&exe)
+            .arg("--out-dir")
+            .arg(&dir)
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let m = memory_import(&std::fs::read(dir.join("tiny.wasm")).unwrap());
+        assert!(m.memory64);
+        assert_eq!(m.shared, shared, "{flags:?}");
+        let max = shared.then_some(x64wasm::abi::MAX_MEMORY_PAGES);
+        assert_eq!(m.maximum, max, "{flags:?}");
+    }
+    let bridge = dir.join("bridge.wasm");
+    let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
+        .arg("bridge")
+        .arg("--out")
+        .arg(&bridge)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&bridge).unwrap(), x64wasm::bridge::module());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

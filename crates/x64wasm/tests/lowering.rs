@@ -51,9 +51,12 @@ fn assert_checks_first(code: &str, prog: &Program, insn: &x64wasm::ir::Insn) {
         .iter()
         .position(Op::has_side_effect)
         .unwrap_or(insn.ops.len());
-    let late = insn.ops[first_effect..]
-        .iter()
-        .any(|op| matches!(op, Op::FaultIf { .. } | Op::MemCheck { .. }));
+    let late = insn.ops[first_effect..].iter().any(|op| {
+        matches!(
+            op,
+            Op::FaultIf { .. } | Op::MemCheck { .. } | Op::PageRangeCheck { .. }
+        )
+    });
     assert!(
         !late,
         "{code}: a check after a side effect\n{}",
@@ -309,6 +312,8 @@ fn memory_checks_come_before_side_effects() {
         ("58", true, false),         // pop rax
         ("ff33", true, true),        // push qword [rbx]
         ("8f03", true, true),        // pop qword [rbx]
+        ("8f4144", true, true),      // pop qword [rcx+0x44]
+        ("8f442408", true, true),    // pop qword [rsp+8]
         ("e800000000", false, true), // call rel32
         ("ff13", true, true),        // call [rbx]
         ("c3", true, false),         // ret
@@ -353,6 +358,12 @@ fn memory_checks_come_before_side_effects() {
                 _ => None,
             })
             .collect();
+        // A `rep` range's store check tests every page it covers.
+        let range = insn
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::PageRangeCheck { .. }));
+        assert_eq!(range, code.starts_with("f3") && writes, "{code}: range");
         // A check reported as a read exists exactly when the instruction
         // reads bytes it doesn't also write. A read-modify-write of the same
         // bytes keeps one check, reported as a write as x86 reports the fault
@@ -367,15 +378,15 @@ fn memory_checks_come_before_side_effects() {
             prog.dump()
         );
         assert_eq!(
-            kinds.iter().any(|k| k.2),
+            kinds.iter().any(|k| k.2) || range,
             writes,
             "{code}: store checks\n{}",
             prog.dump()
         );
         // Every access checks NULL; a check reported as a write tests the
-        // page byte.
+        // page byte, or the range check tests its pages.
         assert!(
-            kinds.iter().all(|&(w, null, c)| null && (!w || c)),
+            kinds.iter().all(|&(w, null, c)| null && (!w || c || range)),
             "{code}: check kinds\n{}",
             prog.dump()
         );
@@ -385,7 +396,7 @@ fn memory_checks_come_before_side_effects() {
             !plain.blocks[0].insns[0]
                 .ops
                 .iter()
-                .any(|op| matches!(op, Op::MemCheck { .. })),
+                .any(|op| matches!(op, Op::MemCheck { .. } | Op::PageRangeCheck { .. })),
             "{code}: a check with the options off"
         );
     }

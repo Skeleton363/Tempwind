@@ -10,9 +10,9 @@
 //! with a message.
 
 use x64wasm::abi::{
-    RT_FLAG_COUNTERS, RT_FLAG_NULL_CHECK, RT_FLAG_REFERENCE_LAYOUT, RT_FLAG_STORE_CHECK,
-    RT_FLAG_SYNC_ALL, RT_REQ_CODE_BASE, RT_REQ_CODE_LEN, RT_REQ_CODE_PTR, RT_REQ_ENTRY,
-    RT_REQ_FLAGS, RT_REQ_KNOWN_LEN, RT_REQ_KNOWN_PTR, RT_REQUEST_SIZE,
+    RT_FLAG_COUNTERS, RT_FLAG_NULL_CHECK, RT_FLAG_REFERENCE_LAYOUT, RT_FLAG_SHARED_MEMORY,
+    RT_FLAG_STORE_CHECK, RT_FLAG_SYNC_ALL, RT_REQ_CODE_BASE, RT_REQ_CODE_LEN, RT_REQ_CODE_PTR,
+    RT_REQ_ENTRY, RT_REQ_FLAGS, RT_REQ_KNOWN_LEN, RT_REQ_KNOWN_PTR, RT_REQUEST_SIZE,
 };
 use x64wasm::{CodeRegion, Options};
 
@@ -68,7 +68,8 @@ pub fn handle(mem: &impl Memory, request_ptr: u32) -> Result<Vec<u8>, String> {
         | RT_FLAG_STORE_CHECK
         | RT_FLAG_COUNTERS
         | RT_FLAG_SYNC_ALL
-        | RT_FLAG_REFERENCE_LAYOUT;
+        | RT_FLAG_REFERENCE_LAYOUT
+        | RT_FLAG_SHARED_MEMORY;
     if flags & !all != 0 {
         return Err(format!("unknown flags {flags:#x}"));
     }
@@ -78,6 +79,7 @@ pub fn handle(mem: &impl Memory, request_ptr: u32) -> Result<Vec<u8>, String> {
         counters: flags & RT_FLAG_COUNTERS != 0,
         sync_all: flags & RT_FLAG_SYNC_ALL != 0,
         structured: flags & RT_FLAG_REFERENCE_LAYOUT == 0,
+        shared_memory: flags & RT_FLAG_SHARED_MEMORY != 0,
         ..Options::default()
     };
     if code_base.checked_add(code_len.into()).is_none() {

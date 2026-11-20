@@ -87,4 +87,7 @@ int tw_msync( void *addr, size_t len, int flags );
 void *tw_page_flags( void );
 void tw_page_watch( const void *addr, size_t size, int on );
 
+/* boot.c (section 8): boot's flags, 0 (run) or BOOT_STOP_AT_ENTRY (1). */
+extern int tw_boot_flags;
+
 #endif /* TEMPWIND_PRIVATE_H */

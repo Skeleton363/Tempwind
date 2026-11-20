@@ -23,8 +23,8 @@ the signals and main_loop don't run.
   does, and creates the process (msg_fd: a pipe's read end) and its first
   thread as master_socket_poll_event does.
 - Memory (server/mapping.c): init_memory uses 4 KiB pages and ranges64
-  [0x1_0000_0000, 0x1_7000_0000) (section 4); the server's KUSER pointer
-  is 0x7ffe0000.
+  [0x1_0000_0000, TW_IMAGE_RANGE_END) (section 4; abi.h, which file.h's
+  Tempwind block includes); the server's KUSER pointer is 0x7ffe0000.
 - Timeouts (server/fd.c, server/registry.c): inproc_server_next_timeout
   and inproc_server_run_timeouts for the scheduler's entries; the next
   timeout skips the registry's periodic save.
@@ -211,13 +211,15 @@ diff --git a/server/fd.c b/server/fd.c
 diff --git a/server/file.h b/server/file.h
 --- a/server/file.h
 +++ b/server/file.h
-@@ -304,4 +304,21 @@
+@@ -304,4 +304,23 @@
  #define FILE_MAPPING_WRITE  0x40000000  /* set for writable shared mappings */
  #define FILE_MAPPING_ACCESS 0x20000000  /* set for all mappings */
  
 +#ifdef __EMSCRIPTEN__
 +/* Tempwind: the server inside the process (native/wine/src/inproc.c;
 + * docs/design/wine-unix.md, section 7). */
++
++#include "tempwind/abi.h"  /* TW_IMAGE_RANGE_END (section 4) */
 +
 +/* defined here, in the server */
 +extern void inproc_server_init( int msg_fd );
@@ -242,10 +244,10 @@ diff --git a/server/mapping.c b/server/mapping.c
  {
 +#ifdef __EMSCRIPTEN__
 +    /* Tempwind (wine-unix.md, sections 4 and 7): the guest's 4 KiB pages, not
-+     * wasm's 64 KiB ones; ranges64 is [0x1_0000_0000, 0x1_7000_0000). */
++     * wasm's 64 KiB ones; ranges64 is [0x1_0000_0000, TW_IMAGE_RANGE_END). */
 +    host_page_mask = 0xfff;
 +    free_map_addr( 0x60000000, 0x1c000000 );
-+    free_map_addr( 0x100000000, 0x70000000 );
++    free_map_addr( 0x100000000, TW_IMAGE_RANGE_END - 0x100000000 );
 +#else
      host_page_mask = sysconf( _SC_PAGESIZE ) - 1;
      free_map_addr( 0x60000000, 0x1c000000 );

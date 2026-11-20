@@ -79,7 +79,8 @@ mod string;
 mod structure;
 mod x87;
 
-use flags::{Known, emit_flags};
+use flags::Known;
+pub(crate) use flags::emit_flags;
 use structure::{Item, Jump, Plan, Sel, Transfer};
 use x87::X87Locals;
 
@@ -148,7 +149,7 @@ mod slot {
     pub const MEM_STORES: u64 = 11;
 }
 
-fn mem(offset: u64) -> MemArg {
+pub(crate) fn mem(offset: u64) -> MemArg {
     MemArg {
         offset,
         align: 0,
@@ -175,6 +176,9 @@ enum Label {
     /// Labels of a string instruction's loop.
     StrDone,
     StrLoop,
+    /// Labels of [`Op::PageRangeCheck`]'s walk over the pages.
+    PagesDone,
+    PagesLoop,
 }
 
 struct ChunkEmitter<'p> {
@@ -548,6 +552,7 @@ impl ChunkEmitter<'_> {
                 code,
                 when,
             } => self.mem_check(f, addr, len, write, null, code, when),
+            Op::PageRangeCheck { lo, hi, when } => self.page_range_check(f, lo, hi, when),
             Op::DivWide {
                 q,
                 r,
@@ -849,6 +854,64 @@ impl ChunkEmitter<'_> {
             f.end();
             self.labels.pop();
         }
+        if when.is_some() {
+            f.end();
+            self.labels.pop();
+        }
+    }
+
+    /// `Op::PageRangeCheck`: walks the page-state bytes from `lo`'s page up
+    /// to `hi`'s, the page index in the scratch local (an
+    /// `EXIT_UNSUPPORTED` site doesn't pass the scratch local to `$fault`).
+    fn page_range_check(
+        &mut self,
+        f: &mut InstructionSink<'_>,
+        lo: Value,
+        hi: Value,
+        when: Option<Value>,
+    ) {
+        if let Some(w) = when {
+            self.value(f, w);
+            f.i64_const(0);
+            f.i64_ne();
+            f.if_(BlockType::Empty);
+            self.labels.push(Label::If);
+        }
+        self.value(f, lo);
+        f.i64_const(abi::PAGE_FLAGS_SHIFT as i64);
+        f.i64_shr_u();
+        f.local_set(L_SCRATCH);
+        f.block(BlockType::Empty);
+        self.labels.push(Label::PagesDone);
+        f.loop_(BlockType::Empty);
+        self.labels.push(Label::PagesLoop);
+        f.global_get(g_page_flags(self.counters));
+        f.local_get(L_SCRATCH);
+        f.i64_add();
+        f.i32_load8_u(mem(0));
+        f.i32_const(i32::from(abi::PAGE_CODE | abi::PAGE_WATCH));
+        f.i32_and();
+        f.if_(BlockType::Empty);
+        self.labels.push(Label::If);
+        self.fault_site(f, SITE_UNSUPPORTED, Value::Imm(0));
+        f.end();
+        self.labels.pop();
+        // The last page tested: done. A wrapped range stops after `lo`'s.
+        f.local_get(L_SCRATCH);
+        self.value(f, hi);
+        f.i64_const(abi::PAGE_FLAGS_SHIFT as i64);
+        f.i64_shr_u();
+        f.i64_ge_u();
+        f.br_if(self.depth(Label::PagesDone));
+        f.local_get(L_SCRATCH);
+        f.i64_const(1);
+        f.i64_add();
+        f.local_set(L_SCRATCH);
+        f.br(self.depth(Label::PagesLoop));
+        f.end();
+        self.labels.pop();
+        f.end();
+        self.labels.pop();
         if when.is_some() {
             f.end();
             self.labels.pop();
@@ -1522,6 +1585,7 @@ fn operands(op: &Op) -> [Option<Value>; 4] {
         Op::Flags { live: false, .. } | Op::FlagsUpdate { live: false, .. } => [None; 4],
         Op::FaultIf { cond, .. } => [Some(cond), None, None, None],
         Op::MemCheck { addr, when, .. } => [Some(addr), when, None, None],
+        Op::PageRangeCheck { lo, hi, when } => [Some(lo), Some(hi), when, None],
         Op::DivWide { hi, lo, d, .. } => [Some(hi), Some(lo), Some(d), None],
         Op::RepString { delta, .. } => [Some(delta), None, None, None],
         Op::VLoad {
@@ -1704,26 +1768,34 @@ fn emit_run(fbase: u32) -> Function {
     f.local_get(D0);
     f.global_set(G_DEPTH);
     // Materialize RFLAGS; STATUS holds the exit reason.
-    f.local_get(STATE);
-    f.local_get(STATE);
-    f.i64_load(mem(abi::STATE_RFLAGS));
-    f.i64_const(!abi::flags::STATUS as i64);
-    f.i64_and();
-    f.local_get(STATE);
-    f.i32_load(mem(abi::STATE_CC_OP));
-    for offset in [abi::STATE_CC_A, abi::STATE_CC_B, abi::STATE_CC_R] {
-        f.local_get(STATE);
-        f.i64_load(mem(offset));
-    }
-    f.call(fbase + F_FLAGS);
-    f.i64_or();
-    f.i64_store(mem(abi::STATE_RFLAGS));
+    materialize_rflags(&mut f, STATE, fbase + F_FLAGS);
     f.local_get(STATE);
     f.local_get(STATUS);
     f.i32_store(mem(abi::STATE_EXIT));
     f.local_get(STATUS);
     f.end();
     func
+}
+
+/// The trampoline's step 3 (`abi.md`, "Trampoline"), also the bridge's
+/// `flags_materialize`: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a,
+/// cc_b, cc_r)` for the state block whose address is in local `state`,
+/// with `flags` (the [`emit_flags`] function) at function index `flags`.
+pub(crate) fn materialize_rflags(f: &mut InstructionSink<'_>, state: u32, flags: u32) {
+    f.local_get(state);
+    f.local_get(state);
+    f.i64_load(mem(abi::STATE_RFLAGS));
+    f.i64_const(!abi::flags::STATUS as i64);
+    f.i64_and();
+    f.local_get(state);
+    f.i32_load(mem(abi::STATE_CC_OP));
+    for offset in [abi::STATE_CC_A, abi::STATE_CC_B, abi::STATE_CC_R] {
+        f.local_get(state);
+        f.i64_load(mem(offset));
+    }
+    f.call(flags);
+    f.i64_or();
+    f.i64_store(mem(abi::STATE_RFLAGS));
 }
 
 /// A module that exports, for testing them against reference models, the
@@ -1987,7 +2059,7 @@ pub fn emit(prog: &Program, part: &Partition, opts: &Options) -> Vec<u8> {
         let t = insns().map(|i| i.temps).max().unwrap_or(0);
         let has_fault = insns()
             .flat_map(|i| i.ops.iter())
-            .any(|o| matches!(o, Op::MemCheck { .. }));
+            .any(|o| matches!(o, Op::MemCheck { .. } | Op::PageRangeCheck { .. }));
         let site_base = insns().map(|i| i.addr).min().unwrap_or(0);
         let vt = insns().map(|i| i.vtemps).max().unwrap_or(0);
         let uses_fp = insns().flat_map(|i| i.ops.iter()).any(Op::is_fp);

@@ -74,7 +74,7 @@ async function start(name) {
 }
 
 const CHECKS = ['rip_ldr_initialize_thunk', 'context_and_state', 'images_at_preferred_bases', 'apiset_map',
-  'registry_values', 'nls_loaded', 'kuser'];
+  'registry_values', 'nls_loaded', 'kuser', 'processor_environment', 'kuser_cpu'];
 
 // The files of the boot set that the boot opens, in the order of their first
 // open (section 10): NLS (init_environment, then the server's

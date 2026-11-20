@@ -1,6 +1,6 @@
 //! Stack: `push`, `pop`, `pushfq`, `popfq`, `enter`.
 
-use iced_x86::Code;
+use iced_x86::{Code, OpKind};
 
 use super::lower::Lower;
 use super::{Flow, Lowered, Unsupported};
@@ -37,9 +37,18 @@ impl Lower<'_> {
         }
         let v = self.load(Width::W64, Value::Reg(RSP));
         let sp = self.bin(BinOp::Add, Value::Reg(RSP), Value::Imm(8));
-        self.set_reg(RSP, sp);
-        // A memory destination's address uses RSP after the increment.
-        self.write(0, Width::W64, v)?;
+        if self.insn.op_kind(0) == OpKind::Memory {
+            // A memory destination's address uses RSP after the increment
+            // (SDM, POP). It is computed, checked and stored before RSP
+            // changes, so a check that stops leaves the state unchanged.
+            self.ea_rsp = Some(sp);
+            self.write(0, Width::W64, v)?;
+            self.set_reg(RSP, sp);
+        } else {
+            // `pop rsp` loads RSP last.
+            self.set_reg(RSP, sp);
+            self.write(0, Width::W64, v)?;
+        }
         Ok(Flow::Next)
     }
 }

@@ -307,6 +307,29 @@ Trial 6's lead was applied: three Explore runs read the sources, one Plan run re
 ### Workflow
 - **Claude Code 2.1.325:** subagents cut off at the output limit are asked again more briefly; plan-mode fixes. Leads only: no measured cost of ours. Not adopted.
 - **Trial 6's lead, measured:** the planning stretch cost $14.31 and 32.9M cache reads, of which the four agents read 24.2M, so the coordinator read about 8.7M, against 27.5M for M2's planning. Its context was 373,677 tokens at the plan's approval (M2: 483,687).
+- **Caveman** (`JuliusBrussee/caveman` v4.1, Apache-2.0), looked at on the owner's request. Only its README was read, through raw.githubusercontent.com; nothing was installed or cloned.
+  - **What it is:**
+    - a voice that shortens the agent's prose;
+    - a local proxy that compresses tool output before the model reads it;
+    - "Auto", which picks model and effort per request through its cloud;
+    - "Blocks", reusable scripts;
+    - a compressor for memory files such as `CLAUDE.md`.
+  - **Not adopted, because it can't run here:**
+    - The plugin and the skill install from its GitHub repository, which sessions can't reach.
+    - The proxy must sit between Claude Code and the API, which a managed cloud session doesn't allow.
+    - The CLI sends telemetry by default, and Auto sends prompts and attached files to its cloud. Our private-data rule rules that out without the owner's approval.
+  - **Not adopted, because it targets a small part of our spend.** By the ledger's weights (input 1, cache read 0.1, cache write 1.25, output 5):
+    - Output is 17.3 % of the agents' spend (76 runs) and 28.7 % of this coordinator session's ($18.40 at the contracts).
+    - In this session's transcript, the visible text is 4.3 % of the output's characters and tool input (contracts, briefs, edits) 94.7 %. Thinking isn't stored there: text and tool input come to about 80k of the 446,638 output tokens, so the rest, about 82 %, is presumably thinking at max effort.
+    - So the voice could save well under 1 % of the coordinator's output. Its own figures on Opus 5.5: `/caveman` gives 3 % fewer output tokens than "Answer concisely.".
+    - Its rules add about 1,160 input tokens per request. Over this session's 503 requests, read from the cache, that is about 0.75 % of the spend: more than the voice could save.
+  - **Ideas we already have:**
+    - narrow reads and short command output (`CLAUDE.md`);
+    - model and effort tiers per agent (`.claude/agents/`);
+    - our own ledger in place of `caveman learn`;
+    - scripts in `scripts/`;
+    - the one-hour cache TTL.
+  - **The one lead that maps to our evidence is effort.** Its Auto saves mostly by lowering effort on easy requests: an interim run cost 0.46× Opus 5.5 at xhigh, with the score within noise. Our coordinator runs at max, and about 82 % of its output, roughly 23 % of its spend, is the presumed thinking. Whether routine coordinator stretches (merges, briefs) need max is the owner's call, and the ledger can measure it.
 
 ### Not adopted
 - **Translating each closure DLL at the base it lands on in each program** (`translate-pe --base`): the slot depends on the load order, so every program would need its own modules. Rebasing once at packaging gives one module per file.

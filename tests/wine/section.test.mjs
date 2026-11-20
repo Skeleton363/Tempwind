@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createUnixHost, DEFAULT_ENV } from '../../runtime/src/wine/unix-host.mjs';
+import { m3Imports } from './m3-imports.mjs';
 
 const root = new URL('../../', import.meta.url);
 const dirUrl = (env, fallback) => (process.env[env]
@@ -39,28 +40,47 @@ async function start(env = {}) {
   const out = { stdout: '', stderr: '' };
   const dec = () => { const d = new TextDecoder(); return (b) => d.decode(b, { stream: true }); };
   const o = dec(), e = dec();
+  const m3 = m3Imports();
   const host = await createUnixHost({
     factory, wasm, env,
     stdout: (b) => { out.stdout += o(b); },
     stderr: (b) => { out.stderr += e(b); },
+    imports: m3.imports,
   });
+  m3.attach(host);
   host.FS.mkdirTree(`${DEFAULT_ENV.WINEPREFIX}/dosdevices`);
   host.FS.symlink('/', `${DEFAULT_ENV.WINEPREFIX}/dosdevices/z:`);
   host.FS.mkdirTree(NLS_DIR);
   host.FS.writeFile(`${NLS_DIR}/l_intl.nls`, intl);
   host.FS.mkdirTree('/tempwind');
   for (const [name, bytes] of Object.entries(images)) host.FS.writeFile(`/tempwind/${name}`, bytes);
-  return { host, out };
+  return { host, out, m3 };
 }
 
-const CHECKS = ['image_exe_preferred_base', 'image_dll_slot', 'file_view_written_back'];
+const CHECKS = ['image_exe_preferred_base', 'image_dll_slot', 'file_view_written_back', 'top_down_ceiling',
+  'image_mapped'];
 
 test('section: the harness checks pass', async () => {
-  const { host, out } = await start();
+  const { host, out, m3 } = await start();
   const ret = await host.call('tw_test_main');
   const lines = out.stdout.trim().split('\n');
   assert.deepEqual(lines.filter((l) => l.startsWith('not ok')), [], out.stdout + out.stderr);
   assert.deepEqual(lines.filter((l) => l.startsWith('ok ')).map((l) => l.slice(3)), CHECKS);
   assert.equal(lines.at(-1), `done ${CHECKS.length}/${CHECKS.length}`);
   assert.equal(ret, 0);
+
+  // tw_image_mapped (section 6): the call image_mapped expects, with the
+  // fd's path; every image map made one, for a file under /tempwind.
+  const expected = lines.filter((l) => l.startsWith('# image_mapped ')).map((l) => {
+    const [, , path, base, size] = l.split(' ');
+    return { path, base: BigInt(base), size: BigInt(size) };
+  });
+  assert.equal(expected.length, 1, out.stdout);
+  const calls = m3.imageMapped.map(({ path, base, size }) => ({ path, base, size }));
+  for (const call of expected) assert.ok(calls.some((c) => c.path === call.path && c.base === call.base && c.size === call.size),
+    `no tw_image_mapped ${JSON.stringify(call, (k, v) => typeof v === 'bigint' ? `0x${v.toString(16)}` : v)} in ` +
+    JSON.stringify(calls, (k, v) => typeof v === 'bigint' ? `0x${v.toString(16)}` : v));
+  assert.ok(m3.imageMapped.every((c) => /^\/tempwind\/[\w.]+\.(exe|dll)$/.test(c.path ?? '')),
+    JSON.stringify(m3.imageMapped.map((c) => c.path)));
+  assert.deepEqual(m3.invalidated, []); // no PAGE_CODE anywhere: no invalidation
 });

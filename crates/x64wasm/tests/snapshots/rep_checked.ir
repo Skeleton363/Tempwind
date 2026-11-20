@@ -1,0 +1,47 @@
+function 0x1000: wasm function 3 (fn_0x1000)
+
+block 0x1000:
+  0x1000: std
+    t0 = load64 state[0x88]
+    t1 = or t0, 0x400
+    store64 state[0x88], t1
+  0x1001: rep stosq [rdi]
+    t0 = load64 state[0x88]
+    t1 = and t0, 0x400
+    t2 = select t1, 0xfffffffffffffff8, 0x8
+    t3 = sub rcx, 0x1
+    t4 = mul t3, t2
+    t5 = add rdi, t4
+    check write 8 at rdi null if rcx
+    check write 8 at t5 null if rcx
+    t6 = select t1, t5, rdi
+    t7 = select t1, rdi, t5
+    t8 = add t7, 0x7
+    check code pages t6 ..= t8 if rcx
+    rep Stos64 delta t2
+  0x1004: cld
+    t0 = load64 state[0x88]
+    t1 = and t0, 0xfffffffffffffbff
+    store64 state[0x88], t1
+  0x1005: rep movsb [rdi],[rsi]
+    t0 = load64 state[0x88]
+    t1 = and t0, 0x400
+    t2 = select t1, 0xffffffffffffffff, 0x1
+    t3 = sub rcx, 0x1
+    t4 = mul t3, t2
+    t5 = add rsi, t4
+    check read 1 at rsi null if rcx
+    check read 1 at t5 null if rcx
+    t6 = add rdi, t4
+    check write 1 at rdi null if rcx
+    check write 1 at t6 null if rcx
+    t7 = select t1, t6, rdi
+    t8 = select t1, rdi, t6
+    check code pages t7 ..= t8 if rcx
+    rep Movs8 delta t2
+  0x1007: ret
+    check read 8 at rsp null
+    t0 = load64 [rsp]
+    t1 = add rsp, 0x8
+    rsp = t1
+  -> ret [t0]

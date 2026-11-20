@@ -9,8 +9,10 @@ would; these are the changes the startup path needs.
   and the loader in /wine/bin, in MEMFS.
 - The host-pointer slots in ntdll.dll (loader.c, load_ntdll_functions):
   __wine_syscall_dispatcher and __wine_unix_call_dispatcher get the
-  poison value TW_NO_DISPATCHER until M3; __wine_unixlib_handle gets the
-  host address of unix_call_funcs, an opaque handle.
+  dispatcher addresses TW_SYSCALL_DISPATCHER and TW_UNIX_CALL_DISPATCHER
+  (M3); __wine_unixlib_handle gets the host address of unix_call_funcs, an
+  opaque handle. tw_unix_call_funcs and tw_unix_call_count give the
+  unix-call dispatcher that table (section 11).
 - The initial directory (env.c, get_initial_directory): the launch
   directory boot recorded, not getcwd(), which the in-process server
   has moved.
@@ -124,22 +126,38 @@ diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
  
      if ((build_dir = remove_tail( ntdll_dir, "/dlls/ntdll" )))
      {
-@@ -1636,6 +1645,14 @@
+@@ -1141,6 +1150,14 @@
+     system_time_precise,
+ };
+ 
++#ifdef __wasm64__
++/* Tempwind (wine-unix.md, section 11): the unix-call dispatcher
++ * (native/wine/src/signal_wasm64.c) reaches only these, through the handle
++ * stored in __wine_unixlib_handle. */
++const unixlib_entry_t *const tw_unix_call_funcs = unix_call_funcs;
++const unsigned int tw_unix_call_count = ARRAY_SIZE(unix_call_funcs);
++#endif
++
+ 
+ #ifdef _WIN64
+ 
+@@ -1636,6 +1653,15 @@
          GET_FUNC( __wine_unix_call_dispatcher_arm64ec );
          GET_FUNC( KiUserEmulationDispatcher );
      }
 +#ifdef __wasm64__
 +    /* Tempwind (wine-unix.md, section 8): the dispatchers are not guest code;
-+     * their slots get the non-canonical poison value until M3 writes the
-+     * dispatcher addresses. __wine_unixlib_handle stays an opaque handle. */
-+    *p__wine_syscall_dispatcher = (void *)TW_NO_DISPATCHER;
++     * their slots get the dispatcher addresses, lookup keys that the JS host
++     * maps to the host functions (abi.md v5, "Syscalls and unix calls").
++     * __wine_unixlib_handle stays an opaque handle. */
++    *p__wine_syscall_dispatcher = (void *)TW_SYSCALL_DISPATCHER;
 +    *p__wine_unixlib_handle = (UINT_PTR)unix_call_funcs;
-+    *p__wine_unix_call_dispatcher = (void *)TW_NO_DISPATCHER;
++    *p__wine_unix_call_dispatcher = (void *)TW_UNIX_CALL_DISPATCHER;
 +#else
      *p__wine_syscall_dispatcher = __wine_syscall_dispatcher;
      *p__wine_unixlib_handle = (UINT_PTR)unix_call_funcs;
      if (p__wine_unix_call_dispatcher_arm64ec)
-@@ -1645,6 +1662,7 @@
+@@ -1645,6 +1671,7 @@
          *p__wine_unix_call_dispatcher_arm64ec = __wine_unix_call_dispatcher;
      }
      else *p__wine_unix_call_dispatcher = __wine_unix_call_dispatcher;
