@@ -252,13 +252,10 @@ static const char *top_down_ceiling( void )
 static const char *image_mapped( void )
 {
     HANDLE section = image_section( "/tempwind/hello.exe" );
-    MEMORY_BASIC_INFORMATION mbi;
     uint64_t base;
 
     TW_EXPECT( section );
     TW_EXPECT( map( section, &base, PAGE_EXECUTE_READ ) == STATUS_SUCCESS );
-    TW_EXPECT( !NtQueryVirtualMemory( NtCurrentProcess(), (void *)(uintptr_t)base, MemoryRegionInformation, &mbi,
-                                      sizeof(mbi), NULL ) || 1 );
     printf( "# image_mapped /tempwind/hello.exe %#llx %#x\n", (unsigned long long)base,
             (unsigned)((size_of_image( base ) + 0xfff) & ~0xfff) );
     TW_EXPECT( !NtUnmapViewOfSection( NtCurrentProcess(), (void *)(uintptr_t)base ) );
