@@ -57,7 +57,6 @@ extern const unsigned int tw_unix_call_count;
 
 #define THUNK_RET   0x180001234ull  /* [RSP]: the thunk's return address */
 #define CALLER_RET  0x180005678ull  /* [RSP + 8]: its caller's */
-#define STATUS_MASK 0x8d5ull        /* CF PF AF ZF SF OF */
 #define TICKS_1601_TO_1970 116444736000000000ll
 
 #define S64(s, off) (*(UINT64 *)((s) + (off)))

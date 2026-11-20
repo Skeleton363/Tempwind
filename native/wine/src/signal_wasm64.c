@@ -250,10 +250,10 @@ int32_t tw_syscall_dispatcher( uint64_t state_addr, int32_t entry, uint64_t ret 
     {
         if (KeServiceDescriptorTable[table].ServiceLimit)
             tw_unsupported( "tw_syscall_dispatcher: syscall table 1-3 (win32u, M4)" );
-        return dispatcher_return( state, frame, STATUS_INVALID_SYSTEM_SERVICE, ret );
+        return dispatcher_return( state, frame, (ULONG)STATUS_INVALID_SYSTEM_SERVICE, ret );
     }
     if (num >= tw_syscall_count)
-        return dispatcher_return( state, frame, STATUS_INVALID_SYSTEM_SERVICE, ret );  /* L3324-3327 */
+        return dispatcher_return( state, frame, (ULONG)STATUS_INVALID_SYSTEM_SERVICE, ret );  /* L3324-3327 */
 
     /* the arguments: R10, RDX, R8, R9, then argument i >= 4 at
      * [RSP + 0x28 + 8 * (i - 4)] after the pop (L3099, L3157, L3166-3167) */
