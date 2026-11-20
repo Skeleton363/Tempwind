@@ -229,6 +229,8 @@ export async function createWineProcess(opts) {
 
   return {
     host, linker, memory, table, depth, stats, programPath,
+    /** The JS imports the Unix side calls (tw_image_mapped, tw_translate, tw_invalidate), for tests. */
+    imports,
     /**
      * Enters boot, in run mode by default. Resolves with the exit status, the
      * full Windows status as a u32 (abi.md v5, "Process exit"); rejects when
