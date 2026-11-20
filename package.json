@@ -6,7 +6,8 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "test:node": "node tests/node/run-node-tests.mjs",
-    "test:browser": "playwright test",
+    "test:browser": "playwright test --project=chromium --project=webgpu",
+    "test:browser:wine": "playwright test --project=wine",
     "test:wine": "node tests/wine/run-wine-tests.mjs",
     "test": "npm run test:node && npm run test:browser"
   },
