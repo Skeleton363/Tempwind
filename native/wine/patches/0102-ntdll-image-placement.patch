@@ -10,17 +10,20 @@ the EXE and every free-based DLL into the slot range.
 - Only then does a relocated DLL ask the server (get_image_map_address),
   and map_image_view tries that slot; virtual_map_image no longer asks first.
 - Then the search: for an image based above 4 GiB, first in the image range
-  [0x1_0000_0000, 0x1_7000_0000), where the server's ranges64 lies, so that
-  a top-down search does not grow the memory to 16 GiB; then anywhere.
+  [0x1_0000_0000, TW_IMAGE_RANGE_END), where the server's ranges64 lies,
+  so that a top-down search does not grow the memory to 16 GiB; then
+  anywhere. TW_IMAGE_RANGE_END comes from tempwind/abi.h.
 
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -3355,6 +3355,86 @@
+@@ -3355,6 +3355,88 @@
  }
  
  
 +#ifdef __wasm64__
++
++#include "tempwind/abi.h"  /* TW_IMAGE_RANGE_END (wine-unix.md, section 4) */
 +
 +/***********************************************************************
 + *             map_image_view
@@ -33,7 +36,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 +static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_info *image_info, SIZE_T size,
 +                                ULONG_PTR limit_low, ULONG_PTR limit_high, ULONG alloc_type, HANDLE mapping )
 +{
-+    static const ULONG_PTR image_range_end = 0x170000000;  /* the server's ranges64 ends here */
++    static const ULONG_PTR image_range_end = TW_IMAGE_RANGE_END;  /* the server's ranges64 ends here */
 +    unsigned int vprot = SEC_IMAGE | SEC_FILE | VPROT_COMMITTED | VPROT_READ | VPROT_EXEC | VPROT_WRITECOPY;
 +    void *base;
 +    NTSTATUS status;
@@ -103,7 +106,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
  /***********************************************************************
   *             map_image_view
   *
-@@ -3414,6 +3494,8 @@
+@@ -3414,6 +3496,8 @@
      return map_view( view_ret, NULL, size, top_down ? MEM_TOP_DOWN : 0, vprot, limit_low, limit_high, 0 );
  }
  
@@ -112,7 +115,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
  
  /***********************************************************************
   *             virtual_map_image
-@@ -3445,6 +3527,7 @@
+@@ -3445,6 +3529,7 @@
          return status;
      }
  
@@ -120,7 +123,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
      if (!image_info->map_addr &&
          (image_info->image_charact & IMAGE_FILE_DLL) &&
          (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated))
-@@ -3456,10 +3539,15 @@
+@@ -3456,10 +3541,15 @@
          }
          SERVER_END_REQ;
      }

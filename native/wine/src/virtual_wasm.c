@@ -6,7 +6,8 @@
  * tw_mprotect, tw_madvise and tw_msync (01xx patches), and they work on the
  * one wasm memory. The backend keeps its own record of what is mapped, one
  * byte per 4 KiB page up to 16 GiB; Wine keeps the protections itself, and
- * nothing faults.
+ * nothing faults. Before it unmaps or maps over pages with translated code,
+ * it calls tw_invalidate (section 6, M3).
  *
  * Copyright 2026 the Tempwind authors
  *
@@ -317,6 +318,27 @@ static int map_file( uint64_t start, uint64_t size, int prot, int flags, int fd,
     return 0;
 }
 
+/* ---- Invalidation (section 6) ----------------------------------------------------
+ * Before pages that hold translated code (PAGE_CODE, which JS sets when it
+ * links a module) are unmapped or mapped over, JS removes the modules there
+ * (tw_invalidate), so the next transfer translates the new contents. Every
+ * unmap, free, decommit, recommit and view mapped over a range reaches
+ * tw_munmap or map_range. A range without PAGE_CODE needs no call. */
+static uint8_t *page_flags;  /* the page-state table, below */
+
+static void invalidate_code( uint64_t start, uint64_t end )
+{
+    uint64_t i;
+
+    if (!page_flags) return;
+    for (i = start >> PAGE_SHIFT; i < end >> PAGE_SHIFT && i < PAGE_COUNT; i++)
+    {
+        if (!(page_flags[i] & TW_PAGE_CODE)) continue;
+        tw_invalidate( start, end - start );
+        return;
+    }
+}
+
 /* ---- The calls virtual.c makes -------------------------------------------------- */
 
 /* Maps [start, start + size), which lies in the guest regions: grows the
@@ -330,6 +352,7 @@ static void *map_range( uint64_t start, uint64_t size, int prot, int flags, int 
      * tw_mprotect makes a page accessible. zero_dirty never reaches past the
      * memory: a page is dirty only if it was mapped accessible or as a file
      * view, and both grew the memory to cover it. */
+    invalidate_code( start, end );
     if ((prot != PROT_NONE || file) && grow_to( end )) return MAP_FAILED;
     if (drop_records( start, end )) return MAP_FAILED;
     zero_dirty( start, end );
@@ -414,6 +437,7 @@ int tw_munmap( void *addr, size_t len )
         errno = EINVAL;
         return -1;
     }
+    invalidate_code( start, end );
     if (drop_records( start, end )) return -1;
     set_state( start, end, VM_FREE, 0 );  /* the memory never shrinks */
     return 0;
@@ -482,8 +506,8 @@ int tw_msync( void *addr, size_t len, int flags )
 }
 
 /* ---- The page-state table (abi.md, "Page-state table") ------------------------
- * One byte per 4 KiB page up to 16 GiB, from the host heap. */
-static uint8_t *page_flags;
+ * One byte per 4 KiB page up to 16 GiB, from the host heap (page_flags,
+ * above). */
 
 void *tw_page_flags( void )
 {

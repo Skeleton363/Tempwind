@@ -1,0 +1,43 @@
+ntdll: tell the JS host about each image view (docs/design/wine-unix.md,
+section 6, "Images (M3)"; abi.md v5, the import tw_image_mapped).
+
+Why: JS links an image's AOT module before any of its code runs, and finds
+the module by the image file's path, its sha256 and the base.
+
+- virtual_map_image (virtual.c): once the view is mapped and relocated
+  (map_image_into_view, L3420, relocates it to the server's map address,
+  L3205-3223) and the server has recorded it, it calls
+  tw_image_mapped(unix_fd, base, size), with the base and size it returns
+  to its caller (L3442-3448). unix_fd, the image file's, is still open
+  there: it is closed only at the end (L3453).
+- Every image comes through here: NtMapViewOfSection of a SEC_IMAGE
+  section and the loader's builtin modules (virtual_map_builtin_module).
+
+Invalidation, the other half of section 6, needs no change here: every
+unmap and every fixed map over a range reaches the backend's tw_munmap or
+tw_mmap, which call tw_invalidate (native/wine/src/virtual_wasm.c).
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -107,6 +107,9 @@
+ #define mprotect tw_mprotect
+ #define madvise tw_madvise
+ #define msync tw_msync
++/* The JS host links the image's AOT module (abi.md v5, "Host entries of the
++ * Unix side"; wine-unix.md, section 6, "Images"). */
++void tw_image_mapped( int fd, UINT64 base, UINT64 size );
+ #endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(virtual);
+@@ -3632,6 +3635,10 @@
+         *addr_ptr = view->base;
+         *size_ptr = size;
+         VIRTUAL_DEBUG_DUMP_VIEW( view );
++#ifdef __wasm64__
++        /* mapped and relocated; unix_fd is still the image file's */
++        tw_image_mapped( unix_fd, (UINT_PTR)view->base, size );
++#endif
+     }
+     else delete_view( view );
+ 

@@ -47,6 +47,7 @@
 
 int boot( int argc, char **argv, int flags );
 void *tw_main_state( void );
+extern const unixlib_entry_t *const tw_unix_call_funcs;  /* loader.c, patch 0301 */
 
 static int boot_ret = -1;
 
@@ -121,12 +122,13 @@ static NTSTATUS query( const void *addr, MEMORY_BASIC_INFORMATION *info )
 /* ---- the checks ---- */
 
 /* The state block's RIP is LdrInitializeThunk, as the test reads it from
- * ntdll's export table; the host-pointer slots hold the poison value. */
+ * ntdll's export table; the host-pointer slots hold the dispatcher
+ * addresses and the unix-call handle (section 8, M3). */
 static const char *rip_ldr_initialize_thunk( void )
 {
     const BYTE *ntdll = find_image( "ntdll.dll" );
     const BYTE *state;
-    ULONG_PTR thunk, syscall, unixcall;
+    ULONG_PTR thunk, syscall, unixcall, handle;
 
     if (boot_ret) return tw_fail( "boot returned %d", boot_ret );
     state = tw_main_state();
@@ -138,9 +140,11 @@ static const char *rip_ldr_initialize_thunk( void )
     syscall = find_export( ntdll, "__wine_syscall_dispatcher" );
     unixcall = find_export( ntdll, "__wine_unix_call_dispatcher" );
     TW_EXPECT( syscall && unixcall );
-    TW_EXPECT( *(const UINT64 *)syscall == TW_NO_DISPATCHER );
-    TW_EXPECT( *(const UINT64 *)unixcall == TW_NO_DISPATCHER );
-    TW_EXPECT( *SYSCALL_SLOT == TW_NO_DISPATCHER );
+    TW_EXPECT( *(const UINT64 *)syscall == TW_SYSCALL_DISPATCHER );
+    TW_EXPECT( *(const UINT64 *)unixcall == TW_UNIX_CALL_DISPATCHER );
+    TW_EXPECT( *SYSCALL_SLOT == TW_SYSCALL_DISPATCHER );
+    TW_EXPECT( (handle = find_export( ntdll, "__wine_unixlib_handle" )) );
+    TW_EXPECT( *(const UINT64 *)handle == (ULONG_PTR)tw_unix_call_funcs );
     return NULL;
 }
 
@@ -273,6 +277,7 @@ static const char *expect_value( const WCHAR *key, const WCHAR *name, ULONG type
 #define HKLM u"\\Registry\\Machine\\"
 #define HKCU u"\\Registry\\User\\S-1-5-21-0-0-0-1000\\"
 #define CPU0 HKLM u"Hardware\\Description\\System\\CentralProcessor\\0"
+#define ENV HKLM u"System\\CurrentControlSet\\Control\\Session Manager\\Environment"
 #define SZ(key, name, value) expect_value( key, name, REG_SZ, value, 0 )
 #define CHECK(expr) do { if ((detail = (expr))) return detail; } while (0)
 
@@ -303,6 +308,78 @@ static const char *registry_values( void )
     CHECK( SZ( CPU0, u"ProcessorNameString", u"Tempwind virtual x86-64 CPU" ) );
     CHECK( SZ( HKLM u"System\\CurrentControlSet\\Control\\Session Manager\\Environment", u"NUMBER_OF_PROCESSORS", u"1" ) );
     CHECK( SZ( HKCU u"Volatile Environment", u"USERDOMAIN", u"TEMPWIND" ) );
+    return NULL;
+}
+
+/* The vendor string of the CPU profile's leaf 0 (EBX, EDX, ECX). */
+static void profile_vendor( char vendor[13] )
+{
+    static const UINT32 leaves[][5] = TW_CPUID_LEAVES;
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(leaves); i++)
+    {
+        if (leaves[i][0]) continue;
+        memcpy( vendor, &leaves[i][2], 4 );
+        memcpy( vendor + 4, &leaves[i][4], 4 );
+        memcpy( vendor + 8, &leaves[i][3], 4 );
+    }
+    vendor[12] = 0;
+}
+
+/* The CPU profile's leaf 1 ECX. */
+static UINT32 profile_leaf1_ecx( void )
+{
+    static const UINT32 leaves[][5] = TW_CPUID_LEAVES;
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(leaves); i++) if (leaves[i][0] == 1) return leaves[i][3];
+    return 0;
+}
+
+/* The PROCESSOR_* values of the system environment (overlay.reg), as
+ * wineboot derives them from the CPU (programs/wineboot/wineboot.c
+ * L714-718, L761-770): the CPU here is the translator's profile, which the
+ * Unix side reports (SystemCpuInformation, section 3). */
+static const char *processor_environment( void )
+{
+    SYSTEM_CPU_INFORMATION sci;
+    char vendor[13], buf[128];
+    WCHAR value[128];
+    const char *detail;
+
+    TW_EXPECT( !NtQuerySystemInformation( SystemCpuInformation, &sci, sizeof(sci), NULL ) );
+    TW_EXPECT( sci.ProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 );
+    profile_vendor( vendor );
+    CHECK( SZ( ENV, u"PROCESSOR_ARCHITECTURE", u"AMD64" ) );
+    snprintf( buf, sizeof(buf), "%s Family %u Model %u Stepping %u, %s",
+              strcmp( vendor, "AuthenticAMD" ) ? "Intel64" : "AMD64",
+              sci.ProcessorLevel, HIBYTE(sci.ProcessorRevision), LOBYTE(sci.ProcessorRevision), vendor );
+    ntdll_umbstowcs( buf, strlen( buf ) + 1, value, ARRAY_SIZE(value) );
+    CHECK( SZ( ENV, u"PROCESSOR_IDENTIFIER", value ) );
+    snprintf( buf, sizeof(buf), "%u", sci.ProcessorLevel );
+    ntdll_umbstowcs( buf, strlen( buf ) + 1, value, ARRAY_SIZE(value) );
+    CHECK( SZ( ENV, u"PROCESSOR_LEVEL", value ) );
+    snprintf( buf, sizeof(buf), "%04x", sci.ProcessorRevision );
+    ntdll_umbstowcs( buf, strlen( buf ) + 1, value, ARRAY_SIZE(value) );
+    CHECK( SZ( ENV, u"PROCESSOR_REVISION", value ) );
+    return NULL;
+}
+
+/* KUSER's CPU fields that the kuser check skips, against the profile:
+ * ActiveProcessorCount is the one processor (section 3; virtual.c L4453),
+ * and XState stays zero, since Wine fills it only with PF_XSAVE_ENABLED,
+ * OSXSAVE in leaf 1 ECX bit 27 (unix/system.c L502, L534-535), which the
+ * profile lacks. */
+static const char *kuser_cpu( void )
+{
+    const KUSER_SHARED_DATA *kuser = (const KUSER_SHARED_DATA *)KUSER_ADDR;
+    static const BYTE zero[sizeof(kuser->XState)];
+
+    TW_EXPECT( kuser->ActiveProcessorCount == 1 );
+    TW_EXPECT( !(profile_leaf1_ecx() & (1u << 27)) );
+    TW_EXPECT( !kuser->ProcessorFeatures[PF_XSAVE_ENABLED] );
+    TW_EXPECT( !memcmp( (const void *)&kuser->XState, zero, sizeof(zero) ) );
     return NULL;
 }
 
@@ -375,6 +452,8 @@ static const struct tw_check checks[] =
     { "registry_values", registry_values },
     { "nls_loaded", nls_loaded },
     { "kuser", kuser },
+    { "processor_environment", processor_environment },
+    { "kuser_cpu", kuser_cpu },
 };
 
 int tw_test_main( void )
