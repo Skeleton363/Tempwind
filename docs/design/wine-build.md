@@ -157,6 +157,10 @@ They are built from `wine.lock`'s release and the translator at the commit: by `
 - `rebased/lib/wine/x86_64-windows/`: the DLLs that moved, and `rebase.json`;
 - `catalog/`: `catalog.json`, and `<name>.wasm` and `<name>.plan.json` per file;
 - `boot-set.json`;
+- `prefix.json` (M3): the prefix as made, listed for a host that can't walk `wine-prefix/`, which is the browser host (`wine-unix.md`, section 8).
+  - Schema 1: `{ "schema": 1, "path": "<wine-prefix.path>", "files": [ … ], "dirs": [ … ], "links": [ [path, target], … ], "installFiles": [ … ] }`.
+  - The values are what `readPrefix` (`runtime/src/wine/node-files.mjs`) returns, in its order. Paths are relative to the prefix. `files` holds the names of the top-level files, whose bytes are `wine-prefix/<name>`. `installFiles` are `drive_c`'s file paths, for the install copies.
+  - `tests/wine/catalog.mjs` writes it with `readPrefix`, next to `boot-set.json`. Its `--check` fails when the file differs from a fresh walk.
 - `bridge.wasm` (`x64wasm-cli bridge`);
 - the test programs' `.exe` files.
 

@@ -263,6 +263,13 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - **The node:** a MEMFS node of our own. Its size comes from the boot-set manifest (path, size and sha256 per file; `wine-build.md`), so a `stat` works before the first read.
   - **The first read** loads the whole file: `fs` in Node, one synchronous XHR in a Worker.
   - **Why not `FS.createLazyFile`:** in Node, a `stat` of its node before the first read throws a `TypeError` (`research.md`, 2026-11-14). Wine stats first (`unix/file.c` L2970, `server/fd.c` L1999, `server/mapping.c` L1087 and L1158).
+- **The browser host (M3):** in a Worker, `runtime/src/wine/web-files.mjs` gives `createWineProcess` the inputs that `node-files.mjs` gives it in Node, by URL from the static assets.
+  - **Before `boot`** it fetches:
+    - the modules: `wine-unix.mjs` and `.wasm`, `bridge.wasm`, and the run-time translator and floating-point helper;
+    - `boot-set.json`, `catalog/catalog.json` and `prefix.json` (`wine-build.md`, "Layout under `target/wine`");
+    - the prefix's top-level files, the overlay and the program.
+  - **On first use** it reads each lazy file, and each catalog module's `.wasm` and `.plan.json`, with one synchronous XHR (`xhrReader`, `lazy-node.mjs`), and compiles a module with the synchronous `new WebAssembly.Module`, which a Worker allows at any size.
+  - **No sha256 check against the manifest** in the browser; Node checks on the first read. The program's sha256 comes from its own bytes, as in Node.
 
 ## 9. Blocking and threads (M2: one thread)
 - **`green.c`:**
@@ -323,7 +330,9 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - Each runs in a fresh Unix-side instance, with both memory checks on.
   - It compares stdout with `tests/native/<name>.expected` as CRLF, and the exit status with `.exitcode`. No `tempwind:` line may appear.
   - It records the time from `boot` to exit, the AOT links and run-time fallbacks, and the bytes the lazy nodes loaded.
-- **Browser (M3):** `tests/browser/wine-hello.spec.mjs` runs hello.exe the same way in a Chromium Worker.
+- **Browser (M3):** `tests/browser/wine-hello.spec.mjs` runs hello.exe the same way in a Chromium Worker, through the browser host (section 8).
+  - Its assertions are `programs.test.mjs`'s for hello: stdout, the status, no `tempwind:` line, no image fallbacks, and the five AOT links.
+  - It is the Playwright project `wine`. `npm run test:browser` leaves it out, since it needs `target/wine`; `npm run test:browser:wine` runs it, and so does `wine-unix.yml`.
 - **`tests/wine/prepare.sh` (M3)** also builds the L2 programs, rebases the closure, and builds the catalog and the boot-set manifest (`wine-build.md`, "Packaging").
 
 ## 11. Syscalls, unix calls and contexts (M3)
