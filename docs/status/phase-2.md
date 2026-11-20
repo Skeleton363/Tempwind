@@ -533,6 +533,7 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
 - **At the owner's pause:** 101,742 tokens (10.2 %) after the second compaction. The whole session, agents included, cost $52.90 and 138.2M cache reads.
 - **After WP1's merge (2026-11-20):** 193,840 tokens (19.4 %); $63.06 and 156.6M cache reads for the whole session.
 - **After WP2's merge and WP3's brief:** 258,581 tokens (25.9 %); $67.99 and 172.5M cache reads. That is above 25 %, so a compaction was asked for.
+- **After WP4's merge (the third compaction came first):** the reading hadn't refreshed. It still showed 326,965 tokens, last updated at 15:27 UTC, before the compaction, so this checkpoint has no fresh token figure. The whole session so far: $76.78 and 194.4M cache reads.
 
 ### Progress (2026-11-14)
 - **Pushed to the PR branch:**
@@ -636,13 +637,24 @@ The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarte
   - **What WP2 found:**
     - abi.md's tombstone sentence was wrong. A transfer to `LOOKUP_TOMBSTONE` hits a tombstone only when one lies on its probe path; otherwise it misses, and the run loop stops. It stops loudly either way, and abi.md now says so (`3035af6`).
     - The load plan's options dropped `--shared`, while abi.md (L262) has the runtime pass a plan's options as the request flags. WP2's follow-up adds `sharedMemory` (runtime.md first, `420e541`; code `ed0543c`; `requestFlags` in `process.mjs`), merged as `41360d2` after the coordinator reran the tests it touches. WP2 is done.
-- **Running:**
-  - WP4, resumed with its four items after merging the PR branch;
-  - WP3, a new deep-worker on `m3-wp3-wip` from `ee7884f`. Until WP5 writes the run loop, its `programs.test.mjs` asserts the furthest real point: the run loop's loud stop, with every image mapped so far linked from the catalog.
+- **WP4 is merged** (`30dcc06`, from `ec260f6`). WP4 is done.
+  - **The four items** from its first pass's review are done (`ec260f6`): the doc comments name `TW_IMAGE_RANGE_END` correctly, a test reads it from `abi.h` and checks it equals `RANGE_START`, and the gate step no longer rebases a second time. WP4 also ran `prepare.sh --all` end to end.
+  - **Checks**, rerun by the coordinator on the merged tree:
+    - fmt, clippy and `pe-rebase`'s 11 tests pass;
+    - `prepare.sh --all` took 50 s, including the Unix side's 20 s build. It rebased and verified 59 DLLs, wrote the 903-byte `bridge.wasm`, and the merged translator retranslated all 77 modules (`--shared --null-check --store-check`);
+    - the gate passes: all 77 modules compile in V8, 165.1 MiB of wasm. `boot-set.json` lists 155 files;
+    - `test:wine` passes 16 of 16.
+  - **What it adds:**
+    - `native/wine/rebase` (`pe-rebase`, LGPL), a workspace member;
+    - `tests/wine/catalog.mjs`, which writes the catalog and the boot-set manifest;
+    - `prepare.sh`'s packaging step;
+    - the workflow's catalog gate, plus path triggers for `crates/x64wasm*` and `tests/native/**`.
+- **Running:** WP3, a new deep-worker on `m3-wp3-wip` from `ee7884f`, which since merged `41360d2`. It was told to merge `30dcc06` for the catalog builder. The shared `target/wine` holds the whole closure's catalog from the merged code. Until WP5 writes the run loop, its `programs.test.mjs` asserts the furthest real point: the run loop's loud stop, with every image mapped so far linked from the catalog.
 - **Next:**
-  - on each report: review, verify, merge, ledger line, checkpoint;
-  - tell WP3 when WP4 merges, since its programs test needs the catalog builder;
-  - WP5 after WP3; WP6 after WP5's hello and WP4.
+  - on WP3's report: review, verify, merge, ledger line, checkpoint;
+  - WP5 after WP3 (WP1 is merged);
+  - WP6 after WP5's hello (WP4 is merged).
+- **CI:** `wine-unix` passed at `ee7884f`, which contains WP1's and WP2's merges, in about 3 minutes. The earlier run at `c67bc06` has sat in its prepare step since 15:09 UTC and was still running at 15:30. The job's timeout is 60 minutes. Its log will say which command hung; the native Wine run in `prepare.sh` has no timeout of its own.
 - **Disk:** 20 GB free once the merged worktrees' `target/` directories were deleted (WP2's held 12 GB).
 
 ## What works
