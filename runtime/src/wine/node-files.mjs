@@ -25,11 +25,15 @@ const need = (path, how) => {
   return path;
 };
 
-/** The prefix as made (wine-build.md, "The prefix"): top-level files, directories, symlinks. */
+/**
+ * The prefix as made (wine-build.md, "The prefix"): top-level files,
+ * directories, symlinks, and the paths of drive_c's files (installFiles),
+ * whose install copies the boot set links (wine-unix.md, section 8).
+ */
 export function readPrefix(wineDir) {
   const dir = need(join(wineDir, 'wine-prefix'), 'run tests/wine/prepare.sh') + '/';
   const path = readFileSync(join(wineDir, 'wine-prefix.path'), 'utf8').trim();
-  const files = {}, dirs = [], links = [];
+  const files = {}, dirs = [], links = [], installFiles = [];
   const walk = (rel) => {
     for (const name of readdirSync(dir + rel)) {
       const p = rel ? `${rel}/${name}` : name;
@@ -37,10 +41,11 @@ export function readPrefix(wineDir) {
       if (st.isSymbolicLink()) links.push([p, readlinkSync(dir + p)]);
       else if (st.isDirectory()) { dirs.push(p); walk(p); }
       else if (!rel) files[name] = readFileSync(dir + p);
+      else if (p.startsWith('drive_c/')) installFiles.push(p);
     }
   };
   walk('');
-  return { path, files, dirs, links };
+  return { path, files, dirs, links, installFiles };
 }
 
 /**
