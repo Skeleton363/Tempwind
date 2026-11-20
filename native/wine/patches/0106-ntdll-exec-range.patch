@@ -1,0 +1,67 @@
+ntdll: the executable run of pages around an address, for the run loop
+(docs/design/wine-unix.md, section 12).
+
+Why: on EXIT_LEFT_CODE the run loop (native/wine/src/run.c) calls
+tw_translate(rip, base, size) with the executable view around rip, which
+only virtual.c's view tree and page protections know (find_view, L1440;
+get_page_vprot, L1079; both static).
+
+- tw_exec_range(addr, &base, &size) takes virtual_mutex as
+  virtual_is_valid_code_address does (L4783-4795), finds addr's view, skips
+  system views as that function does, and returns the page's protection
+  byte. When the page is committed, executable and not a guard page, base
+  and size are the run of such pages around it inside the view; otherwise
+  size is 0. PAGE_CODE then marks only executable pages (phase-2.md, M3
+  decision 17).
+
+Line numbers are wine-11.0's dlls/ntdll/unix/virtual.c.
+
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5014,6 +5014,46 @@
+ 
+ #ifdef __wasm64__
+ /***********************************************************************
++ *           tw_exec_range
++ *
++ * Tempwind's run loop (wine-unix.md, section 12): the run of committed,
++ * executable pages around addr inside its view, which tw_translate gets.
++ * Returns the protection byte of addr's page (0 outside every view or in a
++ * system one); *size is 0 when that page isn't committed and executable.
++ */
++unsigned int tw_exec_range( UINT64 addr, UINT64 *base, UINT64 *size )
++{
++    const BYTE mask = VPROT_EXEC | VPROT_COMMITTED | VPROT_GUARD, want = VPROT_EXEC | VPROT_COMMITTED;
++    char *page = ROUND_ADDR( (UINT_PTR)addr, page_mask ), *start, *end;
++    struct file_view *view;
++    unsigned int vprot = 0;
++    sigset_t sigset;
++
++    *base = *size = 0;
++    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++    if ((view = find_view( page, 0 )) && !(view->protect & VPROT_SYSTEM))
++    {
++        vprot = get_page_vprot( page );
++        if ((vprot & mask) == want)
++        {
++            start = page;
++            end = page + page_size;
++            while (start > (char *)view->base && (get_page_vprot( start - page_size ) & mask) == want)
++                start -= page_size;
++            while (end < (char *)view->base + view->size && (get_page_vprot( end ) & mask) == want)
++                end += page_size;
++            *base = (UINT_PTR)start;
++            *size = end - start;
++        }
++    }
++    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++    return vprot;
++}
++#endif
++
++
++#ifdef __wasm64__
++/***********************************************************************
+  *           check_guest_buffer
+  *
+  * wine-unix.md, section 6: a bad guest pointer doesn't fault, so the
