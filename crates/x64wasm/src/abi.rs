@@ -338,11 +338,6 @@ pub const MXCSR_MASK: u32 = 0xFFFF;
 /// has no OSXSAVE, so guest code cannot read it; Wine's Unix side reports it.
 pub const XCR0: u64 = 3;
 
-/// The non-canonical poison value for host-pointer slots in ntdll.dll
-/// (`wine-unix.md`, section 8): a guest call through it misses the lookup,
-/// and translating a non-canonical address stops loudly.
-pub const NO_DISPATCHER: u64 = 0xDEAD_0000_0000_0000;
-
 /// Wine processes (abi.md v5, "Syscalls and unix calls"): the lookup key of
 /// the syscall dispatcher. The Unix side stores it at 0x7ffe1000, which every
 /// PE syscall thunk calls through, and in ntdll's `__wine_syscall_dispatcher`.
@@ -362,7 +357,7 @@ pub const TOMBSTONE_INDEX: u32 = 1;
 /// The `env.table` slots the bridge fills; host functions and modules start here.
 pub const TABLE_RESERVED: u32 = 2;
 /// The key of a removed lookup slot (abi.md, "Lookup table"). Non-canonical,
-/// and neither [`NO_RET`] nor [`NO_DISPATCHER`]; the probe passes over it.
+/// and not [`NO_RET`]; the probe passes over it.
 pub const LOOKUP_TOMBSTONE: u64 = 0xDEAD_0000_0000_0001;
 /// Export names of the bridge besides [`RUN_EXPORT`] (abi.md v5, "The bridge").
 pub const BRIDGE_DEPTH_GET_EXPORT: &str = "depth_get";
@@ -506,7 +501,6 @@ pub fn c_header() -> String {
         "#define TW_MAX_MEMORY_PAGES {}",
         u64c(MAX_MEMORY_PAGES)
     ));
-    out.push(format!("#define TW_NO_DISPATCHER {}", u64c(NO_DISPATCHER)));
 
     section(
         &mut out,

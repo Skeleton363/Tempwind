@@ -70,7 +70,6 @@ static inline uint64_t tw_lookup_hash(uint64_t key, uint64_t mask) {
 #define TW_SENTINEL_RET UINT64_C(0x7fffffff0000)
 #define TW_NULL_LIMIT UINT64_C(0x10000)
 #define TW_MAX_MEMORY_PAGES UINT64_C(0x40000)
-#define TW_NO_DISPATCHER UINT64_C(0xdead000000000000)
 
 /* Wine processes (abi.md v5): the dispatcher addresses, the bridge's table
    slots, the tombstone key and the end of the image range. */
