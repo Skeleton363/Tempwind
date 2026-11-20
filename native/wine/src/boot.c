@@ -1,9 +1,10 @@
 /*
  * The boot export and the startup glue (docs/design/wine-unix.md, section 8).
  *
- * boot() runs Wine's __wine_main as the exec'd wine loader would, and comes
- * back here when signal_start_thread (signal_wasm64.c) has built the main
- * thread's start state: BOOT_STOP_AT_ENTRY, M2's only mode.
+ * boot() runs Wine's __wine_main as the exec'd wine loader would. Once
+ * signal_start_thread (signal_wasm64.c) has built the main thread's start
+ * state, BOOT_STOP_AT_ENTRY comes back here, and run mode (flags 0) enters
+ * tw_run_loop (run.c).
  *
  * Copyright 2026 the Tempwind authors
  *
@@ -38,12 +39,13 @@ int tw_boot_flags;
 
 /* boot(argc, argv, flags), entered through WebAssembly.promising: argv[0] is
  * /wine/bin/wine, argv[1] the program as a DOS path, then its arguments.
+ * flags is 0 (run) or BOOT_STOP_AT_ENTRY; any other value stops loudly.
  * Returns 0 once stopped at the entry; a Wine error ends in exit(). */
 int boot( int argc, char **argv, int flags )
 {
     static char cwd[PATH_MAX];
 
-    if (flags != BOOT_STOP_AT_ENTRY) tw_unsupported( "boot: a mode other than BOOT_STOP_AT_ENTRY (M3)" );
+    if (flags != 0 && flags != BOOT_STOP_AT_ENTRY) tw_unsupported( "boot: flags other than 0 (run) or BOOT_STOP_AT_ENTRY" );
     if (booting) tw_unsupported( "boot: a second boot" );
     if (!getcwd( cwd, sizeof(cwd) )) tw_unsupported( "boot: getcwd" );
     tw_launch_dir = cwd;
