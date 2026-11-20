@@ -534,6 +534,7 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
 - **After WP1's merge (2026-11-20):** 193,840 tokens (19.4 %); $63.06 and 156.6M cache reads for the whole session.
 - **After WP2's merge and WP3's brief:** 258,581 tokens (25.9 %); $67.99 and 172.5M cache reads. That is above 25 %, so a compaction was asked for.
 - **After WP4's merge (the third compaction came first):** the reading hadn't refreshed. It still showed 326,965 tokens, last updated at 15:27 UTC, before the compaction, so this checkpoint has no fresh token figure. The whole session so far: $76.78 and 194.4M cache reads.
+- **After WP3's merge:** 215,546 tokens (21.6 %); $88.48 and 228.2M cache reads for the whole session.
 
 ### Progress (2026-11-14)
 - **Pushed to the PR branch:**
@@ -561,8 +562,48 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
     - drop the gate step's second rebase, which `prepare.sh` already ran and verified;
     - run `prepare.sh` end to end with `bridge` and `--shared`, and the gate with `--all`.
 
-## M3 progress (paused 2026-11-14)
-The owner paused M3 at 20:15 UTC, when the five-hour rate limit read `allowed_warning`. Nothing is left uncommitted: each track's work is on its side branch, and no work package is merged yet. The decisions, the work-package table (each package's files and done-when) and the progress before the pause are in the M3 section above.
+## M3 progress (paused 2026-11-20)
+The owner paused M3 again at 15:47 UTC on 2026-11-20. The five-hour rate limit read `allowed_warning` at 15:41 and resets at 19:50 UTC. Nothing is uncommitted, no agent is running, and every side branch's work is merged. The decisions and the work-package table (each package's files and done-when) are in the M3 section above. The first pause and the resume follow this summary, for the record.
+
+**Committed** (the PR branch `claude/nice-albattani-dpo4jx`):
+- **WP1 to WP4 are merged.** WP1 is `c67bc06`, WP2 `7bbb63a` with its follow-up `41360d2`, WP4 `30dcc06`, and WP3 `272fa1f`.
+- **Fixes:**
+  - `3035af6`, abi.md's tombstone sentence;
+  - `ee7884f`, which removes `TW_NO_DISPATCHER`;
+  - `e53700d`, boot's run mode;
+  - `4226986`, the wasm32 build in `prepare.sh`.
+- **Passing at `272fa1f`:**
+  - `test:node`: 265 of 265;
+  - `test:wine`: 32 of 32. The four programs stop at "tw_run_loop (M3 WP5)", with the program and ntdll linked from the catalog;
+  - `pe-rebase`: 11 of 11;
+  - the catalog gate: all 77 modules compile in V8.
+- **Also passing:** `cargo test` (244 of 244) at WP2's merge.
+- **CI:** `wine-unix` is green at `30dcc06`, `e53700d` and `4226986`. It was running at `272fa1f` when the session paused.
+
+**In progress:** nothing. WP5 and WP6 haven't started.
+
+**How to resume**
+- **In a fresh session:**
+  1. **Prepare the shared inputs** in the main tree, since they lived only in this container:
+     - `scripts/apt-install.sh zstd gcc-mingw-w64-x86-64` (the workflow's packages);
+     - `tools/start-dockerd.sh`;
+     - `tests/wine/prepare.sh --all`. It builds the Unix side, the L2 programs, the rebase, `bridge.wasm`, the whole closure's catalog and the wasm32 run-time translator and floating-point helper. It took 50 s here.
+
+     For `test:node` also run `cargo run -q -p testkit --release -- spike --out target/spike`, `tests/pe/prepare.sh` and `tests/native/prepare.sh`.
+  2. **Brief WP5** (deep-worker, effort high):
+     - **Sources:** its row in "Work packages" above, decisions 2-4, 7-10 and 17, and "Resumed (2026-11-20)" below. That section has WP1's open questions, the boot fix and WP3's notes for WP5.
+     - **Track:** `m3-wp5-wip`, from the PR branch head (`git fetch origin claude/nice-albattani-dpo4jx && git checkout -B m3-wp5 FETCH_HEAD`).
+     - **What the brief must say:**
+       - read `target/wine` through `TW_WINE_DIR` without rewriting it, and run its programs, not `target/native`'s (sha256);
+       - native Wine 11 for `/diverge` is in `target/wine/native`; `prepare.sh` step 3 shows how to run it;
+       - a translator defect goes to the coordinator with a fixture first, and a contract defect stops the agent with a report;
+       - "done" is the row's done-when, with `programs.test.mjs` switched from the run loop's stop to stdout (CRLF) and the exit code, and `run-wine.mjs --stats` for the measurements.
+  3. **Then:** WP6 (builder) after WP5's hello passes, then `/milestone-close`.
+- **In this session,** while its container lives: the inputs above are prepared, and a draft of WP5's brief is in the session's scratchpad, as `wp5-brief.md`.
+- **Open item:** the `wine-unix` run at `c67bc06` hung in its prepare step. Read its log once it times out: the native Wine run in `prepare.sh` has no timeout of its own.
+
+### First pause (2026-11-14)
+The owner paused M3 at 20:15 UTC, when the five-hour rate limit read `allowed_warning`. Nothing was left uncommitted: each track's work was on its side branch, and no work package was merged yet. What follows was the state then; the resume below supersedes it.
 
 **Committed**
 - **The PR branch** `claude/nice-albattani-dpo4jx` has:
@@ -654,11 +695,26 @@ The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarte
   - **The fix:** `boot` now accepts 0, as `wine-unix.md` section 8 (L210) specifies. Any value other than 0 or 1 stops loudly.
   - **Checks:** a scratch boot of hello.exe with flags 0 stops at "tw_run_loop (M3 WP5)". The gates pass, and `test:wine` passes 16 of 16.
   - **Who owns `boot.c`:** it stays WP5's, apart from this line.
-- **Running:** WP3, a new deep-worker on `m3-wp3-wip` from `ee7884f`, which since merged `41360d2`. It was told to merge `30dcc06` for the catalog builder. The shared `target/wine` holds the whole closure's catalog from the merged code. Until WP5 writes the run loop, its `programs.test.mjs` asserts the furthest real point: the run loop's loud stop, with every image mapped so far linked from the catalog.
+- **`prepare.sh` builds `x64wasm_rt.wasm` and `x64wasm_fp.wasm`** for wasm32 (`4226986`, by the coordinator). WP3 found that its Wine processes load them, but neither `prepare.sh` nor the workflow built them.
+- **WP3 is merged** (`272fa1f`, from `ee5635f`). WP3 is done.
+  - **Checks**, rerun by the coordinator on the merge candidate:
+    - the test inputs were rebuilt first (`target/spike`, `tests/pe/prepare.sh`, `tests/native/prepare.sh`);
+    - `test:node` passes 265 of 265, the same tests as before;
+    - `test:wine` passes 32 of 32.
+  - **What it adds:**
+    - `runtime/src/wine/wine-process.mjs`, which builds a process in section 12's order: memory, `env.table`, `env.depth`, the bridge, the Unix side, then the Linker with its header and slots in the host region (raw `malloc`) and the dispatchers' lookup slots;
+    - in `link.mjs`, an injected table, `depth` and page-state table, plus tombstones, `invalidate` (a module goes whole, and only slots still pointing into it become tombstones) and a rehash that drops tombstones and frees the old slots;
+    - `aot-catalog.mjs`, which matches a module by path, sha256 and base. A module the catalog promises but that can't be linked stops with a `tempwind: catalog:` line;
+    - `lazy-node.mjs`, whose files take their size from the manifest and load whole on first access, through `fs` in Node or a synchronous XHR in a Worker;
+    - fds 0-2 as FIFOs, which `link.test.mjs` now expects (decision 11);
+    - `run-wine.mjs`, documented in `commands.md`, with `--stats`.
+  - **Tests:** the linker tests (invalidate, tombstone reuse, a slot another module owns, rehash) and the host tests (FIFO stdio, a lazy node's stat before its first read, catalog hit and fallback). The programs test is in place: all four programs boot in run mode to "tw_run_loop (M3 WP5)", and the program and ntdll are linked from the catalog, with no fallback and no run-time translation.
+  - **Contract:** `wine-build.md` now says a program's sha256 comes from its own bytes, so `run-wine.mjs` matches a program the manifest doesn't list (`de3e6c5`). It landed on the track after the code that implements it.
+  - **For WP5:** `target/native/*.exe` don't match the catalog's sha256, since each MinGW build's bytes differ. Use `TW_WINE_DIR`'s programs, as the test does.
 - **Next:**
-  - on WP3's report: review, verify, merge, ledger line, checkpoint;
-  - WP5 after WP3 (WP1 is merged);
+  - WP5, the run path and first light. It is briefed when the owner says to go on (see below);
   - WP6 after WP5's hello (WP4 is merged).
+- **Rate limit:** the five-hour limit read `allowed_warning` at 15:41 UTC, and it resets at 19:50 UTC. The owner paused at that reading on 2026-11-14, so WP5 waits for the owner's word.
 - **CI (`wine-unix`):**
   - **At `ee7884f`,** which contains WP1's and WP2's merges, it passed in about 3 minutes.
   - **At WP4's merge `30dcc06`** it passed in 2.5 minutes, catalog gate included. The gate step took 3 s. Its `--check --all` fails on any closure file missing from the catalog, so the pass covers the whole closure. The log's tail doesn't reach the gate's own lines, and the full log's host is blocked by the session's proxy.
@@ -770,7 +826,7 @@ The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarte
 
 ## Next step: M3, "Boot: hello.exe on Wine", in a new session
 
-**M3 is planned, started and paused (2026-11-14):** its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. Resume from "M3 progress (paused 2026-11-14)", not from the start below.
+**M3 is planned and under way, paused on 2026-11-20 with WP1 to WP4 merged.** Its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. Resume from "How to resume" in "M3 progress (paused 2026-11-20)", not from the start below.
 
 **Start:** read `docs/plan.md` ("Phase 2 milestones", M3), this note's M2 section ("Decisions taken when planning M2", "Second resume", "The close"), `ARCHITECTURE.md`, `docs/design/wine-unix.md` (v1 with M2's amendments) and `abi.md` v5. Then do the research pass into `docs/dev/research.md`. M2's retro (`docs/dev/agent-runs.md`) has a lead for it: give the source reading to a subagent, since planning M2 took 27.5M of the coordinator's 112.8M cache reads, at 313k a request.
 
