@@ -232,7 +232,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - `load_ntdll_functions` writes `TW_SYSCALL_DISPATCHER` into `__wine_syscall_dispatcher` and `TW_UNIX_CALL_DISPATCHER` into `__wine_unix_call_dispatcher` (patch 0301, edited in place).
   - `signal_wasm64.c` commits the page at 0x7ffe1000 and writes `TW_SYSCALL_DISPATCHER` there.
   - `__wine_unixlib_handle` gets the host address of `unix_call_funcs`, an opaque handle.
-  - In M2 all three slots held the poison value `TW_NO_DISPATCHER`. The addresses are lookup keys for the dispatchers (`abi.md` v5, "Syscalls and unix calls").
+  - In M2 all three slots held a non-canonical poison value, 0xDEAD_0000_0000_0000, which M3 removed from the header. The addresses are lookup keys for the dispatchers (`abi.md` v5, "Syscalls and unix calls").
 - **`BOOT_STOP_AT_ENTRY`:** `signal_start_thread` builds the start state as `init_syscall_frame` does (`signal_x86_64.c` L2896):
   - a `CONTEXT` at `((StackBase − 0x28) & ~15) − sizeof(CONTEXT)` with `ContextFlags = CONTEXT_FULL`, Rip = `RtlUserThreadStart`, Rcx = the entry, Rdx = the PEB, Rsp = StackBase − 0x28, SegCs 0x33, SegDs, SegEs, SegGs and SegSs 0x2b, SegFs 0, EFlags 0x200, the FPU control word 0x27f and MXCSR 0x1f80;
   - the main thread's state block: RIP = `LdrInitializeThunk`, RCX = the `CONTEXT`, RDX = the PEB, RSP = the `CONTEXT` − 8, the other GPRs 0, RFLAGS 0x200, the `TW_INIT_*` FP state (MXCSR 0x1f80, FCW 0x27f, FTW 0xffff; `abi.md` v5), GS base = the TEB;
