@@ -728,6 +728,18 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
   - `wine-unix` passed at WP3's merge `272fa1f`.
 - **WP5** (deep-worker) was briefed at 22:50 UTC on `m3-wp5-wip`, from `5550ad4`. The brief is its row in the table, plus the points under "How to resume" above. It also points `TW_RT_WASM` and `TW_FP_WASM` at the main tree's wasm32 builds, and sends translator or contract defects to the coordinator mid-run.
 - **Checkpoint:** 284,039 tokens (28.4 %) at the resume, which is above 25 %. The whole session so far: $91.04 and 235.2M cache reads. A compaction is asked for while WP5 runs.
+- **WP5's first light (23:00 UTC), a contract defect:**
+  - **What happened:** with the run loop in place, hello.exe ran `LdrInitializeThunk` translated, then exited with 0xc0000135. The loader found no `kernel32.dll`, because the boot set wrote none of `drive_c`'s files.
+  - **Decision, the install copies** (`wine-unix.md` section 8, `09fad41`, before WP5's code):
+    - for each file in the prefix's `drive_c` whose name is a closure PE file's, the host makes a MEMFS symlink to the PE dir's file;
+    - that is 78 links, `system32\drivers` and `winsxs` included. WP5 had proposed `system32` alone, which would have misplaced the 8 `.sys` files;
+    - symlinks rather than the prefix's own copies, which are native Wine's build (kernel32.dll is 2.4 MB there against our 0.9 MB) and would load extra bytes.
+  - **Result:** with WP5's narrower local version, hello.exe already matched `hello.expected` and native Wine byte for byte, exiting 0 with no `tempwind:` line. WP5's figures, to be checked at the merge: 1,339 ms to exit, 5 AOT links, 0 image fallbacks, 11 run-time translations, 12 lazy files and 9.57 MB.
+- **No `\KnownDlls` until M4:** the wineboot skip creates none, so a KnownDll in a program's own directory would win over system32's, which natively it doesn't. This is recorded in section 8; no M3 program ships one.
+- **After the compaction (23:00 UTC):**
+  - `get_session` read 328,732 tokens (32.9 %), probably still the pre-compaction figure, since the reading lags. It is read again at WP5's merge.
+  - Session: $98.13 and 249.6M cache reads.
+  - The seven-day rate limit shows a warning again; it resets at 01:00 UTC on 2026-11-21.
 - **Next:**
   - on WP5's report: review, rerun the checks on the merge candidate, merge, ledger line, checkpoint;
   - WP6 after WP5's hello passes;
