@@ -124,6 +124,11 @@ pub fn op_effect(op: &Op) -> Effect {
             may_leave: true,
             ..Effect::default()
         },
+        Op::PageRangeCheck { lo, hi, when } => Effect {
+            uses: value(lo) | value(hi) | opt(when),
+            may_leave: true,
+            ..Effect::default()
+        },
         Op::DivWide { hi, lo, d, .. } => reads(value(hi) | value(lo) | value(d)),
         Op::RepString { op, rep, delta, .. } => {
             // `emit/string.rs`: the implicit registers. They are read and

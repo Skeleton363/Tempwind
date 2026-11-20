@@ -4,6 +4,7 @@
 //! The module ABI is in [`abi`] and `docs/design/abi.md`.
 
 pub mod abi;
+pub mod bridge;
 pub mod emit;
 pub mod func;
 pub mod image;

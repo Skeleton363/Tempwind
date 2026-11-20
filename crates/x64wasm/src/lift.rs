@@ -264,6 +264,7 @@ impl<'a> Lifter<'a> {
             vtemps: 0,
             ea: None,
             seg_ea: None,
+            ea_rsp: None,
             checks: self.checks,
             effect_temps: None,
         };

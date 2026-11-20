@@ -5,7 +5,8 @@
 //! x64wasm ir        --base 0x1000 --file code.bin --entry 0x1010
 //! x64wasm wat       --base 0x1000 --hex "4801d8c3" --shared
 //! x64wasm translate --base 0x1000 --file code.bin --max-function-insns 500 --no-depth-guard -o out.wasm
-//! x64wasm translate-pe basic.exe --out-dir out [--entries all|entry]
+//! x64wasm translate-pe basic.exe --out-dir out [--entries all|entry] [--shared]
+//! x64wasm bridge --out bridge.wasm
 //! x64wasm gen-header [--out native/wine/include/tempwind/abi.h]
 //! ```
 
@@ -64,8 +65,17 @@ enum Command {
         /// Print the address of every unsupported site.
         #[arg(long)]
         list_unsupported: bool,
+        /// Import shared memory (max 16 GiB), as a Wine process's modules do.
+        #[arg(long)]
+        shared: bool,
         #[command(flatten)]
         extra: Extra,
+    },
+    /// Write the bridge module of a Wine process (`abi.md` v5, "The bridge").
+    Bridge {
+        /// Output .wasm file.
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Write the ABI's C header for Wine's Unix side (`abi.md`, "The C
     /// header"). Run from the repository root.
@@ -216,6 +226,7 @@ fn translate_pe(
     out_dir: &Path,
     entries: Entries,
     list_unsupported: bool,
+    shared: bool,
     extra: &Extra,
 ) -> Result<()> {
     let data = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
@@ -229,7 +240,10 @@ fn translate_pe(
         .and_then(|n| n.to_str())
         .context("file name is not UTF-8")?;
     let mut plan = LoadPlan::from_pe(&pe, name).context("building the load plan")?;
-    let opts = extra.apply(Options::default());
+    let opts = extra.apply(Options {
+        shared_memory: shared,
+        ..Options::default()
+    });
     plan.options = (&opts).into();
     let start = Instant::now();
     let set = match entries {
@@ -294,8 +308,15 @@ fn main() -> Result<()> {
             out_dir,
             entries,
             list_unsupported,
+            shared,
             extra,
-        } => translate_pe(&file, &out_dir, entries, list_unsupported, &extra)?,
+        } => translate_pe(&file, &out_dir, entries, list_unsupported, shared, &extra)?,
+        Command::Bridge { out } => {
+            let wasm = x64wasm::bridge::module();
+            validate(&wasm)?;
+            std::fs::write(&out, &wasm).with_context(|| format!("writing {}", out.display()))?;
+            eprintln!("{} bytes -> {}", wasm.len(), out.display());
+        }
         Command::GenHeader { out } => {
             if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
                 std::fs::create_dir_all(dir)

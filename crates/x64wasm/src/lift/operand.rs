@@ -6,7 +6,7 @@ use iced_x86::{OpKind, Register};
 use super::lower::Lower;
 use super::{Lowered, Unsupported};
 use crate::abi;
-use crate::ir::{BinOp, Gpr, Value, Width};
+use crate::ir::{BinOp, Gpr, RSP, Value, Width};
 
 /// A general-purpose register operand: which register and which part.
 #[derive(Clone, Copy, Debug)]
@@ -72,8 +72,10 @@ impl Lower<'_> {
             }
             Value::Imm(if addr32 { disp & 0xffff_ffff } else { disp })
         } else {
+            let rsp = self.ea_rsp.unwrap_or(Value::Reg(RSP));
             let full = |r: Register| -> Lowered<Value> {
                 match (gpr(r)?, addr32) {
+                    ((RSP, Part::Q), false) | ((RSP, Part::D), true) => Ok(rsp),
                     ((g, Part::Q), false) | ((g, Part::D), true) => Ok(Value::Reg(g)),
                     _ => Err(Unsupported),
                 }
