@@ -108,17 +108,21 @@ fn plan_records_the_options() {
     std::fs::create_dir_all(&dir).unwrap();
     let exe = dir.join("tiny.exe");
     std::fs::write(&exe, minimal_image()).unwrap();
-    let cases: [(&[&str], [bool; 5]); 5] = [
-        (&[], [false, false, false, false, true]),
+    let cases: [(&[&str], [bool; 6]); 6] = [
+        (&[], [false, false, false, false, true, false]),
         (
             &["--null-check", "--counters"],
-            [true, false, true, false, true],
+            [true, false, true, false, true, false],
         ),
-        (&["--store-check"], [false, true, false, false, true]),
-        (&["--sync-all"], [false, false, false, true, true]),
-        (&["--no-structured"], [false, false, false, false, false]),
+        (&["--store-check"], [false, true, false, false, true, false]),
+        (&["--sync-all"], [false, false, false, true, true, false]),
+        (
+            &["--no-structured"],
+            [false, false, false, false, false, false],
+        ),
+        (&["--shared"], [false, false, false, false, true, true]),
     ];
-    for (flags, [null_check, store, counters, sync_all, structured]) in cases {
+    for (flags, [null_check, store, counters, sync_all, structured, shared]) in cases {
         let out_dir = dir.join(format!("out{}", flags.join("")));
         let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
             .arg("translate-pe")
@@ -144,6 +148,7 @@ fn plan_records_the_options() {
                 "counters": counters,
                 "syncAll": sync_all,
                 "structured": structured,
+                "sharedMemory": shared,
             }),
             "{flags:?}"
         );

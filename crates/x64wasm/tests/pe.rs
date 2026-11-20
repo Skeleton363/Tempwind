@@ -746,6 +746,7 @@ fn load_plan_follows_the_runtime_schema() {
             "counters": false,
             "syncAll": false,
             "structured": true,
+            "sharedMemory": false,
         },
     });
     assert_eq!(got, want);

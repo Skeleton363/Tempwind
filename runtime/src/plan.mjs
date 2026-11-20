@@ -29,6 +29,7 @@ function options(json) {
     counters: flag('counters'),
     syncAll: flag('syncAll'),
     structured: flag('structured', true),
+    sharedMemory: flag('sharedMemory'),
   };
 }
 

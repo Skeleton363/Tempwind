@@ -75,7 +75,7 @@ test('basic.exe built with --null-check --store-check: the same output (no false
 test('basic.exe with --null-check --store-check: `hidden` is translated at run time with the plan\'s checks', async () => {
   const { aot, plan } = inputs('checks');
   const json = JSON.parse(readFileSync(plan, 'utf8'));
-  assert.deepEqual(json.options, { nullCheck: true, storeCheck: true, counters: false, syncAll: false, structured: true });
+  assert.deepEqual(json.options, { nullCheck: true, storeCheck: true, counters: false, syncAll: false, structured: true, sharedMemory: false });
   const rt = await RuntimeTranslator.load(readFileSync(RT));
   const modules = [];
   const translate = rt.translate.bind(rt);
@@ -93,7 +93,7 @@ test('basic.exe with --null-check --store-check: `hidden` is translated at run t
 test('basic.exe with --sync-all --no-structured: `hidden` is translated at run time in the reference modes', async () => {
   const { aot, plan } = inputs('reference');
   const json = JSON.parse(readFileSync(plan, 'utf8'));
-  assert.deepEqual(json.options, { nullCheck: false, storeCheck: false, counters: false, syncAll: true, structured: false });
+  assert.deepEqual(json.options, { nullCheck: false, storeCheck: false, counters: false, syncAll: true, structured: false, sharedMemory: false });
   const rt = await RuntimeTranslator.load(readFileSync(RT));
   const flags = [];
   const translate = rt.translate.bind(rt);

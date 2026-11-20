@@ -14,7 +14,7 @@ import {
   TEB_TLS_POINTER, TEB_PEB, PEB_BEING_DEBUGGED, PEB_IMAGE_BASE, PEB_NUMBER_OF_PROCESSORS,
   PEB_OS_MAJOR, PEB_OS_MINOR, PEB_OS_BUILD, PEB_OS_PLATFORM_ID, OS_VERSION, gprOffset,
   DLL_THREAD_ATTACH, DLL_THREAD_DETACH, TEB_SIZE, STACK_ALIGN, COUNTER_SLOTS,
-  RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_FLAG_COUNTERS, RT_FLAG_SYNC_ALL, RT_FLAG_REFERENCE_LAYOUT,
+  RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_FLAG_COUNTERS, RT_FLAG_SYNC_ALL, RT_FLAG_REFERENCE_LAYOUT, RT_FLAG_SHARED_MEMORY,
 } from './abi.mjs';
 import { createMemory64 } from './memory.mjs';
 import { GuestMemory } from './guest-memory.mjs';
@@ -40,6 +40,12 @@ const roundUp = (v, a) => (v + a - 1n) / a * a;
 
 /** An error stop of the process (exit status 125 in the CLI). */
 export class ProcessError extends Error {}
+
+/** The run-time translator's request flags (abi.md, "Request") for a plan's `options` (runtime.md, "Load plan"). */
+export function requestFlags(o) {
+  return (o.nullCheck ? RT_FLAG_NULL_CHECK : 0) | (o.storeCheck ? RT_FLAG_STORE_CHECK : 0) | (o.counters ? RT_FLAG_COUNTERS : 0)
+    | (o.syncAll ? RT_FLAG_SYNC_ALL : 0) | (o.structured ? 0 : RT_FLAG_REFERENCE_LAYOUT) | (o.sharedMemory ? RT_FLAG_SHARED_MEMORY : 0);
+}
 
 /** A bump allocator over [base, limit) of guest memory (fresh memory is zero). */
 export class Bump {
@@ -542,9 +548,7 @@ export class Process {
     const s = executableSection(this.plan, rip);
     try {
       // The image's options (the plan's `options`): the same checks, counters and reference modes as the AOT module.
-      const o = this.plan.options;
-      const flags = (o.nullCheck ? RT_FLAG_NULL_CHECK : 0) | (o.storeCheck ? RT_FLAG_STORE_CHECK : 0) | (o.counters ? RT_FLAG_COUNTERS : 0)
-        | (o.syncAll ? RT_FLAG_SYNC_ALL : 0) | (o.structured ? 0 : RT_FLAG_REFERENCE_LAYOUT);
+      const flags = requestFlags(this.plan.options);
       return this.rt.translate({ codeBase: s.va, code: this.mem.read(s.va, Number(s.mappedSize)), entry: rip, known: this.linker.sortedKeys(), flags });
     } catch (e) {
       throw new ProcessError(`run-time translation at ${hex(rip)}: ${e.message}`);

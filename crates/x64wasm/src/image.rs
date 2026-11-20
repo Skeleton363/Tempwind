@@ -92,6 +92,9 @@ pub struct PlanOptions {
     pub counters: bool,
     pub sync_all: bool,
     pub structured: bool,
+    /// The module imports a shared memory (`translate-pe --shared`), so code
+    /// translated at run time must too.
+    pub shared_memory: bool,
 }
 
 impl Default for PlanOptions {
@@ -108,6 +111,7 @@ impl From<&Options> for PlanOptions {
             counters: o.counters,
             sync_all: o.sync_all,
             structured: o.structured,
+            shared_memory: o.shared_memory,
         }
     }
 }
@@ -256,11 +260,13 @@ impl LoadPlan {
             counters,
             sync_all,
             structured,
+            shared_memory,
         } = self.options;
         writeln!(
             o,
             "  \"options\": {{ \"nullCheck\": {null_check}, \"storeCheck\": {store_check}, \
-             \"counters\": {counters}, \"syncAll\": {sync_all}, \"structured\": {structured} }}"
+             \"counters\": {counters}, \"syncAll\": {sync_all}, \"structured\": {structured}, \
+             \"sharedMemory\": {shared_memory} }}"
         )?;
         writeln!(o, "}}")
     }
