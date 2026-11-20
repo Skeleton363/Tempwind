@@ -8,7 +8,7 @@ Wine 11's ntdll Unix part and wineserver, built with Emscripten as one wasm64 mo
   - the run loop and translated code (section 12);
   - the rebased closure and the top-down ceiling (section 4);
   - invalidation and write-copy (section 6);
-  - running, process exit, stdio as FIFOs and the lazy boot set (section 8).
+  - running, process exit, stdio as FIFOs, the lazy boot set and the install copies in `drive_c` (section 8).
 
 Line numbers refer to the pristine wine-11.0 tarball.
 
@@ -252,6 +252,11 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - the overlay, written up front;
   - the program, written up front in `drive_c`: `C:\tempwind\<name>.exe` by default (in M2, `tests/native`'s hello);
   - from M3, as lazy nodes: every closure PE file, rebased (`wine-build.md`, "Packaging"), and `closure.json`'s `data_files`. In M2 these were the two PE files the boot opens, the native tree's whole `nls/` directory and `wine.inf`, written up front.
+  - from M3, the install copies. wineboot copies each builtin PE file into the prefix (`install_fake_dll`, `dlls/setupapi/fakedll.c` L938-975), and the prefix's `drive_c` keeps those files. For each of them whose name is a closure PE file's, the host makes a MEMFS symlink at its path to that file in the PE dir (`/wine/lib/wine/x86_64-windows/<name>`, a lazy node). It takes them from the prefix's `drive_c` listing, as it takes the directories. In `wine-4c6ec0d` that is 78 links: 66 in `windows/system32`, the 8 `.sys` files in `windows/system32/drivers`, `explorer.exe` in `windows`, and the `winsxs` copies of comctl32, msvcp90 and msvcr90. The prefix's own copies are never written.
+    - **Why:** the PE loader loads a DLL only through a file. `find_dll_file` (`dlls/ntdll/loader.c` L3256) tries `\KnownDlls` (`open_known_dll`, L2747-2754), then searches the load path (`search_dll_file`, L3205; L3300-3305). Outside prefix bootstrap nothing finds a builtin without its file: `find_builtin_without_file` (L3132, L3144-3148) and the Unix side's `is_builtin_path` (`unix/loader.c` L1448-1454) act only then. Without the copies kernel32.dll isn't found, and the process exits with 0xc0000135 (WP5's first light).
+    - **Then:** mapping the file's section reaches `load_builtin` (`unix/virtual.c` L3521-3526). For a `wine_builtin` image (`unix/loader.c` L1386-1390) it maps the builtin from the PE dir through `find_builtin_dll` instead, so the install copy gives the loader only a file to find and its header.
+    - **Why symlinks, not the prefix's copies:** those are native Wine's build (kernel32.dll is 2.4 MB there and 0.9 MB in ours, with a different sha256). A symlink reaches the PE dir's lazy node, so it loads no extra bytes, and the module mapped is the PE dir's file, which the catalog matches.
+    - **No `\KnownDlls` until M4** (section 13): wineboot creates them (`create_known_dlls`, `programs/wineboot/wineboot.c` L997) and the wineboot skip doesn't, so the loader always searches the load path. A KnownDll in a program's own directory would then win over system32's, which natively it doesn't. No M3 program ships one.
 
   `runtime/src/wine/boot-set.mjs` writes it and enters `boot`. The boot test records the files the boot opened.
 - **Lazy nodes (M3):**

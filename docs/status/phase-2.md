@@ -600,7 +600,7 @@ The owner paused M3 again at 15:47 UTC on 2026-11-20. The five-hour rate limit r
        - "done" is the row's done-when, with `programs.test.mjs` switched from the run loop's stop to stdout (CRLF) and the exit code, and `run-wine.mjs --stats` for the measurements.
   3. **Then:** WP6 (builder) after WP5's hello passes, then `/milestone-close`.
 - **In this session,** while its container lives: the inputs above are prepared, and a draft of WP5's brief is in the session's scratchpad, as `wp5-brief.md`.
-- **Open item:** the `wine-unix` run at `c67bc06` hung in its prepare step. Read its log once it times out: the native Wine run in `prepare.sh` has no timeout of its own.
+- **Open item:** the `wine-unix` run at `c67bc06` didn't hang after all. It passed after a 46.6-minute prepare step ("Second resume" below), and the cause is unknown.
 
 ### First pause (2026-11-14)
 The owner paused M3 at 20:15 UTC, when the five-hour rate limit read `allowed_warning`. Nothing was left uncommitted: each track's work was on its side branch, and no work package was merged yet. What follows was the state then; the resume below supersedes it.
@@ -721,6 +721,18 @@ The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarte
   - **At `c67bc06`** the run has sat in its prepare step since 15:09 UTC and was still running at 15:35. The job's timeout is 60 minutes. Its log will say which command hung; the native Wine run in `prepare.sh` has no timeout of its own.
 - **Disk:** 20 GB free once the merged worktrees' `target/` directories were deleted (WP2's held 12 GB).
 
+### Second resume (2026-11-20, 22:47 UTC)
+The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container was intact: `target/wine` held the whole closure's catalog, and Docker was up.
+- **CI:**
+  - The run at `c67bc06` didn't hang. Its prepare step took 46.6 minutes and then passed; every other run's takes 1.5-3 minutes. The cause is unknown (its log's middle can't be read here), so it is recorded and watched, not fixed.
+  - `wine-unix` passed at WP3's merge `272fa1f`.
+- **WP5** (deep-worker) was briefed at 22:50 UTC on `m3-wp5-wip`, from `5550ad4`. The brief is its row in the table, plus the points under "How to resume" above. It also points `TW_RT_WASM` and `TW_FP_WASM` at the main tree's wasm32 builds, and sends translator or contract defects to the coordinator mid-run.
+- **Checkpoint:** 284,039 tokens (28.4 %) at the resume, which is above 25 %. The whole session so far: $91.04 and 235.2M cache reads. A compaction is asked for while WP5 runs.
+- **Next:**
+  - on WP5's report: review, rerun the checks on the merge candidate, merge, ledger line, checkpoint;
+  - WP6 after WP5's hello passes;
+  - then `/milestone-close`.
+
 ## What works
 
 | Item | Evidence |
@@ -826,7 +838,7 @@ The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarte
 
 ## Next step: M3, "Boot: hello.exe on Wine", in a new session
 
-**M3 is planned and under way, paused on 2026-11-20 with WP1 to WP4 merged.** Its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. Resume from "How to resume" in "M3 progress (paused 2026-11-20)", not from the start below.
+**M3 is under way: WP1 to WP4 are merged, and WP5 has run since 22:50 UTC on 2026-11-20.** Its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. The current state is in "M3 progress (paused 2026-11-20)", its "How to resume" and "Second resume", not in the start below.
 
 **Start:** read `docs/plan.md` ("Phase 2 milestones", M3), this note's M2 section ("Decisions taken when planning M2", "Second resume", "The close"), `ARCHITECTURE.md`, `docs/design/wine-unix.md` (v1 with M2's amendments) and `abi.md` v5. Then do the research pass into `docs/dev/research.md`. M2's retro (`docs/dev/agent-runs.md`) has a lead for it: give the source reading to a subagent, since planning M2 took 27.5M of the coordinator's 112.8M cache reads, at 313k a request.
 
