@@ -3,7 +3,9 @@
 // in Node, from the static assets in the browser) and passes their bytes.
 //
 // - the prefix at its recorded path: its .reg files, the dosdevices
-//   symlinks and drive_c's directories (not drive_c's files);
+//   symlinks and drive_c's directories (not drive_c's files), and from M3
+//   the install copies: each drive_c file named like a closure PE file is a
+//   symlink to it in PE_DIR;
 // - Wine's install tree at the constant paths of section 8: the PE files the
 //   boot opens under PE_DIR, the data files (closure.json's data_files, the
 //   NLS files and wine.inf) under DATA_DIR;
@@ -33,6 +35,9 @@ export const BOOT_DLLS = Object.freeze(['ntdll.dll', 'apisetschema.dll']);
  * @param {Record<string, Uint8Array>} set.prefixFiles  top-level prefix files by name (system.reg, user.reg, userdef.reg, ...)
  * @param {string[]} set.prefixDirs  the prefix's directories, relative (drive_c, drive_c/windows, ...)
  * @param {[string, string][]} set.prefixLinks  symlinks [relative path, target] (dosdevices/c:, ...)
+ * @param {string[]} [set.installFiles]  the paths of drive_c's files, relative to the prefix
+ *   (drive_c/windows/system32/kernel32.dll, ...): each whose name is a lazy file's in PE_DIR
+ *   becomes a symlink to it (the install copies); the others are not written
  * @param {Record<string, Uint8Array>} [set.dlls]  PE files by name, for PE_DIR, written up front (M2)
  * @param {Record<string, Uint8Array>} [set.data]  data files by path relative to DATA_DIR (nls/locale.nls, wine.inf), up front (M2)
  * @param {{path: string, size: number, source: string}[]} [set.lazy]  lazy files (the manifest's entries with `lazy`)
@@ -61,6 +66,16 @@ export function installBootSet(FS, set) {
       loaded.bytes += bytes.length;
       return bytes;
     });
+  }
+  // The install copies (wine-unix.md, section 8): Wine's loader finds a DLL
+  // only by its file in drive_c, then maps the builtin from PE_DIR instead.
+  // A symlink to the lazy node loads nothing extra, and an fd opened through
+  // it carries the node's own path, which the catalog matches. drive_c's
+  // files are never written otherwise, so a clash throws (EEXIST).
+  const pe = new Set((set.lazy ?? []).filter((f) => parent(f.path) === PE_DIR).map((f) => f.path));
+  for (const rel of set.installFiles ?? []) {
+    const target = `${PE_DIR}/${rel.slice(rel.lastIndexOf('/') + 1)}`;
+    if (pe.has(target)) FS.symlink(target, `${prefix}/${rel}`);
   }
   FS.mkdirTree(parent(OVERLAY_PATH));
   FS.writeFile(OVERLAY_PATH, set.overlay);

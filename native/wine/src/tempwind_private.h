@@ -90,4 +90,17 @@ void tw_page_watch( const void *addr, size_t size, int on );
 /* boot.c (section 8): boot's flags, 0 (run) or BOOT_STOP_AT_ENTRY (1). */
 extern int tw_boot_flags;
 
+/* M3 WP5. boot.c (section 8): process exit, from exit_process and
+ * abort_process (patch 0302); back to boot with the full Windows status. */
+_Noreturn void tw_process_exit( int status );
+
+/* M3 WP5. run.c (section 12): set by a host function that stops with
+ * EXIT_HOST, before it returns STATUS_EXIT; the run loop needs a reason. */
+extern const char *tw_host_stop_reason;
+
+/* M3 WP5. virtual.c (patch 0106): the protection byte of addr's page, and in
+ * *base, *size the run of committed executable pages around it inside its
+ * view (size 0: none), which the run loop passes to tw_translate. */
+unsigned int tw_exec_range( uint64_t addr, uint64_t *base, uint64_t *size );
+
 #endif /* TEMPWIND_PRIVATE_H */

@@ -55,7 +55,8 @@ export async function sha256Hex(bytes) {
  *   (the lazy nodes' sources, and catalog/<module>.wasm and .plan.json)
  * @param {object} opts.manifest  boot-set.json, parsed
  * @param {object|null} opts.catalog  catalog.json, parsed (null: every image falls back)
- * @param {{path: string, files: Record<string, Uint8Array>, dirs: string[], links: [string, string][]}} opts.prefix
+ * @param {{path: string, files: Record<string, Uint8Array>, dirs: string[], links: [string, string][],
+ *   installFiles: string[]}} opts.prefix  readPrefix's (installFiles: drive_c's file paths, for the install copies)
  * @param {Uint8Array} opts.overlay  native/wine/prefix/overlay.reg
  * @param {{name: string, bytes: Uint8Array}} opts.program  written up front at C:\tempwind\<name>
  * @param {string[]} [opts.args]  the program's arguments
@@ -223,6 +224,7 @@ export async function createWineProcess(opts) {
   // 6. The boot set, and the launch directory.
   const loaded = installBootSet(host.FS, {
     prefixPath, prefixFiles: opts.prefix.files, prefixDirs: opts.prefix.dirs, prefixLinks: opts.prefix.links,
+    installFiles: opts.prefix.installFiles,
     lazy: manifest.filter((f) => f.lazy),
     read: opts.read,
     programs: { [programDos]: opts.program.bytes },

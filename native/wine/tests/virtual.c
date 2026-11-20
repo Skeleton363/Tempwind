@@ -5,8 +5,9 @@
  * NtAllocateVirtualMemory and NtFreeVirtualMemory, and the backend under
  * them (sections 4-6): zero on recommit, protect and query, write-watch and
  * PAGE_WATCH, the guest regions only, the heap cap, file views and pointer
- * validation, and invalidation (M3). Image placement, the top-down ceiling
- * and tw_image_mapped need the server's sections, so the `section` harness
+ * validation, invalidation (M3), and the run loop's executable range (M3).
+ * Image placement, the top-down ceiling and tw_image_mapped need the
+ * server's sections, so the `section` harness
  * tests them. tests/wine/virtual.test.mjs runs this one.
  *
  * Copyright 2026 the Tempwind authors
@@ -631,6 +632,40 @@ static const char *invalidate_code( void )
     return NULL;
 }
 
+/* The run loop's executable range (section 12, patch 0106): the run of
+ * committed, executable, non-guard pages around an address inside its view,
+ * and the protection byte of the address's page. */
+static const char *exec_range( void )
+{
+    uint64_t base = 0, b, n;
+    void *ptr;
+    SIZE_T size;
+    ULONG old;
+    unsigned int vprot;
+
+    ensure_init();
+    TW_EXPECT( !alloc( &base, 0x5000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE ) );
+    ptr = (void *)(uintptr_t)(base + 0x1000);
+    size = 0x2000;
+    TW_EXPECT( !NtProtectVirtualMemory( NtCurrentProcess(), &ptr, &size, PAGE_EXECUTE_READ, &old ) );
+    ptr = (void *)(uintptr_t)(base + 0x3000);
+    size = 0x1000;
+    TW_EXPECT( !NtProtectVirtualMemory( NtCurrentProcess(), &ptr, &size, PAGE_EXECUTE_READ | PAGE_GUARD, &old ) );
+
+    vprot = tw_exec_range( base + 0x1800, &b, &n );
+    TW_EXPECT( (vprot & 0x04) && b == base + 0x1000 && n == 0x2000 );  /* VPROT_EXEC */
+    vprot = tw_exec_range( base + 0x2fff, &b, &n );
+    TW_EXPECT( b == base + 0x1000 && n == 0x2000 );
+    vprot = tw_exec_range( base, &b, &n );  /* read-write */
+    TW_EXPECT( vprot && !(vprot & 0x04) && n == 0 );
+    vprot = tw_exec_range( base + 0x3000, &b, &n );  /* a guard page */
+    TW_EXPECT( (vprot & 0x14) == 0x14 && n == 0 );
+    TW_EXPECT( !release( base, 0, MEM_RELEASE ) );
+    TW_EXPECT( tw_exec_range( base + 0x1000, &b, &n ) == 0 && n == 0 );  /* no view */
+    TW_EXPECT( tw_exec_range( 0xdead000000000001ull, &b, &n ) == 0 && n == 0 );  /* non-canonical */
+    return NULL;
+}
+
 static const struct tw_check checks[] =
 {
     { "init_first_teb", init_first_teb },
@@ -647,6 +682,7 @@ static const struct tw_check checks[] =
     { "file_view_write_back", file_view_write_back },
     { "pointer_validation", pointer_validation },
     { "invalidate_code", invalidate_code },
+    { "exec_range", exec_range },
     { "second_writable_view", second_writable_view, TW_ALONE },
 };
 

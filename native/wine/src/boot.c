@@ -4,7 +4,8 @@
  * boot() runs Wine's __wine_main as the exec'd wine loader would. Once
  * signal_start_thread (signal_wasm64.c) has built the main thread's start
  * state, BOOT_STOP_AT_ENTRY comes back here, and run mode (flags 0) enters
- * tw_run_loop (run.c).
+ * tw_run_loop (run.c). In run mode the process's exit comes back here too:
+ * exit_process and abort_process call tw_process_exit (patch 0302).
  *
  * Copyright 2026 the Tempwind authors
  *
@@ -31,8 +32,13 @@ extern void __wine_main( int argc, char *argv[] );
  * server moves the cwd (03xx). */
 const char *tw_launch_dir;
 
+/* longjmp's values to boot_stop */
+#define BOOT_STOPPED 1
+#define BOOT_EXITED  2
+
 static jmp_buf boot_stop;
 static int booting;
+static int exit_status;
 
 /* boot's flags, for signal_start_thread (signal_wasm64.c). */
 int tw_boot_flags;
@@ -40,7 +46,8 @@ int tw_boot_flags;
 /* boot(argc, argv, flags), entered through WebAssembly.promising: argv[0] is
  * /wine/bin/wine, argv[1] the program as a DOS path, then its arguments.
  * flags is 0 (run) or BOOT_STOP_AT_ENTRY; any other value stops loudly.
- * Returns 0 once stopped at the entry; a Wine error ends in exit(). */
+ * Returns 0 once stopped at the entry, and in run mode the process's exit
+ * status, the full Windows status; a Wine error ends in exit(). */
 int boot( int argc, char **argv, int flags )
 {
     static char cwd[PATH_MAX];
@@ -55,12 +62,19 @@ int boot( int argc, char **argv, int flags )
 
     tw_boot_flags = flags;
     booting = 1;
-    if (!setjmp( boot_stop ))
+    switch (setjmp( boot_stop ))
     {
+    case 0:
         __wine_main( argc, argv );
         tw_unsupported( "boot: __wine_main returned" );
+    case BOOT_STOPPED:
+        return 0;
+    default:
+        /* the longjmp left the translated frames' depth behind (abi.md v5,
+         * "Trampoline") */
+        tw_depth_set( 0 );
+        return exit_status;
     }
-    return 0;
 }
 
 /* signal_start_thread's end under BOOT_STOP_AT_ENTRY: back to boot, which
@@ -69,5 +83,16 @@ int boot( int argc, char **argv, int flags )
 _Noreturn void tw_boot_stopped( void )
 {
     if (!booting) tw_unsupported( "tw_boot_stopped outside boot" );
-    longjmp( boot_stop, 1 );
+    longjmp( boot_stop, BOOT_STOPPED );
+}
+
+/* Process exit (patch 0302): exit_process and abort_process call it with the
+ * full Windows status, before get_unix_exit_code cuts it. Back to boot,
+ * which returns the status; the longjmp unwinds the translated frames on the
+ * wasm stack as a wasm exception. The instance is finished after it. */
+_Noreturn void tw_process_exit( int status )
+{
+    if (!booting) tw_unsupported( "tw_process_exit outside boot" );
+    exit_status = status;
+    longjmp( boot_stop, BOOT_EXITED );
 }

@@ -63,8 +63,9 @@ export const S_IFIFO = 0o010000;
  * @param {Record<string, Function>} [opts.imports]  more `env` imports, replacing the defaults of
  *   M3's imports (abi.md v5, "Host entries of the Unix side"): the bridge's raw exports for
  *   tw_depth_get, tw_depth_set and tw_flags_materialize, and the host's tw_translate,
- *   tw_image_mapped and tw_invalidate. Without them the bridge's and tw_translate stop loudly,
- *   and tw_image_mapped and tw_invalidate do nothing, which is right for a host that links no
+ *   tw_image_mapped and tw_invalidate. Without them tw_flags_materialize and tw_translate stop
+ *   loudly, tw_depth_get and tw_depth_set keep a cell of the host's (0 unless set), and
+ *   tw_image_mapped and tw_invalidate do nothing, which is right for a host that links no
  *   translated code (the boot and harness tests).
  * @param {() => void} [opts.onMemoryGrown]  after the module grew the memory
  * @param {WebAssembly.Memory} [opts.memory]  the process's memory, if it exists already
@@ -93,9 +94,13 @@ export async function createUnixHost(opts) {
   const noBridge = (name) => () => {
     throw new Error(`${name}: no bridge in this host (abi.md v5, "The bridge")`);
   };
+  // Without a bridge, env.depth is a cell of this host's: green.c saves and
+  // restores it at every switch (abi.md v5, "Green threads"), and a host
+  // that links no translated code keeps it at 0.
+  let depthCell = 0;
   const m3Imports = {
-    tw_depth_get: noBridge('tw_depth_get'),
-    tw_depth_set: noBridge('tw_depth_set'),
+    tw_depth_get: () => depthCell,
+    tw_depth_set: (d) => { depthCell = d; },
     tw_flags_materialize: noBridge('tw_flags_materialize'),
     tw_translate: (rip) => {
       throw new Error(`tw_translate(0x${BigInt.asUintN(64, rip).toString(16)}): no translator in this host`);

@@ -29,6 +29,7 @@
 
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -183,7 +184,11 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     /* BOOT_STOP_AT_ENTRY; boot rejects every other nonzero value */
     if (tw_boot_flags) tw_boot_stopped();
     tw_run_loop( (uint64_t)(ULONG_PTR)state );
-    tw_unsupported( "signal_start_thread: the run loop returned" );
+    /* EXIT_HOST: nothing ends the main thread that way in M3 (section 12);
+     * process exit longjmps to boot instead */
+    fprintf( stderr, "tempwind: unsupported: signal_start_thread: the main thread's run loop returned: %s\n",
+             tw_host_stop_reason );
+    abort();
 }
 
 /* ---- the dispatchers (section 11; abi.md v5, "Syscalls and unix calls") ---- */

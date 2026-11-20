@@ -1,0 +1,59 @@
+ntdll: process exit returns to boot with the full Windows status
+(docs/design/wine-unix.md, section 8, "Process exit (M3)"; abi.md v5,
+"Process exit").
+
+Why: Wine ends the host process with the status cut to an exit code
+(get_unix_exit_code, L89-94: a nonzero status with a zero low byte becomes
+1, and _exit keeps only the low 8 bits). The Unix side is one instance in
+the JS host, which needs the full status, and boot's promise must resolve
+rather than end the runtime.
+
+- exit_process (L1520-1524) and abort_process (L1485-1488) first call
+  tw_process_exit(status) (native/wine/src/boot.c), before
+  get_unix_exit_code. It records the status and longjmps to boot, which
+  resets env.depth to 0 and returns the status. The longjmp unwinds the
+  translated frames on the wasm stack as a wasm exception.
+- exit_process is NtTerminateProcess's end for the current process once
+  RtlExitUserProcess's first NtTerminateProcess(0, status) set
+  process_exiting (dlls/ntdll/unix/process.c L965-985), and exit_thread's
+  for the last thread (L1501); abort_process is NtTerminateProcess's for a
+  process that never made that first call (process.c L982).
+
+Line numbers are wine-11.0's dlls/ntdll/unix/thread.c unless another file
+is named.
+
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -86,6 +86,12 @@
+ 
+ static LONG nb_threads = 1;
+ 
++#ifdef __wasm64__
++/* Tempwind's process exit (wine-unix.md, section 8): records the full
++ * Windows status and longjmps to boot, which returns it (boot.c). */
++extern void DECLSPEC_NORETURN tw_process_exit( int status );
++#endif
++
+ static inline int get_unix_exit_code( NTSTATUS status )
+ {
+     /* prevent a nonzero exit code to end up truncated to zero in unix */
+@@ -1484,6 +1490,9 @@
+  */
+ void abort_process( int status )
+ {
++#ifdef __wasm64__
++    tw_process_exit( status );  /* the full status, before get_unix_exit_code cuts it */
++#endif
+     _exit( get_unix_exit_code( status ));
+ }
+ 
+@@ -1519,6 +1528,9 @@
+  */
+ void exit_process( int status )
+ {
++#ifdef __wasm64__
++    tw_process_exit( status );  /* the full status, before get_unix_exit_code cuts it */
++#endif
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+     process_exit_wrapper( get_unix_exit_code( status ));
+ }
