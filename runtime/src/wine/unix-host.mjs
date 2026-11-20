@@ -11,7 +11,7 @@
 //   `memory_grown` are library functions that call back here) and keeps the
 //   raw exports, which take and return BigInts;
 // - sets ENV in preRun: wine-unix.md section 8's defaults, then the caller's;
-// - makes fds 0-2 non-tty character devices that hand bytes to callbacks;
+// - makes fds 0-2 FIFOs (S_IFIFO, not a tty) that hand bytes to callbacks;
 // - exposes MEMFS (`FS`) and the glue's Module;
 // - enters a raw export through WebAssembly.promising (`call`);
 // - schedules the green threads (wine-unix.md, section 9): it resumes the
@@ -44,6 +44,9 @@ export const DEFAULT_ENV = Object.freeze({
 // Character-device majors for the three stdio devices (Emscripten's own
 // createDevice counts up from 64).
 const STDIO_MAJOR = 200;
+/** The file-type bits of st_mode, and a FIFO's (POSIX; Emscripten's values). */
+export const S_IFMT = 0o170000;
+export const S_IFIFO = 0o010000;
 
 /**
  * Instantiates a Unix-side module.
@@ -250,9 +253,15 @@ function createScheduler(getRaw, stderr, encoder) {
   };
 }
 
-// fds 0-2: non-tty character devices (wine-unix.md, section 8). No tty, so
-// isatty() is false, libc buffers stdout fully, and Wine passes them to the
-// server as plain handles.
+// fds 0-2: FIFOs (wine-unix.md, section 8, "stdio, as FIFOs"). Each is a
+// device node from mkdev whose mode is then set to S_IFIFO: MEMFS refuses
+// FIFO nodes, but I/O keeps going to the device's callbacks by rdev
+// (research.md, 2026-11-14). So fstat reports S_IFIFO and Windows sees pipes:
+// get_device_info reports FILE_DEVICE_NAMED_PIPE (unix/file.c L7215-7218),
+// GetFileType FILE_TYPE_PIPE (kernelbase/file.c L3297-3309), and msvcrt
+// marks the stream WX_PIPE (msvcrt/file.c L755-766), as a native run whose
+// output a pipe captures. No tty, so isatty() is false, and Wine passes them
+// to the server as plain handles (env.c L1363-1370).
 function createStdio(FS, { stdin, stdout, stderr }) {
   const device = (minor, path, ops, flags) => {
     let pending = null; // what ops.read returned beyond the last read's length
@@ -276,7 +285,8 @@ function createStdio(FS, { stdin, stdout, stderr }) {
         return length;
       },
     });
-    FS.mkdev(path, 0o666, dev);
+    const node = FS.mkdev(path, 0o666, dev);
+    node.mode = S_IFIFO | 0o666;
     return FS.open(path, flags);
   };
   const fds = [

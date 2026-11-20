@@ -72,12 +72,12 @@ test('link: wine-unix instantiates with 4 GiB, imports listed, raw malloc/free',
   host.raw.free(p);
   assert.equal(host.raw.malloc(4096n), p, 'free gave the block back');
 
-  // wine-unix.md, section 8: ENV and the stdio devices.
+  // wine-unix.md, section 8: ENV and the stdio devices, FIFOs from M3.
   assert.equal(host.Module.ENV.WINEPREFIX, '/home/runner/wine-prefix');
   assert.equal(host.Module.ENV.TZ, 'UTC');
   for (const fd of [0, 1, 2]) {
     const s = host.FS.getStream(fd);
-    assert.ok(host.FS.isChrdev(s.node.mode), `fd ${fd} is a character device`);
+    assert.ok(host.FS.isFIFO(s.node.mode), `fd ${fd} is a FIFO`);
     assert.ok(!s.tty, `fd ${fd} is not a tty`);
   }
 });

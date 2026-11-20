@@ -145,7 +145,9 @@ They are built from `wine.lock`'s release and the translator at the commit: by `
 
   - `path` is the file's path in MEMFS. JS finds that path from the fd that `tw_image_mapped` passes (`abi.md` v5).
   - The programs' paths are under the prefix's `drive_c`, where the host writes them.
-  - JS links a module when the image's path, its sha256 (from the boot-set manifest) and its mapped base all match.
+  - JS links a module when the image's path, its sha256 and its mapped base all match.
+    - The sha256 of a lazy file is the boot-set manifest's. In Node the host checks the file against it on the first read.
+    - The program is the caller's file, written up front, so its sha256 comes from its own bytes, hashed before `boot`. A program the manifest doesn't list, such as `run-wine.mjs FILE.exe`, then still matches a catalog module built from the same bytes.
 - **The boot-set manifest,** `boot-set.json` schema 1, comes from the same step. Each file has its MEMFS `path`, `source`, `size`, `sha256`, and `lazy`:
   - `source` is relative to `target/wine`;
   - `lazy` is true for the closure's PE files and the `data_files`, which the host loads on their first read (`wine-unix.md`, section 8).
