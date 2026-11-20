@@ -532,6 +532,7 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
   - A compaction was asked for.
 - **At the owner's pause:** 101,742 tokens (10.2 %) after the second compaction. The whole session, agents included, cost $52.90 and 138.2M cache reads.
 - **After WP1's merge (2026-11-20):** 193,840 tokens (19.4 %); $63.06 and 156.6M cache reads for the whole session.
+- **After WP2's merge and WP3's brief:** 258,581 tokens (25.9 %); $67.99 and 172.5M cache reads. That is above 25 %, so a compaction was asked for.
 
 ### Progress (2026-11-14)
 - **Pushed to the PR branch:**
@@ -622,7 +623,28 @@ The owner resumed M3 at 15:01 UTC, in the same session. The machine had restarte
     - which values `NtGetContextThread` should return for RCX, RDX and R8-R11 during a syscall (ours: the values at entry);
     - MXCSR's reserved bits in a context: we mask them, where an `fxrstor` would fault;
     - RAX's upper half after a syscall: we zero-extend the 32-bit status.
-  - **`TW_NO_DISPATCHER`** has no use left. The coordinator removes it after WP2 merges, since WP2 edits `abi.rs`.
+  - **`TW_NO_DISPATCHER`** had no use left. It was removed after WP2's merge (`ee7884f`).
+- **WP2 is merged** (`7bbb63a`, from `67e9f5a`).
+  - **Checks**, rerun by the coordinator on the final commit: fmt and both clippy runs are clean; `cargo test` passes 244 of 244, with replay at 100 %; `test:node` passes 263 of 263.
+  - **The closure**, by WP2's report, translates with `--shared --null-check --store-check`: 134 of 135 DLL files (apisetschema is data) and the six root programs.
+  - **What changed:**
+    - the store check of a `rep` range tests every page (`Op::PageRangeCheck`; the failing test came first, in `0b53058`);
+    - `pop m64` computes and checks its address before RSP changes;
+    - the bridge module (`bridge.rs`), whose `flags_materialize` uses the trampoline's own emitter, and `x64wasm-cli bridge`;
+    - `translate-pe --shared` and the run-time translator's flag bit 5;
+    - the `abi.h`↔`abi.mjs` Node test (54 constants).
+  - **What WP2 found:**
+    - abi.md's tombstone sentence was wrong. A transfer to `LOOKUP_TOMBSTONE` hits a tombstone only when one lies on its probe path; otherwise it misses, and the run loop stops. It stops loudly either way, and abi.md now says so (`3035af6`).
+    - The load plan's options drop `--shared`, while abi.md (L262) has the runtime pass a plan's options as the request flags. WP2 is adding `sharedMemory` as a follow-up.
+- **Running:**
+  - WP2's follow-up, on `m3-wp2-wip`;
+  - WP4, resumed with its four items after merging the PR branch;
+  - WP3, a new deep-worker on `m3-wp3-wip` from `ee7884f`. Until WP5 writes the run loop, its `programs.test.mjs` asserts the furthest real point: the run loop's loud stop, with every image mapped so far linked from the catalog.
+- **Next:**
+  - on each report: review, verify, merge, ledger line, checkpoint;
+  - tell WP3 when WP4 merges, since its programs test needs the catalog builder;
+  - WP5 after WP3; WP6 after WP5's hello and WP4.
+- **Disk:** 11 GB free after deleting rebuildable outputs. WP2's `target/` (12 GB) goes once its follow-up merges.
 
 ## What works
 
