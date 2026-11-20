@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_RIP, PAGE_CODE } from '../../runtime/src/abi.mjs';
 import { createUnixHost, S_IFMT, S_IFIFO } from '../../runtime/src/wine/unix-host.mjs';
-import { installBootSet, BOOT_STOP_AT_ENTRY } from '../../runtime/src/wine/boot-set.mjs';
+import { installBootSet, parseBootSetManifest, BOOT_STOP_AT_ENTRY, PE_DIR } from '../../runtime/src/wine/boot-set.mjs';
 import { parseCatalog, matchCatalog } from '../../runtime/src/wine/aot-catalog.mjs';
 import { loadWineInputs, wineDirs } from '../../runtime/src/wine/node-files.mjs';
 import { createWineProcess } from '../../runtime/src/wine/wine-process.mjs';
@@ -74,6 +74,46 @@ test('lazy node: stat and seek give the manifest\'s size before the first read, 
   assert.deepEqual(loaded, { files: 1, bytes: bytes.length });
   // A file whose bytes don't match the manifest's size stops loudly.
   assert.throws(() => host.FS.readFile('/wine/x/bad'), /4 bytes, the boot-set manifest says 3/);
+});
+
+test('install copies: drive_c\'s copies of closure PE files are symlinks to the PE dir\'s lazy nodes', async () => {
+  const { host } = await smallHost();
+  const reads = [];
+  const prefixPath = inputs.prefix.path.replace(/\/+$/, '');
+  const lazy = parseBootSetManifest(inputs.manifest).filter((f) => f.lazy);
+  installBootSet(host.FS, {
+    prefixPath, prefixFiles: inputs.prefix.files, prefixDirs: inputs.prefix.dirs, prefixLinks: inputs.prefix.links,
+    installFiles: inputs.prefix.installFiles, programs: {}, overlay: new Uint8Array(0),
+    lazy, read: (source) => { reads.push(source); return inputs.read(source); },
+  });
+  // Where the links are (wine-unix.md, section 8, "the install copies"): the
+  // counts of wine-4c6ec0d's prefix and closure.
+  const drive = `${prefixPath}/drive_c/`;
+  const byDir = {};
+  const walk = (dir) => {
+    for (const name of host.FS.readdir(dir)) {
+      if (name === '.' || name === '..') continue;
+      const p = `${dir}/${name}`;
+      const st = host.FS.lstat(p);
+      if (host.FS.isLink(st.mode)) {
+        const target = host.FS.readlink(p);
+        assert.equal(target, `${PE_DIR}/${name}`, p);
+        const rel = dir.slice(drive.length);
+        const key = rel.startsWith('windows/winsxs') ? 'windows/winsxs' : rel;
+        byDir[key] = (byDir[key] ?? 0) + 1;
+      } else if (host.FS.isDir(st.mode)) walk(p);
+    }
+  };
+  walk(drive.slice(0, -1));
+  assert.deepEqual(byDir, { 'windows/system32': 66, 'windows/system32/drivers': 8, windows: 1, 'windows/winsxs': 3 });
+  // kernel32.dll's link reaches the PE dir's node: a stat before its first read, and the path an fd gets.
+  const k32 = `${drive}windows/system32/kernel32.dll`;
+  const node = lazy.find((f) => f.path === `${PE_DIR}/kernel32.dll`);
+  assert.equal(host.FS.stat(k32).size, node.size);
+  const stream = host.FS.open(k32, 0);
+  assert.equal(stream.path, node.path); // tw_image_mapped's catalog path
+  host.FS.close(stream);
+  assert.deepEqual(reads, []);
 });
 
 test('catalog: a module matches by path, sha256 and base only', () => {
