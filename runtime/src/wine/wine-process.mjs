@@ -150,13 +150,17 @@ export async function createWineProcess(opts) {
         stats.imageFallbacks.push({ path, base, reason: m.reason });
         return;
       }
-      let aot;
+      // A module the catalog promises but that can't be linked stops loudly:
+      // the throw unwinds through the Unix side and rejects boot.
+      let r;
       try {
-        aot = loadAot(m.entry);
+        const aot = loadAot(m.entry);
+        r = l.linkSync(aot.module, { ranges: execRanges(aot.plan) });
       } catch (e) {
-        throw new Error(`tempwind: catalog: ${path}: ${e.message}`);
+        const msg = `tempwind: catalog: ${path}: ${e.message}`;
+        say(msg);
+        throw new Error(msg);
       }
-      const r = l.linkSync(aot.module, { ranges: execRanges(aot.plan) });
       linked(r);
       stats.aot.push({ path, base, blocks: r.blocks });
     },
