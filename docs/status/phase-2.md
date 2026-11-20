@@ -519,7 +519,7 @@ At most two deep-workers at once and three subagents in all. Deep-workers start 
 | WP3: JS host (merged, `272fa1f`) | deep-worker | after WP2 merges | `runtime/src/wine/*` (memory, table, depth, bridge, the Linker in the host region, host functions and slots, `tw_translate`, image notifications and the catalog, `tw_invalidate`, `PAGE_CODE`, FIFO stdio, lazy nodes, chdir, scheduler, exit code), `runtime/src/link.mjs` (injected table, depth and header; tombstones; invalidate), `run-wine.mjs`, `tests/wine/programs.test.mjs`, `boot.test.mjs` | unit tests: invalidate (the whole-module rule, rehash), catalog hit and fallback, a lazy node's stat before its first read in Node, FIFO `fstat`; `test:node` unchanged; `programs.test.mjs` wired |
 | WP4: packaging and CI (merged, `30dcc06`) | builder | after the contracts; the catalog step after WP2 | the LGPL rebase crate under `native/wine/`, packing and `rebase.json`, the catalog builder and the boot-set manifest, `tests/wine/prepare.sh`, `.github/workflows/wine-unix.yml` (catalog gate, programs test, path triggers), `docs/dev/commands.md` | rebase tests (every DIR64 target moves by the delta; otherwise only header fields change); the whole closure's catalog builds and compiles in V8 locally under the job's shell; green in CI |
 | WP5: run path and first light (merged, `c093cbc`) | deep-worker | after WP1 and WP3 merge | `run.c` (`tw_run_loop`), `boot.c` (run mode, the exit longjmp, the depth reset), `green.c` (depth), the exit-hook patch 0302; then integration fixes in `native/wine/**` and `runtime/src/wine/**`, with `/diverge` against native Wine (`+relay`, `+syscall`, `+loaddll`); translator defects go to the coordinator, fixtures first | hello.exe, then the three L2 programs, pass `programs.test.mjs` in Node with both checks; boot-to-exit time, AOT hits and fallbacks and bytes loaded measured |
-| WP6: browser | builder | after WP5's hello passes and WP4 merges | `tests/browser/wine-hello.spec.mjs` and its worker, `server.mjs`, a step in `wine-unix.yml` | hello.exe matches in a Chromium Worker, locally and in CI |
+| WP6: browser (merged, `f2c2c80`) | builder | after WP5's hello passes and WP4 merges | `tests/browser/wine-hello.spec.mjs` and its worker, `server.mjs`, a step in `wine-unix.yml` | hello.exe matches in a Chromium Worker, locally and in CI |
 
 - **Hand-offs:** `run.c` passes from WP1 to WP5 at WP1's merge. `library.js`, `imports.txt`, `config.h`, `stubs.c`, `rename-server.h` and `tempwind_private.h` take appended lines from any package, each with its reason.
 - **The coordinator** reviews each diff, merges each track into the PR branch with a context checkpoint after the merge, and deletes merged worktrees' `target/`.
@@ -778,9 +778,23 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
     - no test checks `depth` across `green_switch`; M4's two-thread test is meant to;
     - WP1's three open questions never came up, because no divergence pointed at them.
   - **Checkpoint:** 188,089 tokens (18.8 %). Session: $104.71 and 267.8M cache reads.
-- **Next:**
-  - WP6 (builder), hello.exe in a Chromium Worker: its contract is `05b9fc1` (the browser host, `web-files.mjs`, and `prefix.json`), and it was briefed at 23:18 UTC on `m3-wp6-wip`;
-  - then `/milestone-close`.
+- **WP6 merged (`f2c2c80`, 23:22 UTC):** hello.exe in a Chromium Worker.
+  - **The contract came first** (`05b9fc1`): the browser host (`web-files.mjs`: inputs by URL, one synchronous XHR per lazy file and catalog module on first use, no sha256 check) and `prefix.json`, the prefix's listing, which a browser can't walk.
+  - **WP6** was briefed at 23:18 UTC and reported at 23:22, with one commit and nothing outside its files. It wrote:
+    - `web-files.mjs`;
+    - `prefix.json` and its `--check`;
+    - containment in the test server: a file is served only when its real path is inside the served directory, since the prefix's `dosdevices/z:` links to `/`. The server also maps `TW_*` inputs;
+    - the Playwright project `wine` (`npm run test:browser:wine`, outside `test:browser`);
+    - a `wine-unix.yml` step.
+  - **Rerun in the main tree:**
+    - `catalog.mjs --check --all`: 77 modules, `prefix.json` current;
+    - `test:wine` 37 of 37, with the new server and `prefix.json` tests;
+    - `test:browser:wine`: hello.exe matches in Chromium, 462 ms boot to exit, 11 run-time translations, 12 lazy files, 9,571,573 bytes;
+    - `test:browser` 5 of 5;
+    - `test:node` 265 of 265.
+
+    The main tree now has the spike, `pe`, `native` and `wine-spike` inputs, built while WP6 ran.
+- **Next:** `/milestone-close`, once CI is green on `f2c2c80`.
 
 ## What works
 
@@ -887,7 +901,7 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
 
 ## Next step: M3, "Boot: hello.exe on Wine", in a new session
 
-**M3 is under way: WP1 to WP5 are merged (hello.exe and the three L2 programs match native on Wine in Node), and WP6, the browser, is next.** Its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. The current state is in "M3 progress (paused 2026-11-20)", its "How to resume" and "Second resume", not in the start below.
+**M3's work packages are all merged: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker. `/milestone-close` is next.** Its decisions and work packages are under "M3" above, and they supersede what follows where the two differ. The current state is in "M3 progress (paused 2026-11-20)", its "How to resume" and "Second resume", not in the start below.
 
 **Start:** read `docs/plan.md` ("Phase 2 milestones", M3), this note's M2 section ("Decisions taken when planning M2", "Second resume", "The close"), `ARCHITECTURE.md`, `docs/design/wine-unix.md` (v1 with M2's amendments) and `abi.md` v5. Then do the research pass into `docs/dev/research.md`. M2's retro (`docs/dev/agent-runs.md`) has a lead for it: give the source reading to a subagent, since planning M2 took 27.5M of the coordinator's 112.8M cache reads, at 313k a request.
 
