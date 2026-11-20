@@ -14,6 +14,9 @@ const RAX: usize = 0;
 const RSI: usize = 6;
 const RDI: usize = 7;
 
+/// Registers by GPR number.
+type Regs = &'static [(usize, u64)];
+
 fn option_sets() -> [Options; 3] {
     let store = Options {
         store_check: true,
@@ -90,7 +93,7 @@ fn run_with(
 #[test]
 fn rep_ranges_check_every_page() {
     // (code, offset of the string instruction, registers)
-    let cases: [(&str, u64, &[(usize, u64)]); 5] = [
+    let cases: [(&str, u64, Regs); 5] = [
         // rep stosb (the byte fast path)
         ("f3aa c3", 0, &[(RDI, 0x2_0000), (RCX, 0x3000), (RAX, 0xaa)]),
         // rep stosq (the element loop)
@@ -141,7 +144,7 @@ fn rep_ranges_check_every_page() {
 /// Ranges next to a code page, and RCX = 0 on one, store as usual.
 #[test]
 fn rep_ranges_beside_code_run() {
-    let cases: [(&str, &[(usize, u64)], (u64, usize)); 4] = [
+    let cases: [(&str, Regs, (u64, usize)); 4] = [
         // Up to the last byte before the code page.
         (
             "f3aa c3",
