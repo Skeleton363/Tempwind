@@ -740,7 +740,7 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
   - `get_session` read 328,732 tokens (32.9 %). That was still the pre-compaction figure: the reading lags, and at WP5's merge it read 188,089.
   - Session: $98.13 and 249.6M cache reads.
   - The seven-day rate limit shows a warning again; it resets at 01:00 UTC on 2026-11-21.
-- **WP5 merged (`c093cbc`, 23:25 UTC):** WP5 ran for 17 minutes and reported at 23:10.
+- **WP5 merged (`c093cbc`, 23:11 UTC; pushed after the reruns):** WP5 ran for 17 minutes and reported at 23:10.
   - **What it did:**
     - the run loop (`run.c`);
     - run mode's exit status through the exit longjmp, with `depth` reset after it (`boot.c`);
@@ -779,7 +779,7 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
     - WP1's three open questions never came up, because no divergence pointed at them.
   - **Checkpoint:** 188,089 tokens (18.8 %). Session: $104.71 and 267.8M cache reads.
 - **Next:**
-  - WP6 (builder), hello.exe in a Chromium Worker. Its contract comes first: how a browser host gets the prefix's listing;
+  - WP6 (builder), hello.exe in a Chromium Worker: its contract is `05b9fc1` (the browser host, `web-files.mjs`, and `prefix.json`), and it was briefed at 23:18 UTC on `m3-wp6-wip`;
   - then `/milestone-close`.
 
 ## What works
