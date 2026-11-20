@@ -15,12 +15,18 @@
 //
 // --check: compiles every module catalog.json lists with the synchronous
 // `new WebAssembly.Module` (the translation gate); a failure names the file.
-// With --all it also fails if the catalog lacks a closure file.
+// With --all it also fails if the catalog lacks a closure file. It also fails
+// when prefix.json is missing or differs from a fresh walk of wine-prefix/.
+//
+// prefix.json: the prefix as made, listed for the browser host, which can't
+// walk wine-prefix/ (wine-build.md, "Layout under target/wine"). Written next
+// to boot-set.json by the build.
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpus } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
+import { readPrefix } from '../../runtime/src/wine/node-files.mjs';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
 export const PROGRAMS = ['hello.exe', 'l2_int.exe', 'l2_crt.exe', 'l2_float.exe'];
@@ -157,14 +163,30 @@ async function build(a) {
     return { path: b.path, source: b.source, size: bytes.length, sha256: sha256(bytes), lazy: b.lazy };
   }).sort((x, y) => (x.path < y.path ? -1 : 1));
   writeFileSync(join(dir, 'boot-set.json'), JSON.stringify({ schema: 1, wine: closure.wine, files: entries }, null, 2) + '\n');
+  writeFileSync(join(dir, 'prefix.json'), JSON.stringify(prefixListing(dir), null, 2) + '\n');
   console.log(`catalog: ${modules.length} modules (${translated} translated, ${modules.length - translated} reused), boot-set: ${entries.length} files`);
+}
+
+/** prefix.json's content: readPrefix's values, the files by name (their bytes are wine-prefix/<name>). */
+export function prefixListing(dir) {
+  const p = readPrefix(dir);
+  return { schema: 1, path: p.path, files: Object.keys(p.files), dirs: p.dirs, links: p.links, installFiles: p.installFiles };
+}
+
+/** Problems of prefix.json against a fresh walk (empty when it matches). */
+export function checkPrefix(dir) {
+  const file = join(dir, 'prefix.json');
+  if (!existsSync(file)) return [`prefix.json is missing in ${dir} (run node tests/wine/catalog.mjs [--all])`];
+  const have = JSON.stringify(readJson(file));
+  if (have !== JSON.stringify(prefixListing(dir))) return [`prefix.json differs from a fresh walk of ${join(dir, 'wine-prefix')} (rerun node tests/wine/catalog.mjs [--all])`];
+  return [];
 }
 
 function check(a) {
   const { dir } = a;
   const outDir = join(dir, 'catalog');
   const catalog = readJson(join(outDir, 'catalog.json'));
-  const failures = [];
+  const failures = checkPrefix(dir);
   if (a.all) {
     const have = new Set(catalog.modules.map((m) => m.path));
     for (const f of plan(dir, true).files) if (!have.has(f.memfs)) failures.push(`${f.name}: not in catalog.json`);

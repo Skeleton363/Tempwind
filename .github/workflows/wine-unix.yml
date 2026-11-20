@@ -12,6 +12,8 @@ on:
       - "native/wine/**"
       - "runtime/src/wine/**"
       - "tests/wine/**"
+      - "tests/browser/**"
+      - "playwright.config.mjs"
       - "tests/native/**"
       - "crates/x64wasm/**"
       - "crates/x64wasm-cli/**"
@@ -31,6 +33,8 @@ on:
       - "native/wine/**"
       - "runtime/src/wine/**"
       - "tests/wine/**"
+      - "tests/browser/**"
+      - "playwright.config.mjs"
       - "tests/native/**"
       - "crates/x64wasm/**"
       - "crates/x64wasm-cli/**"
@@ -112,6 +116,14 @@ jobs:
           set -euo pipefail
           npm ci
           npm run test:wine
+
+      # hello.exe in a Chromium Worker, through the browser host (wine-unix.md,
+      # section 10): the server maps target/wine and target/wine-unix by default.
+      - name: npm run test:browser:wine
+        run: |
+          set -euo pipefail
+          npx playwright install --with-deps chromium
+          npm run test:browser:wine
 
       - name: Collect the release files
         run: |
