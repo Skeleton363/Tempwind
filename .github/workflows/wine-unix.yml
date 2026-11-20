@@ -12,7 +12,10 @@ on:
       - "native/wine/**"
       - "runtime/src/wine/**"
       - "tests/wine/**"
-      - "tests/native/hello.c"
+      - "tests/native/**"
+      - "crates/x64wasm/**"
+      - "crates/x64wasm-cli/**"
+      - "crates/x64wasm-rt/**"
       - "tests/targets/sources.json"
       - "tests/targets/wine.lock"
       - "runtime/src/abi.mjs"
@@ -28,7 +31,10 @@ on:
       - "native/wine/**"
       - "runtime/src/wine/**"
       - "tests/wine/**"
-      - "tests/native/hello.c"
+      - "tests/native/**"
+      - "crates/x64wasm/**"
+      - "crates/x64wasm-cli/**"
+      - "crates/x64wasm-rt/**"
       - "tests/targets/sources.json"
       - "tests/targets/wine.lock"
       - "runtime/src/abi.mjs"
@@ -68,6 +74,11 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
       # scripts/emcc.sh keeps Emscripten's cache here (docker's /emcache).
       - uses: actions/cache@v4
         with:
@@ -78,13 +89,23 @@ jobs:
             wine-unix-emcache-
 
       # Fetches the Wine 11 release (target/wine: hello.exe, kuser.bin, native tree),
-      # then builds the Unix side with native/wine/build.sh into target/wine-unix.
+      # builds the Unix side with native/wine/build.sh into target/wine-unix, then
+      # packages the release (rebase, catalog, boot-set.json).
       - name: Prepare the inputs and build the Unix side
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq zstd gcc-mingw-w64-x86-64
           tests/wine/prepare.sh
+
+      # The catalog gate (docs/design/wine-build.md, "Where it is built"): prepare.sh
+      # rebased and verified the whole closure; this translates it with the shared-memory
+      # options, and every module compiled in V8. A failure names the file.
+      - name: Catalog gate (translate the whole closure, compile in V8)
+        run: |
+          set -euo pipefail
+          node tests/wine/catalog.mjs --all
+          node tests/wine/catalog.mjs --check --all
 
       - name: npm run test:wine
         run: |

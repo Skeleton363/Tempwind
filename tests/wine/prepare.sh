@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepare the inputs of `npm run test:wine` (docs/design/wine-unix.md, section 10).
 #
-#   tests/wine/prepare.sh [--fetch]
+#   tests/wine/prepare.sh [--fetch] [--all]
 #
 # 1. Fetches the assets of tests/targets/wine.lock into target/wine: the PE
 #    tree, the prefix and the native tree (with share/wine), unpacked there.
@@ -13,16 +13,27 @@
 #    with --fetch, downloads the files of the release tests/targets/wine-unix.lock
 #    names (the tag on one line, like wine.lock).
 #
-# Needs curl, zstd, tar, x86_64-w64-mingw32-gcc; Docker for build.sh.
+# 5. Packaging for the Unix side (docs/design/wine-build.md): fetches
+#    closure.json, builds the L2 programs (tests/native/build.sh) and copies
+#    them into target/wine, rebases the closure's DLLs into target/wine/rebased
+#    (native/wine/rebase, then its --verify), writes target/wine/bridge.wasm
+#    (x64wasm-cli bridge) and runs tests/wine/catalog.mjs: catalog/ (an AOT
+#    module per PE file) and boot-set.json. The catalog covers the modules the
+#    test programs load; --all covers the whole closure.
+#
+# Needs curl, zstd, tar, x86_64-w64-mingw32-gcc, cargo, node; Docker for build.sh.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 fetch=0
-case "${1:-}" in
-  "") ;;
-  --fetch) fetch=1 ;;
-  *) echo "usage: $0 [--fetch]" >&2; exit 2 ;;
-esac
+all=
+for arg in "$@"; do
+  case "$arg" in
+    --fetch) fetch=1 ;;
+    --all) all=--all ;;
+    *) echo "usage: $0 [--fetch] [--all]" >&2; exit 2 ;;
+  esac
+done
 
 out=target/wine
 mkdir -p "$out"
@@ -31,7 +42,7 @@ tag=$(cat tests/targets/wine.lock)
 
 # 1. The Wine release assets, unpacked once per tag.
 if [ "$(cat "$out/.tag" 2>/dev/null || true)" != "$tag" ]; then
-  rm -rf "$out/native" "$out/pe" "$out/wine-prefix"
+  rm -rf "$out/native" "$out/pe" "$out/wine-prefix" "$out/closure.json" "$out/rebased" "$out/catalog"
   for asset in wine-pe-x86_64.tar.zst wine-native.tar.zst wine-prefix.tar.zst; do
     scripts/fetch-artifact.sh "$tag" "$asset" "$out"
   done
@@ -84,4 +95,14 @@ if [ "$fetch" = 1 ]; then
 else
   native/wine/build.sh
 fi
+
+# 5. Packaging for the Unix side.
+[ -s "$out/closure.json" ] || scripts/fetch-artifact.sh "$tag" closure.json "$out"
+tests/native/build.sh >/dev/null
+for p in hello l2_int l2_crt l2_float; do cp "target/native/$p.exe" "$out/$p.exe"; done
+cargo build -q --release -p pe-rebase -p x64wasm-cli
+target/release/pe-rebase --tree "$out/pe" --closure "$out/closure.json" --out "$out/rebased"
+target/release/pe-rebase --verify --tree "$out/pe" --closure "$out/closure.json" --out "$out/rebased"
+target/release/x64wasm bridge --out "$out/bridge.wasm"
+node tests/wine/catalog.mjs $all --dir "$out"
 echo "ready: $out, target/wine-unix"
