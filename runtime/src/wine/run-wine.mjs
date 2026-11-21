@@ -6,7 +6,8 @@
 // The program is written to C:\tempwind\<name>.exe and runs in a fresh Wine
 // process with both memory checks on. Its stdout and stderr are this
 // process's (pipes to Windows: section 8, "stdio, as FIFOs"). The exit status
-// is the low 8 bits of the Windows status, as for native Wine; --stats prints
+// is native Wine's for the Windows status (unixExitCode: a nonzero status
+// with a zero low byte gives 1, otherwise its low 8 bits); --stats prints
 // the full status, the AOT links, the fallbacks and the bytes the lazy nodes
 // loaded on stderr. Inputs: TW_WINE_DIR (target/wine, prepared by
 // tests/wine/prepare.sh), TW_WINE_UNIX_DIR (target/wine-unix), and the
@@ -15,7 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { loadWineInputs } from './node-files.mjs';
-import { createWineProcess } from './wine-process.mjs';
+import { createWineProcess, unixExitCode } from './wine-process.mjs';
 
 const usage = 'usage: run-wine.mjs [--cwd C:\\DIR] [--env NAME=VALUE]... [--stats] FILE.exe [ARGS...]';
 const argv = process.argv.slice(2);
@@ -60,4 +61,4 @@ if (stats) {
   for (const f of s.imageFallbacks) console.error(`run-wine:   ${f.path} at ${hex(f.base)}: ${f.reason}`);
   console.error(`run-wine: lazy nodes loaded ${s.lazy.files} files, ${s.lazy.bytes} bytes`);
 }
-if (status !== undefined) process.exitCode = status & 0xff;
+if (status !== undefined) process.exitCode = unixExitCode(status);

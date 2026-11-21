@@ -4,7 +4,8 @@
 // - a lazy boot-set node: stat before the first read, the whole file on it;
 // - the catalog: a hit links the AOT module and sets PAGE_CODE, a miss is a
 //   counted fallback whose code tw_translate translates at run time;
-//   tw_invalidate removes it again.
+//   tw_invalidate removes it again;
+// - the exit code run-wine.mjs gives a Windows status, as native Wine does.
 // The catalog checks boot wine-unix to the entry (BOOT_STOP_AT_ENTRY), where
 // the program and ntdll are mapped. Needs target/wine-unix (TW_WINE_UNIX_DIR),
 // target/wine prepared by tests/wine/prepare.sh (TW_WINE_DIR), and the
@@ -20,7 +21,7 @@ import { createUnixHost, S_IFMT, S_IFIFO } from '../../runtime/src/wine/unix-hos
 import { installBootSet, parseBootSetManifest, BOOT_STOP_AT_ENTRY, PE_DIR } from '../../runtime/src/wine/boot-set.mjs';
 import { parseCatalog, matchCatalog } from '../../runtime/src/wine/aot-catalog.mjs';
 import { loadWineInputs, wineDirs } from '../../runtime/src/wine/node-files.mjs';
-import { createWineProcess } from '../../runtime/src/wine/wine-process.mjs';
+import { createWineProcess, unixExitCode } from '../../runtime/src/wine/wine-process.mjs';
 
 const dirs = wineDirs();
 const inputs = await loadWineInputs(dirs);
@@ -184,4 +185,13 @@ test('catalog fallback: an image whose base differs is counted, tw_translate tra
   assert.equal(pageCode(proc, size - 1n + base), 0);
   // The program's module is elsewhere and stays.
   assert.equal(pageCode(proc, 0x1_4000_1000n), PAGE_CODE);
+});
+
+// The exit code of native Wine's process for a Windows status:
+// get_unix_exit_code (dlls/ntdll/unix/thread.c L89-94) turns a nonzero status
+// with a zero low byte into 1, and _exit keeps the low 8 bits.
+test('unixExitCode: a Windows status gives native Wine\'s exit code', () => {
+  for (const [status, code] of [[0, 0], [0x25, 0x25], [0x100, 1], [0xc0000135, 0x35], [0xc0000100, 1]]) {
+    assert.equal(unixExitCode(status), code, `status 0x${status.toString(16)}`);
+  }
 });

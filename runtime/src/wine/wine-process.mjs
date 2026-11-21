@@ -34,6 +34,16 @@ export const WINE_RT_FLAGS = requestFlags({ nullCheck: true, storeCheck: true, s
 /** The program's directory on C: when the caller names none (wine-unix.md, section 8). */
 export const DEFAULT_CWD = 'C:\\tempwind';
 
+/**
+ * The exit code native Wine's process gives a Windows status: get_unix_exit_code
+ * (dlls/ntdll/unix/thread.c L89-94) turns a nonzero status with a zero low
+ * byte into 1, and _exit keeps the low 8 bits. run() returns the full status.
+ */
+export function unixExitCode(status) {
+  const s = status >>> 0;
+  return s && !(s & 0xff) ? 1 : s & 0xff;
+}
+
 const hex = (v) => '0x' + BigInt.asUintN(64, BigInt(v)).toString(16);
 const u64 = (v) => BigInt.asUintN(64, BigInt(v));
 
