@@ -276,7 +276,9 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - **Before `boot`** it fetches:
     - the modules: `wine-unix.mjs` and `.wasm`, `bridge.wasm`, and the run-time translator and floating-point helper;
     - `boot-set.json`, `catalog/catalog.json` and `prefix.json` (`wine-build.md`, "Layout under `target/wine`");
-    - the prefix's top-level files, the overlay and the program.
+    - the prefix's top-level files and the overlay.
+
+    The caller fetches the program and passes its bytes to `createWineProcess`, as in Node.
   - **On first use** it reads each lazy file, and each catalog module's `.wasm` and `.plan.json`, with one synchronous XHR (`xhrReader`, `lazy-node.mjs`), and compiles a module with the synchronous `new WebAssembly.Module`, which a Worker allows at any size.
   - **No sha256 check against the manifest** in the browser; Node checks on the first read. The program's sha256 comes from its own bytes, as in Node.
 
@@ -339,6 +341,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
 - **Programs (M3):** `tests/wine/programs.test.mjs` runs hello.exe, l2_int, l2_crt and l2_float.
   - Each runs in a fresh Unix-side instance, with both memory checks on.
   - It compares stdout with `tests/native/<name>.expected` as CRLF, and the exit status with `.exitcode`. No `tempwind:` line may appear.
+  - Every image mapped links its AOT module: no image fallbacks, and exactly five AOT links, the program and the four DLLs each of these programs loads (`closure.json`; apisetschema is data). Run-time translations stay allowed, for code the AOT pass didn't find.
   - It records the time from `boot` to exit, the AOT links and run-time fallbacks, and the bytes the lazy nodes loaded.
 - **Browser (M3):** `tests/browser/wine-hello.spec.mjs` runs hello.exe the same way in a Chromium Worker, through the browser host (section 8).
   - Its assertions are `programs.test.mjs`'s for hello: stdout, the status, no `tempwind:` line, no image fallbacks, and the five AOT links.
@@ -408,13 +411,13 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
 
 **`tw_run_loop(state)`** (`tempwind_private.h`):
 - It calls `tw_run(state)` until the thread ends, and acts on each exit reason:
-  - **`EXIT_LEFT_CODE`:** it finds the view around `rip` whose pages are executable (`pages_vprot`, `VPROT_EXEC`), and calls `tw_translate(rip, view base, view size)`.
-    - With no such view, it stops loudly. On Windows that is an execute access violation, which M5 raises.
+  - **`EXIT_LEFT_CODE`:** it finds the run of committed, executable pages around `rip` inside its view (`tw_exec_range`, patch 0106: `VPROT_EXEC`, no guard pages), and calls `tw_translate(rip, base, size)` with it.
+    - With no such run, it stops loudly. On Windows that is an execute access violation, which M5 raises.
     - If `tw_translate` fails, it stops loudly.
   - **`EXIT_HOST`:** the host function that stopped recorded why in C, and the loop returns it to its caller. In M3 nothing stops that way, so the main thread's loop stops loudly on one.
   - **`EXIT_FAULT`:** stops loudly. M5 raises the exception through Wine's dispatcher.
   - **`EXIT_UNSUPPORTED`:** stops loudly. That includes store-check hits.
-- **The loud stops** print `tempwind: unsupported: run <exit> rip=<hex>`, the fault address and kind, and the page-state byte of the fault address, then `abort()`.
+- **The loud stops** print `tempwind: unsupported: run <exit> rip=<hex>`, the fault address and kind, then the page-state byte and Wine's protection byte of one address, then `abort()`. That address is the fault address for `EXIT_FAULT`, and `rip` for any other exit: `EXIT_UNSUPPORTED` records no address, a store-check hit's included (`translator.md`, "Memory checks"), so `rip` is the store's.
 
 **One process, in order** (the JS host):
 1. Create the shared memory (4 GiB initial, 16 GiB maximum), `env.table` (at least `TW_TABLE_RESERVED` slots) and `env.depth` (0).
@@ -433,7 +436,7 @@ From then on JS links modules on demand: an AOT module through `tw_image_mapped`
 - Insert its blocks (first translation wins), and set `PAGE_CODE` on its code pages.
 - The first module linked replaces the bridge's placeholder at `TW_RUN_INDEX` with its `run`.
 - **AOT modules:** the catalog has one per rebased closure file and per test program (`wine-build.md`, "Packaging"). It is linked when the image is mapped at the catalog's base and the file's sha256 matches.
-- **Run-time modules:** `tw_translate` reads the view's bytes from guest memory and calls the run-time translator with `null_check`, `store_check` and `shared_memory`. The known addresses it passes are the linked blocks inside the view.
+- **Run-time modules:** `tw_translate` reads the range's bytes from guest memory and calls the run-time translator with `null_check`, `store_check` and `shared_memory`. The known addresses it passes are the linked blocks inside the range.
 - **Both memory checks are on** in every module of a Wine process (`guest-memory.md`, "Phase 2 defaults"):
   - a NULL access exits with `EXIT_FAULT`;
   - a store to a `PAGE_CODE` or `PAGE_WATCH` page exits with `EXIT_UNSUPPORTED`.
@@ -443,11 +446,11 @@ From then on JS links modules on demand: an AOT module through `tw_image_mapped`
 **`depth`:**
 - It starts at 0.
 - `boot` resets it after the exit `longjmp` (section 8).
-- M4's green switches save and restore it (section 9).
+- `green_block` saves and restores it around each switch from M3 on (section 9). M4's threads are the first to switch between threads with guest frames on their stacks.
 
 ## 13. Later
 - **M4:**
-  - threads: the rest of the green pthread layer, and `depth` across switches;
+  - threads: the rest of the green pthread layer, and a test of `depth` across a switch between threads;
   - win32u and its syscall table;
   - KnownDlls, services and the session shared memory;
   - APCs, `KeUserModeCallback`, thread exit, and another thread's context.

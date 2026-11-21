@@ -74,7 +74,7 @@ Translated code reads the header on every probe.
 **Host rules:**
 - Keep `2 * used <= mask + 1`. To grow, build a new slot array with only the live keys, then update `slots` and `mask`. Growing drops the tombstones.
 - **Removing a key** (v5, code invalidation) turns its slot into a tombstone: key `LOOKUP_TOMBSTONE` (`0xDEAD_0000_0000_0001`), func `TOMBSTONE_INDEX`, entry 0. The probe passes over it, since it misses only on key 0, so translated code doesn't change. `used` keeps counting the slot until the next growth; a host that needs the number of live keys keeps it separately.
-  - The tombstone key is non-canonical and is not `NO_RET`. A transfer to that exact address stops loudly either way. If a tombstone lies on its probe path, the probe hits it and the tombstone's function stops ("Wine boundary", "The bridge"). Otherwise the probe misses, and the run loop, which finds no executable view at a non-canonical address, stops ("Who calls whom"). On x86-64 a jump to a non-canonical address raises #GP anyway.
+  - The tombstone key is non-canonical and is not `NO_RET`. A transfer to that exact address stops loudly either way. If a tombstone lies on its probe path, the probe hits it and the tombstone's function stops ("Wine boundary", "The bridge"). Otherwise the probe misses, and the run loop, which finds no executable page at a non-canonical address, stops ("Who calls whom"). On x86-64 a jump to a non-canonical address raises #GP anyway.
   - A removed key may be inserted again later. The insert reuses the first tombstone on its probe path or the empty slot that ends it.
 - Guest threads stay cooperative until Phase 4, so no locking.
 - Address 0 is never a key: the NULL region holds no code.
@@ -154,7 +154,7 @@ One byte per 4 KiB guest page, at `env.page_flags + (addr >> 12)`.
 - **Bits:** `PAGE_CODE = 1` marks a page holding translated code; `PAGE_WATCH = 2` marks a write-watched page.
 - **Who sets them:** the runtime sets `PAGE_CODE` on the pages of the image's executable sections. Translated code only reads the table.
 - **In a Wine process (v5):**
-  - JS sets `PAGE_CODE` on the pages of each module it links: the load plan's executable sections for an AOT module, and the executable view a run-time module was translated from.
+  - JS sets `PAGE_CODE` on the pages of each module it links: the load plan's executable sections for an AOT module, and the executable pages a run-time module was translated from.
   - Invalidation clears it on the pages where no linked module remains.
   - The Unix side keeps `PAGE_WATCH` (`wine-unix.md`, section 6).
 
@@ -343,7 +343,7 @@ Status:
 2. **Unix side → translated code.** The Unix side imports `tw_run: (state i64) -> i32`, the bridge's `run`, wasm to wasm. The run loop is C (`wine-unix.md`, section 12):
    ```
    for (;;) switch (tw_run(state)) {
-     case EXIT_LEFT_CODE:   tw_translate(rip, view base, view size) or stop loudly; continue;
+     case EXIT_LEFT_CODE:   tw_translate(rip, base, size) or stop loudly; continue;  // the executable pages around rip
      case EXIT_HOST:        return;                  // the host function recorded why, in C
      case EXIT_FAULT:       stop loudly;             // M5 raises the exception
      case EXIT_UNSUPPORTED: stop loudly;             // store-check hits included
@@ -398,7 +398,7 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 
 **Addresses:**
 - `SYSCALL_DISPATCHER` = 0x7ffe_1100 and `UNIX_CALL_DISPATCHER` = 0x7ffe_1110 lie in the page the Unix side commits at 0x7ffe_1000. They are lookup keys, not code: JS inserts a slot for each, entry 0, before `boot` runs guest code.
-- Nothing is translated there. `tw_translate` stops loudly for an address outside an executable view, so a missing slot can't be papered over.
+- Nothing is translated there. No executable page lies there, so an `EXIT_LEFT_CODE` at either address stops the run loop loudly (`wine-unix.md`, section 12), and a missing slot can't be papered over.
 - The Unix side writes the addresses:
   - `SYSCALL_DISPATCHER` at 0x7ffe_1000, which every PE syscall thunk calls through (`include/wine/asm.h` L287-301), and into ntdll's `__wine_syscall_dispatcher`;
   - `UNIX_CALL_DISPATCHER` into ntdll's `__wine_unix_call_dispatcher`.
@@ -516,8 +516,8 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 | `tw_run` | `(state i64) -> i32` | The bridge's `run` (M3). In M2 a JS stub that stopped loudly. |
 | `tw_depth_get`, `tw_depth_set` | `() -> i32`, `(i32) -> ()` | The bridge's `depth_get` and `depth_set` (M3). |
 | `tw_flags_materialize` | `(state i64) -> ()` | The bridge's `flags_materialize` (M3). |
-| `tw_translate` | `(rip i64, base i64, size i64) -> i32` | Plain (M3). It translates from `rip` inside the executable view `[base, base + size)` with the run-time translator, links the module and sets `PAGE_CODE` on the view. Returns 0 when `rip` then has a block. Otherwise it returns 1, after printing `tempwind: translate: <rip> <reason>` on stderr, and the C loop stops. |
-| `tw_image_mapped` | `(fd i32, base i64, size i64) -> ()` | Plain (M3). The Unix side has mapped an image from the open file `fd` at `base`. JS finds the file's path from `fd`, and links the AOT module when the catalog has one for that path, its sha256 and `base` (`wine-build.md`, "Packaging"). Otherwise it counts a fallback, and the image's code is translated at run time. |
+| `tw_translate` | `(rip i64, base i64, size i64) -> i32` | Plain (M3). It translates from `rip` inside `[base, base + size)`, the run of committed executable pages around `rip` in its view (`tw_exec_range`, `wine-unix.md` section 12), with the run-time translator, links the module and sets `PAGE_CODE` on those pages. Returns 0 when `rip` then has a block. Otherwise it returns 1, after printing `tempwind: translate: <rip> <reason>` on stderr, and the C loop stops. |
+| `tw_image_mapped` | `(fd i32, base i64, size i64) -> ()` | Plain (M3). The Unix side has mapped an image from the open file `fd` at `base`. JS finds the file's path from `fd`, and links the AOT module when the catalog has one for that path, its sha256 and `base` (`wine-build.md`, "Packaging"). Otherwise it counts a fallback, and the image's code is translated at run time. A module the catalog has but that can't be loaded or linked stops loudly: it prints `tempwind: catalog: <path>: <reason>` and throws, which rejects `boot`. |
 | `tw_invalidate` | `(base i64, size i64) -> ()` | Plain (M3). It removes from the lookup table every block of every linked module whose code overlaps the range, and clears `PAGE_CODE` where no linked module remains. A module's blocks call each other directly, so a module goes whole. The Unix side calls it before it unmaps or remaps pages that have `PAGE_CODE` (`wine-unix.md`, section 6). |
 
 The Emscripten runtime's own imports are listed, each with a reason, in `native/wine/imports.txt`; the build fails on any import not listed there.
@@ -610,6 +610,8 @@ The guest code of a case sees no difference from v2.
 | `tests/pe/build.sh` | Build the M2 test program `target/pe/basic.exe`; its expected output is in `tests/pe/` |
 | `npm ci` then `npm run test:node` | Node: spike cases and the PE runtime tests |
 | `npm run test:browser` | Playwright, headless Chromium: translator spike, threads spike, WebGPU spike |
+| `npm run test:wine` | Node: the Unix side's C harnesses, its JS host and the M3 programs on Wine (`wine-unix.md`, section 10). Needs `tests/wine/prepare.sh`'s output. |
+| `npm run test:browser:wine` | Playwright project `wine`: hello.exe on Wine in a Chromium Worker. Needs `tests/wine/prepare.sh`'s output. |
 | `native/spike/run.sh` | Emscripten probe (Docker `emscripten/emsdk`) vs native gcc. Fails on any LP64 mismatch. |
 | `tests/native/build.sh` | MinGW-build `target/native/hello.exe`. Expected output is in `tests/native/hello.expected`. |
 | `scripts/fetch-artifact.sh TAG ASSET [DIR]` | Download a release asset of this repo |

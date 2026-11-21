@@ -25,7 +25,7 @@ Translation is function-level: the translator discovers functions from the entry
 
 ### crates/
 - `x64wasm`: the translator. `pe.rs` (PE reader), `image.rs` (whole-image discovery and the load plan, `LoadPlan`), `func.rs` (function and chunk splitting), `lift/` and `lift.rs` (decoded instruction to IR), `ir.rs`, `emit/` and `emit.rs` (IR to WebAssembly), `switch.rs` (jump tables), `link.rs` (block tables), `abi.rs` (constants shared with JS). `DECODER_OPTIONS` is the one decoder configuration.
-- `x64wasm-cli`: `translate`, `ir`, `wat`, `translate-pe`. Thin; logic stays in `x64wasm`.
+- `x64wasm-cli`: `translate`, `ir`, `wat`, `translate-pe`, and `bridge`, which writes the bridge module between a Wine process's Unix side and its translated modules (`abi.md` v5, "The bridge"). Thin; logic stays in `x64wasm`.
 - `x64wasm-rt`: the translator built for `wasm32-unknown-unknown`, called by the runtime for run-time translation.
 - `x64wasm-fp`: integer-only soft float (SSE and x87), built for wasm32; its differential tests run the real CPU in-process.
 - `testkit`: the instruction oracle. `oracle/` records and replays L1 fixtures, `census.rs` counts instruction forms in target images, `spike/` builds the spike programs for the JS hosts, `host.rs` runs modules in wasmtime. Fixtures: `crates/testkit/fixtures/l1/`.
@@ -42,7 +42,7 @@ Translation is function-level: the translator discovers functions from the entry
 
 ### Elsewhere
 - `tests/`: `pe` and `native` (programs and expected output), `node` (shim and runtime tests), `browser` (Playwright), `sevenzip` (138-step command matrix), `bench`, `targets` (7-Zip and CoreMark pins).
-- `native/`: Wine's Unix side with Emscripten (Phase 2+). `native/wine/` (LGPL): `build.sh`, the patch series against the wine-11.0 tarball, our new files in `src/` (the memory backend, the in-process server transport, green threads, boot), the generated `include/tempwind/abi.h` and the C harnesses in `tests/`. `native/spike/boundary/` is M1's boundary spike. `runtime/src/wine/` is the JS host for the Unix side; `tests/wine/` its Node tests. `web/`: desktop shell (Phase 3+).
+- `native/`: Wine's Unix side with Emscripten (Phase 2+). `native/wine/` (LGPL): `build.sh`, the patch series against the wine-11.0 tarball, our new files in `src/` (the memory backend, the in-process server transport, green threads, boot, the syscall and unix-call dispatchers, the run loop), `gen-syscalls.mjs` (the typed syscall wrappers, generated from Wine's headers at build time), the generated `include/tempwind/abi.h`, the C harnesses in `tests/`, and `rebase/`, the tool that gives the closure's DLLs unique bases at packaging (its own LGPL crate). `native/spike/boundary/` is M1's boundary spike. `runtime/src/wine/` is the JS host for the Unix side: the process, the links of the bridge, the AOT catalog's modules and run-time translations, the lazy boot set, and the Node and browser inputs. `tests/wine/` holds its Node tests, `prepare.sh` and `catalog.mjs`, which builds the AOT catalog of the closure (`wine-build.md`, "Packaging"). `web/`: desktop shell (Phase 3+).
 - `tools/`, `scripts/`, `.github/workflows/`: environment setup, artifact fetching, CI.
 
 ## Contracts
