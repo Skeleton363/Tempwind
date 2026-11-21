@@ -50,7 +50,7 @@ export function readPrefix(wineDir) {
 
 /**
  * A synchronous reader of target/wine by relative path. Files the manifest
- * lists are checked against its size and sha256 when read.
+ * lists are checked against its sha256 when read (a lazy node checks the size).
  */
 export function nodeReader(wineDir, manifest) {
   const known = new Map((manifest?.files ?? []).map((f) => [f.source, f]));
