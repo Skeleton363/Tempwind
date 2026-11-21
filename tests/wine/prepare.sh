@@ -60,7 +60,7 @@ wine_bin="$out/native/opt/wine-11.0/bin"
 [ -x "$wine_bin/wine" ] || { echo "prepare.sh: $wine_bin/wine missing after unpacking $tag" >&2; exit 1; }
 
 # 2. The Windows programs.
-x86_64-w64-mingw32-gcc -O2 -static -Wall -Wextra -o "$out/hello.exe" tests/native/hello.c
+x86_64-w64-mingw32-gcc -O2 -static -Wall -Wextra -Wl,--no-insert-timestamp -o "$out/hello.exe" tests/native/hello.c
 x86_64-w64-mingw32-gcc -O2 -static -Wall -Wextra -o "$out/kuser-dump.exe" tests/wine/kuser-dump.c
 
 # 3. KUSER_SHARED_DATA as native Wine 11 lays it out. Native Wine runs on a

@@ -4,8 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 out=target/native
 mkdir -p "$out"
-x86_64-w64-mingw32-gcc -O2 -static -Wall -Wextra -o "$out/hello.exe" tests/native/hello.c
-# The L2 programs: no timestamp in the PE header, so the builds are reproducible.
+# No timestamp in the PE header, so the builds are reproducible: load plans and
+# the AOT catalog are keyed by sha256, and tests/wine/prepare.sh rebuilds.
+x86_64-w64-mingw32-gcc -O2 -static -Wall -Wextra -Wl,--no-insert-timestamp \
+  -o "$out/hello.exe" tests/native/hello.c
 for name in l2_int l2_crt; do
   x86_64-w64-mingw32-gcc -O2 -static -Wall -Wextra -Wl,--no-insert-timestamp \
     -o "$out/$name.exe" "tests/native/$name.c"
