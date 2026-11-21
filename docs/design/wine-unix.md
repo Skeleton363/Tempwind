@@ -208,7 +208,7 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - `boot` records the launch directory, which is the cwd when it is entered. Its caller `chdir`s there first. In M3 the JS host `chdir`s to the program's directory in `drive_c`: `C:\tempwind` by default, or `opts.cwd`.
   - `boot` sets `WINELOADERNOEXEC=1`, as the wine loader's exec of itself does (`loader_exec`, `loader.c` L525), so `__wine_main` takes argv with no re-exec. Then it runs `__wine_main`.
   - `flags`: 0 runs the process to its exit (M3). `BOOT_STOP_AT_ENTRY` (1) stops at the entry, as in M2. Any other value, or a second `boot` in one instance, stops loudly.
-  - **Return:** in run mode `boot` returns the process's exit status, the full Windows status, once the process exits ("Process exit" below). With `BOOT_STOP_AT_ENTRY` it returns 0 once it has stopped at the entry. A Wine error ends in `exit()`, which the host sees as the rejection of `boot`'s promise with Emscripten's exit status.
+  - **Return:** in run mode `boot` returns the process's exit status, the full Windows status, once the process ends itself ("Process exit" below). With `BOOT_STOP_AT_ENTRY` it returns 0 once it has stopped at the entry. A Wine error ends in `exit()` or `_exit()`, `abort_thread`'s included ("Process exit"), which the host sees as the rejection of `boot`'s promise with Emscripten's exit status.
 - **The environment,** set by the JS host in `preRun` (libc builds `environ` from `ENV` during instantiation):
   - `WINEPREFIX=/home/runner/wine-prefix`, the path the prefix was made at (`wine-prefix.path`), since its `.reg` files hold it;
   - `HOME=/home/runner`, `USER=runner`, `LANG=en_US.UTF-8`, `TZ=UTC`;
@@ -242,7 +242,16 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
   - `LdrInitializeThunk` runs translated. Wine's PE `signal_start_thread` then calls `NtContinue(context, TRUE)` (`dlls/ntdll/signal_x86_64.c` L1018-1044), which switches to the `CONTEXT`: `RtlUserThreadStart`, and from there the program.
   - The loop ends only through process exit.
 - **Process exit (M3, patch 0302):**
-  - `exit_process` and `abort_process` (`unix/thread.c` L1520-1524, L1485-1488) first call `tw_process_exit(status)` with the full Windows status, before `get_unix_exit_code` (L89-94) cuts it.
+  - **The hook:** `tw_process_exit(status)` gets the full Windows status, before `get_unix_exit_code` (`unix/thread.c` L89-94) cuts it. Two places call it:
+    - `exit_process`, first (`unix/thread.c` L1520-1524). It is `NtTerminateProcess`'s end for the current process once `RtlExitUserProcess`'s first call has set `process_exiting` (`unix/process.c` L980-981), and `exit_thread`'s for the last thread (`thread.c` L1501).
+    - `NtTerminateProcess`, before its own `abort_process` call (`unix/process.c` L982): a process that ends itself without that first call, as `TerminateProcess(GetCurrentProcess(), status)` does.
+  - **`abort_process` keeps its `_exit`** (`thread.c` L1485-1488). Its other caller is `abort_thread` for the last thread (L1477), Wine's end for errors:
+    - a server protocol error (`unix/server.c` L163, L174);
+    - a lost server pipe (L238, L267, L977, L1032);
+    - a thread the server killed (L361);
+    - SIGQUIT (`quit_handler`, `unix/signal_x86_64.c` L2612-2613).
+
+    Those reject `boot`'s promise with the cut status, as any other `exit()` does.
   - `tw_process_exit` (`boot.c`) `longjmp`s to `boot`, which sets `depth` to 0 (`tw_depth_set`, `abi.md` v5, "Trampoline") and returns the status.
   - The `longjmp` unwinds the translated frames on the wasm stack as a wasm exception.
   - msvcrt has flushed stdout by then, in `LdrShutdownProcess` (`abi.md` v5, "Process exit").
@@ -319,7 +328,8 @@ The server is linked into the module and runs on the calling thread. `02xx` and 
     - a Get/Set round trip on the current thread with x87 and XMM state;
     - a unix call;
     - KUSER's clock advanced by a syscall's entry;
-    - `+syscall` lines in Wine's format.
+    - `+syscall` lines in Wine's format;
+    - process exit's ends (section 8), each alone: `abort_thread(1)` ends in `_exit` with status 1 and no `tempwind:` line, and `NtTerminateProcess` of the current process without the first call reaches `tw_process_exit`, which outside `boot` stops loudly.
   - `virtual`: `tw_invalidate` before an unmap of `PAGE_CODE` pages, and none for pages without it.
   - `section`, since these need an image view and so the server's sections:
     - placement against `TW_IMAGE_RANGE_END`;

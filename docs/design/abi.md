@@ -439,12 +439,12 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 ### Process exit (M3)
 - **Wine's chain:**
   - `ExitProcess` is `RtlExitUserProcess` (`dlls/ntdll/loader.c` L3907-3914). It calls `NtTerminateProcess(0, status)`, then `LdrShutdownProcess`, where msvcrt flushes its streams (`dlls/msvcrt/main.c` L145), then `NtTerminateProcess(GetCurrentProcess(), status)`.
-  - The second call reaches `exit_process` (`dlls/ntdll/unix/process.c` L965-985, `dlls/ntdll/unix/thread.c` L1520-1524), or `abort_process` (L1485-1488) for a process that never called the first.
+  - The first call sets `process_exiting`, so the second reaches `exit_process` (`dlls/ntdll/unix/process.c` L965-985, `dlls/ntdll/unix/thread.c` L1520-1524). A process that ends itself without the first call reaches `abort_process` instead (`process.c` L982, `thread.c` L1485-1488).
   - Both cut the status with `get_unix_exit_code` (`thread.c` L89-94) before the host's `exit`.
-- **Our hook** (`wine-unix.md`, section 8): `exit_process` and `abort_process` record the full Windows status, before `get_unix_exit_code`, and `longjmp` to `boot`.
+- **Our hook** (`wine-unix.md`, section 8): `exit_process`, and `NtTerminateProcess` before its `abort_process` call, record the full Windows status, before `get_unix_exit_code`, and `longjmp` to `boot`.
   - `boot` sets `depth` to 0 and returns the status.
   - The `longjmp` unwinds the translated frames on the wasm stack as a wasm exception (`-sSUPPORT_LONGJMP=wasm`).
-- **Other ends:** any other `exit()` still rejects `boot`'s promise.
+- **Other ends:** any other `exit()` or `_exit()` still rejects `boot`'s promise. That includes `abort_process` reached from `abort_thread` (`thread.c` L1477), Wine's end for server errors and killed threads (`wine-unix.md`, section 8).
 - **One process per instance:** after the process exits, the instance is finished. A program runs in a fresh instance.
 
 ### Green threads
