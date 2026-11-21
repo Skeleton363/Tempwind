@@ -21,7 +21,29 @@ addToLibrary({
     updateMemoryViews();
     Module['onMemoryGrown']?.();
   },
-  // (state i64) -> i32: a translated module's raw `run` (M3).
+  // M3's imports (abi.md v5, "The bridge" and "Host entries of the Unix
+  // side"). The JS host replaces all of them; the bridge's four with the
+  // bridge's raw exports, so those calls are wasm to wasm.
+  // (state i64) -> i32: the bridge's `run`.
   tw_run__sig: 'ij',
   tw_run: (state) => { throw new Error('tw_run: the JS host replaces this import'); },
+  // () -> i32: the bridge's `depth_get`.
+  tw_depth_get__sig: 'i',
+  tw_depth_get: () => { throw new Error('tw_depth_get: the JS host replaces this import'); },
+  // (depth i32) -> (): the bridge's `depth_set`.
+  tw_depth_set__sig: 'vi',
+  tw_depth_set: (depth) => { throw new Error('tw_depth_set: the JS host replaces this import'); },
+  // (state i64) -> (): the bridge's `flags_materialize`.
+  tw_flags_materialize__sig: 'vj',
+  tw_flags_materialize: (state) => { throw new Error('tw_flags_materialize: the JS host replaces this import'); },
+  // (rip i64, base i64, size i64) -> i32: translate from rip inside the
+  // executable view and link; 0 when rip then has a block.
+  tw_translate__sig: 'ijjj',
+  tw_translate: (rip, base, size) => { throw new Error('tw_translate: the JS host replaces this import'); },
+  // (fd i32, base i64, size i64) -> (): an image from fd was mapped at base.
+  tw_image_mapped__sig: 'vijj',
+  tw_image_mapped: (fd, base, size) => { throw new Error('tw_image_mapped: the JS host replaces this import'); },
+  // (base i64, size i64) -> (): remove the translations overlapping the range.
+  tw_invalidate__sig: 'vjj',
+  tw_invalidate: (base, size) => { throw new Error('tw_invalidate: the JS host replaces this import'); },
 });

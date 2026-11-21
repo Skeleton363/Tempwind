@@ -89,6 +89,85 @@ The set of PE modules that a Phase 2 run may load. It is the scope of the census
   - `data_files` lists the install tree's `share/wine/nls/*.nls` and `share/wine/wine.inf`. That is a superset of what the Unix side reads, not narrowed by a `+file` trace. They are not translated. M2's FS layout includes them, and may narrow the list from a trace.
   - `data_files_note` is the closure job's `--note`: how `data_files` were listed, and "Static edges only" when there were no traces.
 
+## Packaging for the Unix side (Phase 2 M3)
+What a Wine process loads besides the release:
+- the closure's DLLs, rebased to unique bases;
+- an AOT module for each PE file;
+- a manifest of the boot set.
+
+They are built from `wine.lock`'s release and the translator at the commit: by `tests/wine/prepare.sh` in a session, and by the `wine-unix` workflow in CI. None of them is published.
+
+### The rebase (`native/wine/rebase/`)
+- **The tool** is a Rust crate under `native/wine/`, LGPL-2.1-or-later like the rest of that directory. It is a workspace member with its own `license` field. It reads PE files itself and depends on no crate of ours.
+- **Input:** the release's PE tree and its `closure.json`.
+- **What moves:** every closure DLL moves, except four:
+  - `ntdll.dll`, `kernelbase.dll` and `kernel32.dll`, which keep their own bases (0x1_7000_0000, 0x1_7400_0000, 0x1_7800_0000);
+  - `apisetschema.dll`, which is data.
+
+  EXEs keep their bases too.
+- **The bases:** the modules are taken in name order. Each takes the highest 64 KiB-aligned base that leaves room for its `SizeOfImage` below the previous one; the first goes below 0x1_7000_0000.
+  - The tool fails if a base would fall below `TW_IMAGE_RANGE_END` (0x1_6000_0000).
+  - `wine-4c6ec0d`'s closure needs 26.1 MiB of the 256 MiB (`research.md`, 2026-11-14).
+- **What changes in a file:**
+  - `OptionalHeader.ImageBase`;
+  - every `IMAGE_REL_BASED_DIR64` target, by the delta. `ABSOLUTE` entries are padding. Any other relocation type fails the tool, naming the file;
+  - `OptionalHeader.CheckSum`, recomputed. Wine compares checksums only to find a module already loaded (`dlls/ntdll/loader.c` L2791) and never validates them.
+- **What stays:** everything else, including the DOS stub with Wine's builtin signature, `DYNAMIC_BASE` and the `.reloc` section. The server keys builtin detection and `ImageDynamicallyRelocated` on them (`server/mapping.c` L935-944).
+- **A DLL without relocations** can't move, and the tool fails, naming it.
+- **Tests,** on real closure DLLs:
+  - every DIR64 target moves by the delta;
+  - no other byte changes except `ImageBase` and `CheckSum`;
+  - the packing is deterministic.
+- **`rebase.json` schema 1** lists the modules that moved:
+
+  ```
+  { "schema": 1, "wine": "wine-<sha7>", "range": ["0x160000000", "0x170000000"],
+    "modules": [ { "name": "msvcrt.dll", "path": "lib/wine/x86_64-windows/msvcrt.dll",
+                   "old_base": "0x180000000", "base": "0x16f…", "size": "0x…",
+                   "sha256": "<the rebased file's>" } ] }
+  ```
+
+### The catalog
+- **One AOT module per PE file:**
+  - each closure DLL, rebased or at its own base;
+  - each test program: hello, l2_int, l2_crt and l2_float.
+
+  Each is translated with `x64wasm-cli translate-pe --shared --null-check --store-check` (`translator.md`, "Wine processes"). `apisetschema.dll` is data and gets none.
+- **`catalog.json` schema 1:**
+
+  ```
+  { "schema": 1, "wine": "wine-<sha7>", "translator": "<commit>",
+    "options": ["--shared", "--null-check", "--store-check"],
+    "modules": [ { "path": "/wine/lib/wine/x86_64-windows/msvcrt.dll", "sha256": "…",
+                   "base": "0x…", "wasm": "msvcrt.dll.wasm", "plan": "msvcrt.dll.plan.json",
+                   "wasm_bytes": … } ] }
+  ```
+
+  - `path` is the file's path in MEMFS. JS finds that path from the fd that `tw_image_mapped` passes (`abi.md` v5).
+  - The programs' paths are under the prefix's `drive_c`, where the host writes them.
+  - JS links a module when the image's path, its sha256 and its mapped base all match.
+    - The sha256 of a lazy file is the boot-set manifest's. In Node the host checks the file against it on the first read.
+    - The program is the caller's file, written up front, so its sha256 comes from its own bytes, hashed before `boot`. A program the manifest doesn't list, such as `run-wine.mjs FILE.exe`, then still matches a catalog module built from the same bytes.
+- **The boot-set manifest,** `boot-set.json` schema 1, comes from the same step. Each file has its MEMFS `path`, `source`, `size`, `sha256`, and `lazy`:
+  - `source` is relative to `target/wine`;
+  - `lazy` is true for the closure's PE files and the `data_files`, which the host loads on their first read (`wine-unix.md`, section 8).
+
+### Layout under `target/wine` (`TW_WINE_DIR`)
+- `pe/`, `native/` and `wine-prefix/`: the release, as in M2;
+- `rebased/lib/wine/x86_64-windows/`: the DLLs that moved, and `rebase.json`;
+- `catalog/`: `catalog.json`, and `<name>.wasm` and `<name>.plan.json` per file;
+- `boot-set.json`;
+- `prefix.json` (M3): the prefix as made, listed for a host that can't walk `wine-prefix/`, which is the browser host (`wine-unix.md`, section 8).
+  - Schema 1: `{ "schema": 1, "path": "<wine-prefix.path>", "files": [ … ], "dirs": [ … ], "links": [ [path, target], … ], "installFiles": [ … ] }`.
+  - The values are what `readPrefix` (`runtime/src/wine/node-files.mjs`) returns, in its order. Paths are relative to the prefix. `files` holds the names of the top-level files, whose bytes are `wine-prefix/<name>`. `installFiles` are `drive_c`'s file paths, for the install copies.
+  - `tests/wine/catalog.mjs` writes it with `readPrefix`, next to `boot-set.json`. Its `--check` fails when the file differs from a fresh walk.
+- `bridge.wasm` (`x64wasm-cli bridge`);
+- the test programs' `.exe` files.
+
+### Where it is built
+- **In a session:** `tests/wine/prepare.sh` builds the catalog for the modules the test programs load (`closure.json`'s `roots`), or for the whole closure with `--all`.
+- **In CI:** `wine-unix.yml` builds the whole closure and compiles every module in V8 (Node 24, `new WebAssembly.Module`). That is the translation gate, and a failure names the file. Then it runs the programs test in Node, and from M3's browser work package hello.exe in Chromium.
+
 ## The prefix
 - **How it is made:** with the native build installed at its final path, `/opt/wine-11.0`: `WINEPREFIX=$HOME/wine-prefix WINEDEBUG=-all /opt/wine-11.0/bin/wine wineboot --init`, then `wineserver -w`.
 - **What is kept:** `system.reg`, `user.reg`, `userdef.reg`, `drive_c` and `dosdevices`, as made. The tarball holds `wine-prefix/` and `wine-prefix.path`, the path the prefix was made at, since the `.reg` files contain it.

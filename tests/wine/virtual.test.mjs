@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createUnixHost } from '../../runtime/src/wine/unix-host.mjs';
+import { m3Imports } from './m3-imports.mjs';
 
 const root = new URL('../../', import.meta.url);
 const dir = process.env.TW_WINE_UNIX_DIR
@@ -31,23 +32,27 @@ async function start(opts = {}) {
   const out = { stdout: '', stderr: '', grown: 0 };
   const dec = () => { const d = new TextDecoder(); return (b) => d.decode(b, { stream: true }); };
   const o = dec(), e = dec();
+  const m3 = m3Imports();
   const host = await createUnixHost({
     ...(await load()),
     stdout: (b) => { out.stdout += o(b); },
     stderr: (b) => { out.stderr += e(b); },
     onMemoryGrown: () => { out.grown++; },
+    imports: m3.imports,
     ...opts,
   });
-  return { host, out };
+  m3.attach(host);
+  return { host, out, m3 };
 }
 
 // In the harness's order (it runs them in one instance).
 const CHECKS = ['init_first_teb', 'kuser_committed', 'reserve_commit_free', 'fixed_high_grows', 'reserve_high_no_growth',
   'zero_on_recommit', 'protect_query', 'write_watch_page_watch', 'guest_regions_only',
-  'heap_cap_after_growth', 'file_view_copy', 'file_view_write_back', 'pointer_validation'];
+  'heap_cap_after_growth', 'file_view_copy', 'file_view_write_back', 'pointer_validation', 'invalidate_code',
+  'exec_range'];
 
 test('virtual: the harness checks pass', async () => {
-  const { host, out } = await start();
+  const { host, out, m3 } = await start();
   const ret = await host.call('tw_test_main');
   const lines = out.stdout.trim().split('\n');
   assert.deepEqual(lines.filter((l) => l.startsWith('not ok')), [], out.stdout + out.stderr);
@@ -58,6 +63,15 @@ test('virtual: the harness checks pass', async () => {
   // (section 5) and JS heard of it.
   assert.ok(out.grown >= 1, 'memory_grown was called');
   assert.ok(host.memory.buffer.byteLength >= 0x1_4002_0000, `memory: ${host.memory.buffer.byteLength}`);
+  // tw_invalidate (section 6): exactly the calls invalidate_code expects, for
+  // its PAGE_CODE pages, each while the range still held its marker; none
+  // for any other unmap or remap of the whole run.
+  const expected = lines.filter((l) => l.startsWith('# invalidate ')).map((l) => {
+    const [, , base, size] = l.split(' ');
+    return { base: BigInt(base), size: BigInt(size), marked: true };
+  });
+  assert.equal(expected.length, 2, out.stdout);
+  assert.deepEqual(m3.invalidated, expected);
 });
 
 test('virtual: init alone leaves the memory at 4 GiB', async () => {

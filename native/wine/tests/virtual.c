@@ -5,8 +5,10 @@
  * NtAllocateVirtualMemory and NtFreeVirtualMemory, and the backend under
  * them (sections 4-6): zero on recommit, protect and query, write-watch and
  * PAGE_WATCH, the guest regions only, the heap cap, file views and pointer
- * validation. Image placement needs the server's sections, so the `section`
- * harness tests it. tests/wine/virtual.test.mjs runs this one.
+ * validation, invalidation (M3), and the run loop's executable range (M3).
+ * Image placement, the top-down ceiling and tw_image_mapped need the
+ * server's sections, so the `section` harness
+ * tests them. tests/wine/virtual.test.mjs runs this one.
  *
  * Copyright 2026 the Tempwind authors
  *
@@ -598,6 +600,72 @@ static const char *pointer_validation( void )
     return NULL;
 }
 
+/* Invalidation (section 6): before the backend unmaps or maps over pages
+ * with PAGE_CODE, it calls tw_invalidate with the range; for pages without
+ * it, it makes no call. The check sets PAGE_CODE as JS does when it links a
+ * module, and clears it as JS does once no module remains. It prints each
+ * call it expects ("# invalidate BASE SIZE"); the JS test's recorder must
+ * have exactly those, each made while the marker byte was still there. */
+static const char *invalidate_code( void )
+{
+    uint8_t *flags = tw_page_flags();
+    uint64_t base = 0;
+    volatile uint8_t *p;
+
+    ensure_init();
+    TW_EXPECT( !alloc( &base, 0x4000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE ) );
+    p = (volatile uint8_t *)(uintptr_t)base;
+    p[0] = p[0x1000] = p[0x3000] = 0x5a;
+
+    TW_EXPECT( !release( base, 0x1000, MEM_DECOMMIT ) );  /* no PAGE_CODE: no call */
+    flags[(base + 0x1000) >> 12] |= TW_PAGE_CODE;
+    TW_EXPECT( !release( base + 0x1000, 0x1000, MEM_DECOMMIT ) );
+    printf( "# invalidate %#llx 0x1000\n", (unsigned long long)(base + 0x1000) );
+    flags[(base + 0x1000) >> 12] &= ~TW_PAGE_CODE;
+    TW_EXPECT( p[0x1000] == 0 );  /* decommitted after the call */
+
+    flags[(base + 0x3000) >> 12] |= TW_PAGE_CODE;
+    TW_EXPECT( !release( base, 0, MEM_RELEASE ) );
+    printf( "# invalidate %#llx 0x4000\n", (unsigned long long)base );
+    flags[(base + 0x3000) >> 12] &= ~TW_PAGE_CODE;
+    EXPECT_FREE( base );
+    return NULL;
+}
+
+/* The run loop's executable range (section 12, patch 0106): the run of
+ * committed, executable, non-guard pages around an address inside its view,
+ * and the protection byte of the address's page. */
+static const char *exec_range( void )
+{
+    uint64_t base = 0, b, n;
+    void *ptr;
+    SIZE_T size;
+    ULONG old;
+    unsigned int vprot;
+
+    ensure_init();
+    TW_EXPECT( !alloc( &base, 0x5000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE ) );
+    ptr = (void *)(uintptr_t)(base + 0x1000);
+    size = 0x2000;
+    TW_EXPECT( !NtProtectVirtualMemory( NtCurrentProcess(), &ptr, &size, PAGE_EXECUTE_READ, &old ) );
+    ptr = (void *)(uintptr_t)(base + 0x3000);
+    size = 0x1000;
+    TW_EXPECT( !NtProtectVirtualMemory( NtCurrentProcess(), &ptr, &size, PAGE_EXECUTE_READ | PAGE_GUARD, &old ) );
+
+    vprot = tw_exec_range( base + 0x1800, &b, &n );
+    TW_EXPECT( (vprot & 0x04) && b == base + 0x1000 && n == 0x2000 );  /* VPROT_EXEC */
+    vprot = tw_exec_range( base + 0x2fff, &b, &n );
+    TW_EXPECT( b == base + 0x1000 && n == 0x2000 );
+    vprot = tw_exec_range( base, &b, &n );  /* read-write */
+    TW_EXPECT( vprot && !(vprot & 0x04) && n == 0 );
+    vprot = tw_exec_range( base + 0x3000, &b, &n );  /* a guard page */
+    TW_EXPECT( (vprot & 0x14) == 0x14 && n == 0 );
+    TW_EXPECT( !release( base, 0, MEM_RELEASE ) );
+    TW_EXPECT( tw_exec_range( base + 0x1000, &b, &n ) == 0 && n == 0 );  /* no view */
+    TW_EXPECT( tw_exec_range( 0xdead000000000001ull, &b, &n ) == 0 && n == 0 );  /* non-canonical */
+    return NULL;
+}
+
 static const struct tw_check checks[] =
 {
     { "init_first_teb", init_first_teb },
@@ -613,6 +681,8 @@ static const struct tw_check checks[] =
     { "file_view_copy", file_view_copy },
     { "file_view_write_back", file_view_write_back },
     { "pointer_validation", pointer_validation },
+    { "invalidate_code", invalidate_code },
+    { "exec_range", exec_range },
     { "second_writable_view", second_writable_view, TW_ALONE },
 };
 

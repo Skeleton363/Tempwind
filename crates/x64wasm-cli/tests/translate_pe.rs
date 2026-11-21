@@ -108,17 +108,21 @@ fn plan_records_the_options() {
     std::fs::create_dir_all(&dir).unwrap();
     let exe = dir.join("tiny.exe");
     std::fs::write(&exe, minimal_image()).unwrap();
-    let cases: [(&[&str], [bool; 5]); 5] = [
-        (&[], [false, false, false, false, true]),
+    let cases: [(&[&str], [bool; 6]); 6] = [
+        (&[], [false, false, false, false, true, false]),
         (
             &["--null-check", "--counters"],
-            [true, false, true, false, true],
+            [true, false, true, false, true, false],
         ),
-        (&["--store-check"], [false, true, false, false, true]),
-        (&["--sync-all"], [false, false, false, true, true]),
-        (&["--no-structured"], [false, false, false, false, false]),
+        (&["--store-check"], [false, true, false, false, true, false]),
+        (&["--sync-all"], [false, false, false, true, true, false]),
+        (
+            &["--no-structured"],
+            [false, false, false, false, false, false],
+        ),
+        (&["--shared"], [false, false, false, false, true, true]),
     ];
-    for (flags, [null_check, store, counters, sync_all, structured]) in cases {
+    for (flags, [null_check, store, counters, sync_all, structured, shared]) in cases {
         let out_dir = dir.join(format!("out{}", flags.join("")));
         let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
             .arg("translate-pe")
@@ -144,6 +148,7 @@ fn plan_records_the_options() {
                 "counters": counters,
                 "syncAll": sync_all,
                 "structured": structured,
+                "sharedMemory": shared,
             }),
             "{flags:?}"
         );
@@ -204,4 +209,66 @@ fn reference_mode_flags_set_the_options() {
         assert_eq!(wasm, expected, "{flag}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The memory import of a translated module.
+fn memory_import(wasm: &[u8]) -> wasmparser::MemoryType {
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let wasmparser::Payload::ImportSection(r) = payload.unwrap() {
+            for i in r.into_imports() {
+                if let wasmparser::TypeRef::Memory(m) = i.unwrap().ty {
+                    return m;
+                }
+            }
+        }
+    }
+    panic!("no memory import");
+}
+
+/// `--shared` builds a Wine process's module (`translator.md`, "Wine
+/// processes"): a shared memory64 with a maximum of 16 GiB; `bridge`
+/// writes the bridge module (`abi.md` v5, "The bridge").
+#[test]
+fn shared_modules_and_the_bridge() {
+    let dir = std::env::temp_dir().join(format!("x64wasm-shared-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("tiny.exe");
+    std::fs::write(&exe, minimal_image()).unwrap();
+    for (flags, shared) in [
+        (&[][..], false),
+        (&["--shared", "--null-check", "--store-check"][..], true),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
+            .arg("translate-pe")
+            .arg(&exe)
+            .arg("--out-dir")
+            .arg(&dir)
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let m = memory_import(&std::fs::read(dir.join("tiny.wasm")).unwrap());
+        assert!(m.memory64);
+        assert_eq!(m.shared, shared, "{flags:?}");
+        let max = shared.then_some(x64wasm::abi::MAX_MEMORY_PAGES);
+        assert_eq!(m.maximum, max, "{flags:?}");
+    }
+    let bridge = dir.join("bridge.wasm");
+    let out = Command::new(env!("CARGO_BIN_EXE_x64wasm"))
+        .arg("bridge")
+        .arg("--out")
+        .arg(&bridge)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&bridge).unwrap(), x64wasm::bridge::module());
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -1,0 +1,79 @@
+ntdll: a top-down allocation with no limit stays below the image views
+(docs/design/wine-unix.md, section 4, "MEM_TOP_DOWN with no limit").
+
+Why: map_view searches a request with no limit_high from
+min(user_space_limit, host_addr_space_limit), 16 GiB here, down
+(dlls/ntdll/unix/virtual.c L2287-2295), so a top-down allocation would
+grow the wasm memory to 16 GiB. Guest code gets there through
+NtAllocateVirtualMemory with MEM_TOP_DOWN and no zero bits, which passes
+no limit (L5223-5228; unix_private.h L527).
+
+- map_view (virtual.c): a top-down request with no limit_high first
+  searches below a ceiling, the end of the highest image view rounded up
+  to 64 KiB (top_down_ceiling, new): in the reserved areas, then between
+  the views, as Wine's own search does. Only if nothing fits there does it
+  go on to Wine's search of the full range. With no image view there is no
+  ceiling.
+- Images never get there: map_image_view always passes a limit_high
+  (L3329), and so does the Unix side's PEB and TEB block below 2 GiB
+  (L4054-4055).
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2273,6 +2273,29 @@
+     return status;
+ }
+ 
++#ifdef __wasm64__
++/***********************************************************************
++ *           top_down_ceiling
++ *
++ * Tempwind (wine-unix.md, section 4): the end of the highest image view,
++ * rounded up to 64 KiB, or NULL with no image view.
++ * virtual_mutex must be held by caller.
++ */
++static void *top_down_ceiling(void)
++{
++    struct wine_rb_entry *ptr;
++
++    for (ptr = rb_tail( views_tree.root ); ptr; ptr = rb_prev( ptr ))
++    {
++        struct file_view *view = WINE_RB_ENTRY_VALUE( ptr, struct file_view, entry );
++
++        if (view->protect & SEC_IMAGE)
++            return (void *)(((UINT_PTR)view->base + view->size + granularity_mask) & ~granularity_mask);
++    }
++    return NULL;
++}
++#endif
++
+ /***********************************************************************
+  *           map_view
+  *
+@@ -2339,6 +2362,25 @@
+         if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
+         if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
+ 
++#ifdef __wasm64__
++        /* Tempwind (wine-unix.md, section 4): with no limit_high, a top-down
++         * search starts at 16 GiB and would grow the memory there. It first
++         * searches below the image views; only if nothing fits does it go on
++         * as Wine does. */
++        if (top_down && !limit_high)
++        {
++            void *ceiling = top_down_ceiling();
++
++            if (ceiling > start && ceiling < end &&
++                ((ptr = map_reserved_area( start, ceiling, host_size, top_down, unix_prot, align_mask )) ||
++                 (ptr = map_free_area( start, ceiling, host_size, top_down, unix_prot, align_mask ))))
++            {
++                TRACE( "got mem below the image views %p-%p\n", ptr, (char *)ptr + size );
++                goto done;
++            }
++        }
++#endif
++
+         if ((ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
+         {
+             TRACE( "got mem in reserved area %p-%p\n", ptr, (char *)ptr + size );

@@ -28,7 +28,7 @@ Phase 0, item 7. Status: **decided, option A (identity mapping below 16 GiB)**. 
 **Wine's own layout.** From wine-11.0:
 
 - `KUSER_SHARED_DATA` is at 0x7ffe_0000 (`dlls/ntdll/unix/virtual.c`, `user_shared_data`). Every PE syscall thunk reads `0x7ffe0308` and calls through `0x7ffe1000` (`include/wine/asm.h` `__ASM_SYSCALL_FUNC`). Both addresses are absolute and fixed.
-- The PEB and the first TEBs come from one block allocated `MEM_TOP_DOWN` below 2 GiB (`virtual.c` ~L4054, `limit_2g - 1`).
+- The PEB and the first TEBs come from one block allocated `MEM_TOP_DOWN` below 2 GiB (`virtual.c` L4054-4055, `limit_2g - 1`).
 - The preloader reserves, for x86-64 (`loader/preloader.c` L107-122):
   - the DOS area 0x1_0000-0x11_0000;
   - the low area 0x11_0000-0x6800_0000, released once the EXE is mapped;
@@ -171,7 +171,7 @@ How to read it:
 | 0x0_7ffe_0000-0x0_7ffe_ffff | KUSER_SHARED_DATA (0x7ffe_0000) and the syscall-dispatcher slot at 0x7ffe_1000. Fixed by Windows ABI and Wine's thunks. |
 | 0x0_7fff_0000-0x0_7fff_ffff | No-access gap, as on Windows. |
 | 0x0_8000_0000-0x0_ffff_ffff | **Host region**, 2 GiB, reported to the guest as reserved. It belongs to the Emscripten Unix side's allocator (`GLOBAL_BASE=0x80000000`; static data, the 1 MiB stack, then the heap, capped below 4 GiB by the `sbrk` wrapper). The translator's runtime data (CPU state blocks, block lookup tables, green-thread stacks) comes from that heap, and the Unix side allocates the page-state table there (1 byte per 4 KiB page = 4 MiB). `wine-unix.md`, sections 4 and 5. |
-| 0x1_0000_0000-0x3_ffff_ffff | Guest high region, 12 GiB. Images at their preferred base when it lies here and is free (MSVC 0x1_4000_0000/0x1_8000_0000, Wine 0x1_7000_0000 and up, MinGW DLLs 0x2_xxxx_xxxx-0x3_xxxx_xxxx). A relocated DLL whose base is taken gets a slot from the server's range [0x1_0000_0000, 0x1_7000_0000), top-down below ntdll, which replaces 0x6000_0000_0000 and keeps the memory small (M2). MEM_TOP_DOWN allocations start from a ceiling just above the highest image, not from 16 GiB, so the memory stays small (M3; `wine-unix.md`, section 4). |
+| 0x1_0000_0000-0x3_ffff_ffff | Guest high region, 12 GiB. Images at their preferred base when it lies here and is free: MSVC 0x1_4000_0000/0x1_8000_0000; Wine's ntdll, kernelbase and kernel32 at 0x1_7000_0000, 0x1_7400_0000 and 0x1_7800_0000; the other closure DLLs at unique bases in [0x1_6000_0000, 0x1_7000_0000), rebased when packaged (M3); MinGW DLLs 0x2_xxxx_xxxx-0x3_xxxx_xxxx. A relocated DLL whose base is taken gets a slot from the server's range [0x1_0000_0000, `TW_IMAGE_RANGE_END` = 0x1_6000_0000), top-down below the rebased closure, which replaces 0x6000_0000_0000 and keeps the memory small (M2; the range ended at 0x1_7000_0000 until M3). A `MEM_TOP_DOWN` allocation with no limit searches below the end of the highest mapped image first, not from 16 GiB, so the memory stays small (M3; `wine-unix.md`, section 4). |
 
 `user_space_limit` = `address_space_limit` = 0x4_0000_0000 (16 GiB), for every EXE: 64-bit Wine never lowers it for an EXE without `LARGE_ADDRESS_AWARE` (`virtual_set_large_address_space`), and neither do we (`wine-unix.md`, section 4).
 
@@ -217,7 +217,7 @@ The condition is not met, so A stays.
   - Make both switchable so CoreMark and 7-Zip can measure them. Keep the explicit branches; a trap would lose the wasm locals.
 - The page-state table format (1 byte per 4 KiB page: committed, R/W/X, guard, code, write-watch) as a shared ABI with the Unix side, in the host region.
 - DEP: refuse to translate from non-executable pages and raise an execute access violation instead.
-- Code invalidation on a code-page store hit: invalidate the blocks for that page and resume.
+- Code invalidation on a code-page store hit: invalidate the blocks for that page and resume. This moved to Phase 4: until then a hit stops loudly. From Phase 2's M3 the Unix side invalidates on unmap and remap (`wine-unix.md`, section 6).
 - An AOT and translation cache keyed by (image hash, load base). Loading is deterministic, so the key is stable.
 - Recognition of the syscall thunk shape (`syscall` / `call *0x7ffe1000`) as an exit to the Unix side.
 
@@ -226,7 +226,7 @@ The condition is not met, so A stays.
 - **A `virtual.c` backend without mmap.** Views over the wasm memory, commit = grow if needed plus zero on recommit, protection kept only in the page-state table, and `MEM_RESERVE` failing beyond the guest range. Patch the address constants:
   - `virtual.c` L186-197;
   - the preloader reserve list, which has no preloader here and becomes a static list;
-  - `server/mapping.c` `init_memory` ASLR range, moved to [0x1_0000_0000, 0x1_7000_0000) top-down (M2);
+  - `server/mapping.c` `init_memory` ASLR range, moved to [0x1_0000_0000, 0x1_7000_0000) top-down (M2), and to [0x1_0000_0000, 0x1_6000_0000) below the rebased closure (M3);
   - Wine's virtual heap and its other bookkeeping, in the host heap (M2).
 - **Emscripten placement.** Import the memory the JS runtime creates (shared, maximum 262144 pages), and set `GLOBAL_BASE=0x80000000`. Cap the heap below 0x1_0000_0000: M2 starts the memory at 4 GiB and wraps `sbrk` (`-Wl,--wrap=sbrk`), so the virtual backend is the only grower. Never use Emscripten's `mmap` for guest memory: it zero-fills and is slow.
 - **Guest pointer validation in the Unix side.** The `__TRY`/`__EXCEPT` replacement must use `virtual_check_buffer_for_read/write` and the page-state table, because bad pointers do not fault.

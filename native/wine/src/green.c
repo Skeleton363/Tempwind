@@ -66,7 +66,10 @@ static int64_t monotonic_ns( void )
 /* Blocks the current green thread in green_block and returns the value JS
  * resumes it with. Around the call it saves and restores the spike's save
  * set: the stack pointer and limits, errno and the current thread, since
- * other green threads run on their own stacks meanwhile. */
+ * other green threads run on their own stacks meanwhile; and from M3
+ * env.depth, the running thread's count of guest frames, through the
+ * bridge (abi.md v5, "Green threads"), restored here in C on the resumed
+ * stack, never in green_block's JS continuation. */
 int64_t green_switch( void )
 {
     uintptr_t sp = emscripten_stack_get_current();
@@ -74,6 +77,7 @@ int64_t green_switch( void )
     uintptr_t end = emscripten_stack_get_end();
     int saved_errno = errno;
     struct green_thread *self = green_current;
+    int32_t depth = tw_depth_get();
     int64_t ret;
 
     if (self->mutexes_held)
@@ -86,6 +90,7 @@ int64_t green_switch( void )
     emscripten_stack_set_limits( (void *)base, (void *)end );
     _emscripten_stack_restore( sp );
     green_current = self;
+    tw_depth_set( depth );
     set_current_time();  /* the server's clock, at every switch (section 7); may set errno */
     errno = saved_errno;
     return ret;

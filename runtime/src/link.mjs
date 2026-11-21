@@ -2,13 +2,18 @@
 // the process-wide funcref table, the `table_base`/`lookup`/`depth` globals,
 // the lookup table in guest memory, and module linking. Standard WebAssembly
 // APIs only (Node, page, Worker).
+//
+// A Wine process (abi.md v5, "Wine boundary") injects its own table, `depth`
+// and page-state table, and places the header and slots in the host region.
+// Its table has the bridge's reserved slots, so it can remove keys:
+// invalidation turns slots into tombstones (abi.md v5, "Lookup table").
 
 import {
   MEMORY_MODULE, MEMORY_NAME, TABLE_NAME, TABLE_BASE_NAME, LOOKUP_NAME, DEPTH_NAME, COUNTERS_NAME, COUNTERS_SIZE,
   PAGE_FLAGS_NAME, PAGE_FLAGS_SIZE, PAGE_FLAGS_SHIFT,
   LOOKUP_SLOTS, LOOKUP_MASK, LOOKUP_USED, LOOKUP_SLOT_SIZE,
   BLOCKS_SECTION, BLOCKS_VERSION, BLOCKS_HEADER_SIZE, BLOCKS_ENTRY_SIZE,
-  HOST_FUNC_INDEX, LOOKUP_HASH_MUL,
+  HOST_FUNC_INDEX, LOOKUP_HASH_MUL, LOOKUP_TOMBSTONE, TOMBSTONE_INDEX, TABLE_RESERVED, PAGE_CODE,
 } from './abi.mjs';
 import { GuestMemory } from './guest-memory.mjs';
 import { FP_NAMESPACE, fpImports } from './fp.mjs';
@@ -44,6 +49,9 @@ const splitKey = (key) => {
   return [Number(key & 0xffff_ffffn), Number(key >> 32n)];
 };
 const joinKey = (lo, hi) => (BigInt(hi) << 32n) | BigInt(lo);
+// LOOKUP_TOMBSTONE as u32 halves.
+const TOMB_LO = Number(LOOKUP_TOMBSTONE & 0xffff_ffffn);
+const TOMB_HI = Number(LOOKUP_TOMBSTONE >> 32n);
 
 /**
  * Validates an `x64wasm.blocks` section without materializing it.
@@ -133,13 +141,20 @@ export function hostFunction(fn) {
 export class Linker {
   /**
    * @param {{memory: WebAssembly.Memory, header: bigint, slotsAddr: bigint, slots: number,
-   *   alloc?: (size: bigint, align: bigint) => bigint, fp?: WebAssembly.Exports | null}} opts
+   *   alloc?: (size: bigint, align: bigint) => bigint, free?: (addr: bigint) => void, fp?: WebAssembly.Exports | null,
+   *   table?: WebAssembly.Table, depth?: WebAssembly.Global, pageFlagsAddr?: bigint}} opts
    *   `header`: guest address of the 32-byte lookup header (8-byte aligned);
    *   `slotsAddr`/`slots`: the first slot array (16-byte aligned, power-of-two count, at most 2^32);
    *   `alloc`: zeroed guest memory for larger slot arrays (rehash). Without it, a full table is an error.
+   *   `free`: gives back a slot array that a rehash replaced (optional);
    *   `fp`: the exports of x64wasm_fp.wasm (loadFp), passed as the `fp` namespace to every module; one per process.
+   *   A Wine process (abi.md v5, "Instances") injects the rest:
+   *   `table`: `env.table`, with the bridge's reserved slots (RUN_INDEX, TOMBSTONE_INDEX) filled. Only
+   *     such a table can remove keys, since a tombstone's func is TOMBSTONE_INDEX;
+   *   `depth`: `env.depth`, which the bridge imports too;
+   *   `pageFlagsAddr`: the page-state table the Unix side allocated (`tw_page_flags()`).
    */
-  constructor({ memory, header, slotsAddr, slots, alloc, fp = null }) {
+  constructor({ memory, header, slotsAddr, slots, alloc, free, fp = null, table, depth, pageFlagsAddr }) {
     header = BigInt(header);
     slotsAddr = BigInt(slotsAddr);
     if (header % 8n) throw new Error(`lookup header ${hex(header)} is not 8-byte aligned`);
@@ -149,21 +164,36 @@ export class Linker {
     this.mem = new GuestMemory(memory);
     this.header = header;
     this.alloc = alloc;
+    this.free = free;
     this.fp = fp;
-    this.table = new WebAssembly.Table({ element: 'anyfunc', initial: HOST_FUNC_INDEX + 1 });
+    if (table && table.length < TABLE_RESERVED) throw new Error(`env.table has ${table.length} slots, fewer than the ${TABLE_RESERVED} reserved ones`);
+    this.table = table ?? new WebAssembly.Table({ element: 'anyfunc', initial: HOST_FUNC_INDEX + 1 });
+    /** Whether keys can be removed: the table's TOMBSTONE_INDEX holds the bridge's tombstone. */
+    this.tombstones = !!table;
     this.lookupGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, header);
-    this.depth = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
+    this.depth = depth ?? new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
     /** The counter block, allocated when a module imports `env.counters`. */
     this.countersAddr = null;
     this.countersGlobal = null;
-    /** The page-state table, allocated when a module imports `env.page_flags`. */
+    /** The page-state table: injected, or allocated when a module imports `env.page_flags`. */
     this.pageFlagsAddr = null;
     this.pageFlagsGlobal = null;
+    if (pageFlagsAddr !== undefined && pageFlagsAddr !== null) {
+      this.pageFlagsAddr = BigInt(pageFlagsAddr);
+      if (this.pageFlagsAddr === 0n) throw new Error('the page-state table is at address 0');
+      this.pageFlagsGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, this.pageFlagsAddr);
+    }
     /** Called once with the table's linker when it is allocated (to mark the code pages). */
     this.onPageFlags = null;
+    /** Slots with a nonzero key, tombstones included (the header's `used`). */
     this.used = 0;
-    // Mirror of the keys as a BigUint64Array's buffer, written through u32 words.
+    /** Live keys: `used` without the tombstones. */
+    this.live = 0;
+    // Mirror of the live keys as a BigUint64Array's buffer, written through u32 words.
+    // A removal makes it stale; sortedKeys() then rebuilds it from the slots.
     this.mirror = new Uint32Array(128);
+    this.mirrorLen = 0;
+    this.mirrorStale = false;
     this.sorted = true;
     this.lastLo = 0;
     this.lastHi = 0;
@@ -203,8 +233,27 @@ export class Linker {
     }
   }
 
+  /**
+   * Where an insert of (lo, hi) goes: the slot holding it (`found`), else the
+   * first tombstone on its probe path, else the empty slot that ends it (abi.md v5).
+   */
+  probeInsert(dv, lo, hi) {
+    const mask = this.slotMask, base = this.slotsAt;
+    let i = hashIndex(lo, hi, mask);
+    let tomb = -1;
+    for (;;) {
+      const at = base + i * LOOKUP_SLOT_SIZE;
+      const klo = dv.getUint32(at, true), khi = dv.getUint32(at + 4, true);
+      if (klo === lo && khi === hi) return { at, found: true, tomb: false };
+      if ((klo | khi) === 0) return tomb < 0 ? { at, found: false, tomb: false } : { at: tomb, found: false, tomb: true };
+      if (tomb < 0 && klo === TOMB_LO && khi === TOMB_HI) tomb = at;
+      i = (i + 1) & mask;
+    }
+  }
+
   /** Puts the host-call function (a JS function, see `hostFunction`) into table slot 0. */
   setHostFunction(fn) {
+    if (this.tombstones) throw new Error('setHostFunction: slot 0 of an injected table is RUN_INDEX (abi.md v5, "The bridge")');
     this.table.set(HOST_FUNC_INDEX, hostFunction(fn));
   }
 
@@ -213,8 +262,16 @@ export class Linker {
    * in a new table slot and returns its index. Call it before linking modules.
    */
   addHostFunction(fn) {
+    return this.addTableFunction(hostFunction(fn));
+  }
+
+  /**
+   * Adds a wasm function of the guest-function type (a raw export, never a
+   * JS wrapper: abi.md v5, "Who calls whom") in a new table slot; returns its index.
+   */
+  addTableFunction(f) {
     const index = this.table.length;
-    this.table.grow(1, hostFunction(fn));
+    this.table.grow(1, f);
     return index;
   }
 
@@ -239,23 +296,27 @@ export class Linker {
 
   /** insert() for a key given as nonzero u32 halves; the caller stores `used` afterwards. */
   insertWords(dv, lo, hi, func, entry) {
-    let at = this.probe(dv, lo, hi);
-    if ((dv.getUint32(at, true) | dv.getUint32(at + 4, true)) !== 0) return false;
-    if (2 * (this.used + 1) > this.slotCount) {
-      this.grow(this.used + 1);
+    if (lo === TOMB_LO && hi === TOMB_HI) throw new Error(`lookup key ${hex(LOOKUP_TOMBSTONE)} is the tombstone`);
+    let p = this.probeInsert(dv, lo, hi);
+    if (p.found) return false;
+    if (!p.tomb && 2 * (this.used + 1) > this.slotCount) {
+      this.grow(this.live + 1);
       dv = this.view();
-      at = this.probe(dv, lo, hi);
+      p = this.probeInsert(dv, lo, hi);
     }
+    const at = p.at;
     dv.setUint32(at + 8, func, true);
     dv.setUint32(at + 12, entry, true);
     dv.setUint32(at, lo, true);
     dv.setUint32(at + 4, hi, true);
-    this.mirrorPush(lo, hi);
+    if (!p.tomb) this.used++;
+    this.live++;
+    if (!this.mirrorStale) this.mirrorPush(lo, hi);
     return true;
   }
 
   mirrorPush(lo, hi) {
-    const n = this.used;
+    const n = this.mirrorLen;
     if (2 * n + 2 > this.mirror.length) {
       const bigger = new Uint32Array(this.mirror.length * 2);
       bigger.set(this.mirror);
@@ -266,60 +327,118 @@ export class Linker {
     if (this.sorted && n > 0 && (hi < this.lastHi || (hi === this.lastHi && lo < this.lastLo))) this.sorted = false;
     this.lastLo = lo;
     this.lastHi = hi;
-    this.used = n + 1;
+    this.mirrorLen = n + 1;
   }
 
   storeUsed() {
     this.mem.setU64(this.header + BigInt(LOOKUP_USED), BigInt(this.used));
   }
 
-  /** A new slot array with `2 * want <= slots`; reinserts every slot. */
+  /**
+   * Removes `key` (abi.md v5, "Lookup table"): its slot becomes a tombstone,
+   * which the probe passes over. Returns whether the key was there.
+   */
+  remove(key) {
+    const [lo, hi] = splitKey(key);
+    const dv = this.view();
+    const ok = this.removeWords(dv, lo, hi, 0, 2 ** 32);
+    return ok;
+  }
+
+  /** remove() of (lo, hi) if its slot's func is in [funcLo, funcHi). */
+  removeWords(dv, lo, hi, funcLo, funcHi) {
+    if (!this.tombstones) throw new Error('lookup: removing a key needs a table with the bridge\'s tombstone slot (abi.md v5)');
+    if (lo === TOMB_LO && hi === TOMB_HI) return false;
+    const at = this.probe(dv, lo, hi);
+    if ((dv.getUint32(at, true) | dv.getUint32(at + 4, true)) === 0) return false;
+    const func = dv.getUint32(at + 8, true);
+    if (func < funcLo || func >= funcHi) return false; // another module's translation of the address
+    dv.setUint32(at, TOMB_LO, true);
+    dv.setUint32(at + 4, TOMB_HI, true);
+    dv.setUint32(at + 8, TOMBSTONE_INDEX, true);
+    dv.setUint32(at + 12, 0, true);
+    this.live--;
+    this.mirrorStale = true;
+    return true;
+  }
+
+  /**
+   * A new slot array with `2 * want <= slots` (never fewer slots than now);
+   * reinserts every live key and drops the tombstones (abi.md v5).
+   */
   grow(want) {
     if (!this.alloc) throw new Error(`lookup table full (${this.used} of ${this.slotCount} slots) and no allocator to grow it`);
     let count = this.slotCount;
     while (2 * want > count) count *= 2;
     if (count > 2 ** 32) throw new Error(`lookup table would need ${count} slots`);
+    const oldAddr = this.slotsAddr;
     const old = this.mem.read(this.slotsAddr, this.slotCount * LOOKUP_SLOT_SIZE);
     const addr = BigInt(this.alloc(BigInt(count * LOOKUP_SLOT_SIZE), 16n));
     if (addr % 16n) throw new Error(`lookup slots ${hex(addr)} are not 16-byte aligned`);
     this.setSlots(addr, count);
     const odv = new DataView(old.buffer);
     const dv = this.view();
+    let used = 0;
     for (let o = 0; o < old.length; o += LOOKUP_SLOT_SIZE) {
       const lo = odv.getUint32(o, true), hi = odv.getUint32(o + 4, true);
-      if ((lo | hi) === 0) continue;
+      if ((lo | hi) === 0 || (lo === TOMB_LO && hi === TOMB_HI)) continue;
       const at = this.probe(dv, lo, hi);
       dv.setUint32(at + 8, odv.getUint32(o + 8, true), true);
       dv.setUint32(at + 12, odv.getUint32(o + 12, true), true);
       dv.setUint32(at, lo, true);
       dv.setUint32(at + 4, hi, true);
+      used++;
     }
+    this.used = used;
+    this.live = used;
+    this.storeUsed();
+    if (this.free) this.free(oldAddr);
   }
 
   /** Every key in the lookup table, sorted ascending (the run-time translator's `known`). */
   sortedKeys() {
-    const keys = new BigUint64Array(this.mirror.buffer, 0, this.used);
+    if (this.mirrorStale) this.rebuildMirror();
+    const keys = new BigUint64Array(this.mirror.buffer, 0, this.mirrorLen);
     if (!this.sorted) { keys.sort(); this.sorted = true; }
     // Keep lastLo/lastHi = the largest key, so later sortedness checks stay right.
-    if (this.used) { this.lastLo = this.mirror[2 * this.used - 2 + (LITTLE ? 0 : 1)]; this.lastHi = this.mirror[2 * this.used - 2 + (LITTLE ? 1 : 0)]; }
+    const n = this.mirrorLen;
+    if (n) { this.lastLo = this.mirror[2 * n - 2 + (LITTLE ? 0 : 1)]; this.lastHi = this.mirror[2 * n - 2 + (LITTLE ? 1 : 0)]; }
     return keys;
+  }
+
+  /** The mirror from the live keys of the slot array. */
+  rebuildMirror() {
+    this.mirrorLen = 0;
+    this.sorted = true;
+    const dv = this.view();
+    const end = this.slotsAt + this.slotCount * LOOKUP_SLOT_SIZE;
+    for (let at = this.slotsAt; at < end; at += LOOKUP_SLOT_SIZE) {
+      const lo = dv.getUint32(at, true), hi = dv.getUint32(at + 4, true);
+      if ((lo | hi) === 0 || (lo === TOMB_LO && hi === TOMB_HI)) continue;
+      this.mirrorPush(lo, hi);
+    }
+    this.mirrorStale = false;
   }
 
   /**
    * Links a translated module: grows the table, instantiates, inserts its blocks.
+   * `ranges`: the guest code it was translated from, as [start, size] pairs (bigint):
+   * invalidation removes the module when a range it is given overlaps one of them.
+   * Without it, the span of the module's blocks.
    * @param {WebAssembly.Module} module
+   * @param {{ranges?: [bigint, bigint][]}} [opts]
    * @returns {Promise<{instance: WebAssembly.Instance, run: Function, tableBase: number,
-   *   chunks: number, blocks: number, inserted: number}>}
+   *   chunks: number, blocks: number, inserted: number, ranges: [bigint, bigint][]}>}
    */
-  async link(module) {
+  async link(module, opts = {}) {
     const tableBase = this.reserve(module);
-    return this.insertBlocks(module, tableBase, await WebAssembly.instantiate(module, this.imports(tableBase, module)));
+    return this.insertBlocks(module, tableBase, await WebAssembly.instantiate(module, this.imports(tableBase, module)), opts.ranges);
   }
 
-  /** link() for callers that cannot wait (a guest call from a host function). */
-  linkSync(module) {
+  /** link() for callers that cannot wait (a guest call from a host function, a plain import of the Unix side). */
+  linkSync(module, opts = {}) {
     const tableBase = this.reserve(module);
-    return this.insertBlocks(module, tableBase, new WebAssembly.Instance(module, this.imports(tableBase, module)));
+    return this.insertBlocks(module, tableBase, new WebAssembly.Instance(module, this.imports(tableBase, module)), opts.ranges);
   }
 
   /** A module that imports `fp` needs the helper module (v4). */
@@ -340,8 +459,9 @@ export class Linker {
     return tableBase;
   }
 
-  insertBlocks(module, tableBase, instance) {
-    const { chunks, count, dv: bdv } = readBlocks(blocksSection(module));
+  insertBlocks(module, tableBase, instance, ranges) {
+    const section = blocksSection(module);
+    const { chunks, count, dv: bdv } = readBlocks(section);
     const run = instance.exports.run;
     if (typeof run !== 'function') throw new Error('module lacks export "run"');
     let inserted = 0;
@@ -352,9 +472,47 @@ export class Linker {
       if (this.slotsAt !== before) dv = this.view();
     }
     this.storeUsed();
-    const linked = { instance, run, tableBase, chunks, blocks: count, inserted };
+    if (!ranges) {
+      ranges = count === 0 ? [] : [[bdv.getBigUint64(BLOCKS_HEADER_SIZE, true),
+        bdv.getBigUint64(BLOCKS_HEADER_SIZE + (count - 1) * BLOCKS_ENTRY_SIZE, true) - bdv.getBigUint64(BLOCKS_HEADER_SIZE, true) + 1n]];
+    }
+    ranges = ranges.map(([start, size]) => [BigInt(start), BigInt(size)]);
+    const linked = { instance, run, tableBase, chunks, blocks: count, inserted, ranges, section: bdv };
     this.modules.push(linked);
     return linked;
+  }
+
+  /**
+   * Code invalidation (abi.md v5, "Lookup table"; wine-unix.md, section 6):
+   * removes every block of every linked module one of whose ranges overlaps
+   * [base, base + size). A module goes whole, since its blocks call each
+   * other directly. Only slots that still point into the module's chunks
+   * become tombstones (another module may have translated an address first).
+   * Then PAGE_CODE is cleared on the removed modules' pages that no remaining
+   * module covers. Returns the removed modules.
+   */
+  invalidate(base, size) {
+    base = BigInt(base);
+    size = BigInt(size);
+    if (size <= 0n) return [];
+    const end = base + size;
+    const hit = (m) => m.ranges.some(([s, n]) => s < end && base < s + n);
+    const removed = this.modules.filter(hit);
+    if (!removed.length) return [];
+    this.modules = this.modules.filter((m) => !hit(m));
+    const dv = this.view();
+    for (const m of removed) {
+      const bdv = m.section;
+      for (let i = 0, o = BLOCKS_HEADER_SIZE; i < m.blocks; i++, o += BLOCKS_ENTRY_SIZE) {
+        this.removeWords(dv, bdv.getUint32(o, true), bdv.getUint32(o + 4, true), m.tableBase, m.tableBase + m.chunks);
+      }
+    }
+    if (this.pageFlagsAddr !== null) {
+      for (const m of removed) {
+        for (const [s, n] of m.ranges) this.clearPageFlags(s, n, PAGE_CODE, (page) => this.modules.some((k) => k.ranges.some(([ks, kn]) => ks >> PAGE_FLAGS_SHIFT <= page && page <= (ks + kn - 1n) >> PAGE_FLAGS_SHIFT)));
+      }
+    }
+    return removed;
   }
 
   /** True if the module imports `env.counters` (built with `Options::counters`). */
@@ -367,17 +525,30 @@ export class Linker {
     return WebAssembly.Module.imports(module).some((i) => i.module === MEMORY_MODULE && i.name === PAGE_FLAGS_NAME);
   }
 
-  /** ORs `bits` into the page-state byte of every 4 KiB page that [addr, addr + size) touches. */
-  setPageFlags(addr, size, bits) {
-    if (this.pageFlagsAddr === null) throw new Error('setPageFlags: no module imports env.page_flags');
+  /** The page-state bytes of every 4 KiB page that [addr, addr + size) touches, and the first page's number. */
+  pageFlagBytes(what, addr, size) {
+    if (this.pageFlagsAddr === null) throw new Error(`${what}: no module imports env.page_flags`);
     addr = BigInt(addr);
     size = BigInt(size);
-    if (size === 0n) return;
+    if (size === 0n) return null;
     const first = addr >> PAGE_FLAGS_SHIFT;
     const last = (addr + size - 1n) >> PAGE_FLAGS_SHIFT;
-    if (last >= BigInt(PAGE_FLAGS_SIZE)) throw new Error(`setPageFlags: ${hex(addr)}+${hex(size)} is above the page-state table`);
-    const bytes = new Uint8Array(this.memory.buffer, Number(this.pageFlagsAddr + first), Number(last - first + 1n));
-    for (let i = 0; i < bytes.length; i++) bytes[i] |= bits;
+    if (last >= BigInt(PAGE_FLAGS_SIZE)) throw new Error(`${what}: ${hex(addr)}+${hex(size)} is above the page-state table`);
+    return { first, bytes: new Uint8Array(this.memory.buffer, Number(this.pageFlagsAddr + first), Number(last - first + 1n)) };
+  }
+
+  /** ORs `bits` into the page-state byte of every 4 KiB page that [addr, addr + size) touches. */
+  setPageFlags(addr, size, bits) {
+    const r = this.pageFlagBytes('setPageFlags', addr, size);
+    if (!r) return;
+    for (let i = 0; i < r.bytes.length; i++) r.bytes[i] |= bits;
+  }
+
+  /** Clears `bits` on the pages [addr, addr + size) touches, except those `keep(page number)` returns true for. */
+  clearPageFlags(addr, size, bits, keep = () => false) {
+    const r = this.pageFlagBytes('clearPageFlags', addr, size);
+    if (!r) return;
+    for (let i = 0; i < r.bytes.length; i++) if (!keep(r.first + BigInt(i))) r.bytes[i] &= ~bits;
   }
 
   /** The counter block (abi.md, "Counter block") as BigInts, or null if no module asked for one. */
@@ -410,8 +581,8 @@ export class Linker {
       imports[MEMORY_MODULE][COUNTERS_NAME] = this.countersGlobal;
     }
     if (module && Linker.wantsPageFlags(module)) {
-      if (!this.alloc) throw new Error('the module imports env.page_flags but the linker has no allocator for the page-state table');
       if (this.pageFlagsGlobal === null) {
+        if (!this.alloc) throw new Error('the module imports env.page_flags but the linker has no allocator for the page-state table');
         this.pageFlagsAddr = this.alloc(BigInt(PAGE_FLAGS_SIZE), 4096n);
         this.mem.fill(this.pageFlagsAddr, PAGE_FLAGS_SIZE);
         this.pageFlagsGlobal = new WebAssembly.Global({ value: 'i64', mutable: false }, this.pageFlagsAddr);

@@ -15,6 +15,10 @@ fn hex(s: &str) -> Vec<u8> {
 }
 
 fn check(name: &str, base: u64, code: &str) {
+    check_with(name, base, code, &Options::default());
+}
+
+fn check_with(name: &str, base: u64, code: &str, opts: &Options) {
     let bytes = hex(code);
     let t = x64wasm::translate(
         CodeRegion {
@@ -22,7 +26,7 @@ fn check(name: &str, base: u64, code: &str) {
             bytes: &bytes,
         },
         &[base],
-        &Options::default(),
+        opts,
     )
     .unwrap();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
@@ -119,6 +123,19 @@ fn div() {
 #[test]
 fn rep_movsb() {
     check("rep_movsb", 0x1000, "f3a4 f3a6 c3");
+}
+
+/// `std; rep stosq; cld; rep movsb; ret` with both memory checks: NULL
+/// at a range's first and last element, the store check on every page it
+/// covers (`translator.md`, "Memory checks").
+#[test]
+fn rep_checked() {
+    let opts = Options {
+        null_check: true,
+        store_check: true,
+        ..Options::default()
+    };
+    check_with("rep_checked", 0x1000, "fd f348ab fc f3a4 c3", &opts);
 }
 
 /// `mulsd xmm0, xmm1; addsd xmm0, [rax]; sqrtsd xmm2, xmm0; ret`: SSE

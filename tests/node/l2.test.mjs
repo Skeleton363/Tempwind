@@ -16,6 +16,20 @@ const RT = `${root}target/wasm32-unknown-unknown/release/x64wasm_rt.wasm`;
 const FP = `${root}target/wasm32-unknown-unknown/release/x64wasm_fp.wasm`;
 const need = (path, how) => assert.ok(existsSync(path), `${path} is missing. Create it with: ${how}`);
 
+// The programs are reproducible builds (-Wl,--no-insert-timestamp): the COFF
+// header's TimeDateStamp is 0, so a rebuild (tests/wine/prepare.sh reruns
+// tests/native/build.sh) keeps the sha256 their load plans are keyed by.
+test('the programs carry no build timestamp, so a rebuild keeps their plans valid', () => {
+  for (const name of ['hello', 'l2_int', 'l2_crt', 'l2_float']) {
+    const exe = `${root}target/native/${name}.exe`;
+    need(exe, 'tests/native/build.sh');
+    const b = readFileSync(exe);
+    const pe = b.readUInt32LE(0x3c);
+    assert.equal(b.toString('latin1', pe, pe + 4), 'PE\0\0', `${name}.exe is a PE file`);
+    assert.equal(b.readUInt32LE(pe + 8), 0, `${name}.exe: TimeDateStamp`);
+  }
+});
+
 // `-checks`: translated with --null-check --store-check (translator.md, "Memory checks"), which must raise nothing;
 // `-reference`: translated with --sync-all --no-structured, which must give the same output.
 for (const [name, dir] of ['hello', 'l2_int', 'l2_crt', 'l2_float'].flatMap((n) => [[n, n], [n, `${n}-checks`], [n, `${n}-reference`]])) {

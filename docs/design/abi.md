@@ -1,4 +1,4 @@
-# Translated-module ABI (v4, Phase 1)
+# Translated-module ABI (v5, Phase 2)
 
 This is the contract between the translator (`crates/x64wasm`, `crates/x64wasm-rt`), the oracle and test hosts (`crates/testkit`) and the JS runtime (`runtime/`). If you change it, update this file and every user in the same change. The constants live in `crates/x64wasm/src/abi.rs` and `runtime/src/abi.mjs`.
 
@@ -6,7 +6,7 @@ This is the contract between the translator (`crates/x64wasm`, `crates/x64wasm-r
 - **v2 (M1)** made one wasm function per guest function, with guest calls and returns mapped to wasm calls and returns. The design is in `translator.md`.
 - **v3 (M2)** links modules together. Several modules (the AOT translation of an image, and translations made at run time) share one funcref table, one call-depth counter and one block lookup table in guest memory, so control passes between them without leaving wasm. Host functions (the Win32 shim, `runtime.md`) sit in the same table and are called like guest functions. The state block, the statuses and the trampoline are as in v2.
 - **v4 (M4)** adds the floating-point helper module: translated modules import the soft-float functions they use from the `fp` namespace ("Floating-point helper module" below). Everything else is as in v3.
-- **v5 (Phase 2)** puts Wine's Unix side, an Emscripten wasm64 instance, on the other side of the host functions ("Wine boundary" below). M1's spike tested the draft. M2 fixes the C header generated from `abi.rs`, the Unix side's host entries, the owner of the host region and `depth` across nested runs (the one change to translated modules: `run` keeps the caller's `depth`). M3 fixes the remaining constants.
+- **v5 (Phase 2)** puts Wine's Unix side, an Emscripten wasm64 instance, on the other side of the host functions ("Wine boundary" below). M1's spike tested the draft. M2 fixed the C header generated from `abi.rs`, the Unix side's host entries, the owner of the host region and `depth` across nested runs (the one change to translated modules: `run` keeps the caller's `depth`). M3 makes it final: the dispatcher addresses, the bridge module, the host functions' new-context return, tombstones in the lookup table (code invalidation), the run-time translator's `shared_memory` flag and one initial FP state. Translated modules keep the v4 shape.
 
 ## Module shape
 
@@ -53,7 +53,7 @@ A module's blocks are reachable only after step 3.
 |---|---|---|
 | `+0` | u64 | `slots`: guest address of the slot array, 16-byte aligned |
 | `+8` | u64 | `mask`: number of slots − 1; the number of slots is a power of two |
-| `+16` | u64 | `used`: occupied slots. Kept by the host; translated code ignores it. |
+| `+16` | u64 | `used`: slots with a nonzero key, tombstones included (v5). Kept by the host; translated code ignores it. |
 | `+24` | u64 | reserved, 0 |
 
 **Slot** (16 bytes): `key` u64 (a guest address; 0 = empty), `func` u32 (table index), `entry` u32.
@@ -72,9 +72,11 @@ loop:
 Translated code reads the header on every probe.
 
 **Host rules:**
-- Keep `2 * used <= mask + 1`. To grow, build a new slot array, then update `slots` and `mask`.
-- Keys are never removed in Phase 1.
-- Phase 1 runs one thread, so no locking.
+- Keep `2 * used <= mask + 1`. To grow, build a new slot array with only the live keys, then update `slots` and `mask`. Growing drops the tombstones.
+- **Removing a key** (v5, code invalidation) turns its slot into a tombstone: key `LOOKUP_TOMBSTONE` (`0xDEAD_0000_0000_0001`), func `TOMBSTONE_INDEX`, entry 0. The probe passes over it, since it misses only on key 0, so translated code doesn't change. `used` keeps counting the slot until the next growth; a host that needs the number of live keys keeps it separately.
+  - The tombstone key is non-canonical and is not `NO_RET`. A transfer to that exact address stops loudly either way. If a tombstone lies on its probe path, the probe hits it and the tombstone's function stops ("Wine boundary", "The bridge"). Otherwise the probe misses, and the run loop, which finds no executable page at a non-canonical address, stops ("Who calls whom"). On x86-64 a jump to a non-canonical address raises #GP anyway.
+  - A removed key may be inserted again later. The insert reuses the first tombstone on its probe path or the empty slot that ends it.
+- Guest threads stay cooperative until Phase 4, so no locking.
 - Address 0 is never a key: the NULL region holds no code.
 
 ## Transfers
@@ -95,11 +97,10 @@ Translated code calls it exactly like a guest function:
 - `[RSP]` holds the return address the guest pushed;
 - `ret` is what the wasm caller expects.
 
-It does its work, reading arguments by the Win64 convention: RCX, RDX, R8, R9, then argument i ≥ 4 at `[RSP + 0x28 + 8 * (i - 4)]`. Then it ends in one of two ways:
-- **Return to the guest:** write the results (RAX) into the state block, then perform the guest's `ret`: `t = [RSP]`, `RSP += 8`. If `t == ret`, return `STATUS_RETURNED`. Otherwise store `state.rip = t` and return `STATUS_UNWIND`.
+It does its work, reading arguments by the Win64 convention: RCX, RDX, R8, R9, then argument i ≥ 4 (counting from 0) at `[RSP + 0x28 + 8 * (i - 4)]`. Wine's dispatchers are reached one call deeper and read their arguments differently ("Wine boundary", "Syscalls and unix calls"). Then it ends in one of three ways:
+- **Return to the guest:** write the results (RAX) into the state block, then perform the guest's `ret`: `t = [RSP]`, `RSP += 8`. If `t == ret`, return `STATUS_RETURNED`. Otherwise store `state.rip = t` and return `STATUS_UNWIND`. Other GPRs and the lazy flag record stay unchanged.
+- **Return with a new context** (v5): write every field of the state block's architectural state: the GPRs, RIP, RFLAGS, XMM0-15, MXCSR, the x87 control, status and tag words and R0-R7. Set the lazy flag record to materialized, `cc_op = 0` and `cc_a = RFLAGS`. Then return `STATUS_UNWIND`. Callers pass it up unchanged, and the trampoline continues at `state.rip` with `depth = d0`. Wine's `NtContinue` and its other context calls on the current thread end this way.
 - **Stop:** store `state.rip` (the thunk address) and `state.exit = EXIT_HOST`, and return `STATUS_EXIT`.
-
-Other GPRs and the lazy flag record stay unchanged.
 
 ## Statuses (between translated functions)
 
@@ -124,11 +125,11 @@ A caller that gets a status other than 0 from a call stores nothing further and 
    - `STATUS_EXIT`: the reason is in `state.exit`.
 3. Materialize RFLAGS: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a, cc_b, cc_r)`. Set `depth = d0`, store the exit reason in `state.exit` and return it.
 
-A `run` that ends by a trap or by an import that throws restores nothing: the exception leaves `depth` at the inner value. The host that catches it restores `depth` to its own entry value, as `runtime/src/process.mjs`'s `callNested` does in its `finally`. A host that keeps running after a top-level trap sets `depth` back to 0. M3's `tw_run` caller follows the same rule. This was found by M2's code review: today a trap ends the process, so nothing reaches the stale value.
+A `run` that ends by a trap or by an import that throws restores nothing: the exception leaves `depth` at the inner value. The host that catches it restores `depth` to its own entry value, as `runtime/src/process.mjs`'s `callNested` does in its `finally`. A host that keeps running after a top-level trap sets `depth` back to 0. The Unix side follows the same rule: `boot` sets `depth` to 0 after a `longjmp` out of guest code ("Wine boundary", "Process exit"). This was found by M2's code review: today a trap ends the process, so nothing reaches the stale value.
 
 **`depth` across nested runs (v5).** A host starts `depth` at 0, so a top-level `run` behaves as in v4. A `run` entered from a host function while guest frames are live (a nested guest call: "Wine boundary", "Who calls whom", item 5) counts on from the outer frames, so the depth guard bounds the wasm stack across all nested runs, and the outer guest code continues with its own count when the nested `run` returns.
 
-`NO_RET = 0xFFFF_FFFF_FFFF_FFFF`, a non-canonical address that no `call` can push. Every module's `run` behaves the same, so a host may use any of them.
+`NO_RET = 0xFFFF_FFFF_FFFF_FFFF`, a non-canonical address that no `call` can push. Every module's `run` behaves the same, so a host may use any of them. A module's `run` stays usable after its blocks are invalidated, since it only probes the lookup table. The bridge relies on both ("Wine boundary").
 
 ## Counter block (`Options::counters`, M6)
 The counter block is `u64` slots at `env.counters`. Each counted event adds 1; `values_*` add the number of values moved.
@@ -152,6 +153,10 @@ The counter block is `u64` slots at `env.counters`. Each counted event adds 1; `
 One byte per 4 KiB guest page, at `env.page_flags + (addr >> 12)`.
 - **Bits:** `PAGE_CODE = 1` marks a page holding translated code; `PAGE_WATCH = 2` marks a write-watched page.
 - **Who sets them:** the runtime sets `PAGE_CODE` on the pages of the image's executable sections. Translated code only reads the table.
+- **In a Wine process (v5):**
+  - JS sets `PAGE_CODE` on the pages of each module it links: the load plan's executable sections for an AOT module, and the executable pages a run-time module was translated from.
+  - Invalidation clears it on the pages where no linked module remains.
+  - The Unix side keeps `PAGE_WATCH` (`wine-unix.md`, section 6).
 
 ## CPU state block
 
@@ -183,6 +188,8 @@ All fields are little-endian. Size: `0x400` bytes. It must be 16-byte aligned; 6
 
 Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
 
+**A new thread's FP state** (v5) is `INIT_MXCSR` = 0x1F80, `INIT_FCW` = 0x027F and `INIT_FTW` = 0xFFFF (all empty), with R0-R7 and XMM0-15 zero. Wine starts an x64 thread's context with the same MXCSR and FCW (`dlls/ntdll/unix/signal_x86_64.c` L2936-2937, `init_syscall_frame`; `wine-unix.md`, section 8). `INIT_FCW` is not `fninit`'s 0x037F. Both the Unix side and the JS runtime take these values from `abi.rs`, through `abi.h` and `abi.mjs`.
+
 ## Instruction semantics (Phase 1)
 
 - **`lock`:** an ordinary read-modify-write, which is exact with one thread. Atomic lowering comes with threads (Phase 4).
@@ -200,7 +207,7 @@ Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
 | 1 | `EXIT_LEFT_CODE` | Control reached a guest address with no block in the lookup table: a fall-through past the code, a target nothing translated yet, or a `ret` to an unknown address. `rip` holds that address. Hosts translate more code (run-time translation) or stop. |
 | 2 | `EXIT_UNSUPPORTED` | The instruction at `rip` is not supported yet. Registers hold the state before it. From M4 also a floating-point instruction that raises an unmasked exception (#XM and #MF wait for Windows exceptions in Phase 4). |
 | 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. RIP is the faulting instruction, and every register holds its value from before it. Translated code emits it from M3 for #DE (`div`, `idiv`), #UD (`ud2` and bytes that don't decode) and #GP, with fault address 0. An instruction that decodes but is outside the CPUID profile stays `EXIT_UNSUPPORTED`. M2's runtime raises it for execution outside executable sections. NULL and store checks come with M6. |
-| 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API, a shim error. The host knows why. |
+| 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API, a shim error. The host knows why. In a Wine process the Unix side keeps the reason in C (v5). |
 
 A test function returns to the host by `ret`ing to a sentinel return address that the host pushed (`SENTINEL_RET = 0x0000_7FFF_FFFF_0000`). The host then expects exit 1 with `rip == SENTINEL_RET`.
 
@@ -238,7 +245,7 @@ Every translated block appears exactly once.
 | `+16` | u64 | `entry`: guest address to translate from |
 | `+24` | u32 | `known_ptr`: sorted u64 array of guest addresses that already have blocks |
 | `+28` | u32 | `known_len`: number of addresses in it |
-| `+32` | u32 | flags: bit 0 `null_check`, bit 1 `store_check`, bit 2 `counters`, bit 3 `sync_all`, bit 4 the reference layout (`structured` false); the other bits 0 |
+| `+32` | u32 | flags: bit 0 `null_check`, bit 1 `store_check`, bit 2 `counters`, bit 3 `sync_all`, bit 4 the reference layout (`structured` false), bit 5 `shared_memory` (v5: the module imports a shared memory, as a Wine process's modules must); the other bits 0 |
 | `+36` | u32 | reserved, 0 |
 
 **Result** (20 bytes):
@@ -254,7 +261,7 @@ Every translated block appears exactly once.
 **Semantics:**
 - It translates what is reachable from `entry` inside `[code_base, code_base + code_len)`, with `Options::default()` plus the options the flags name. The runtime passes the options the image was translated with (the load plan's `options`, `runtime.md`), so code translated at run time has the same checks, counters and reference modes as the AOT module.
 - An address in `known` counts as outside the code: a transfer to it, or a fall-through into it, is a lookup transfer, and nothing is translated twice.
-- Status 1 (error) when `entry` is itself in `known`, `flags` has a bit other than 0-4 set, `known` isn't sorted, the code range wraps past the end of the address space, or translation fails.
+- Status 1 (error) when `entry` is itself in `known`, `flags` has a bit other than 0-5 set, `known` isn't sorted, the code range wraps past the end of the address space, or translation fails.
 
 ## Floating-point helper module (`x64wasm_fp.wasm`, v4)
 
@@ -303,9 +310,17 @@ Translated code keeps the x87 stack itself: TOP, the tags, push and pop, stack o
 
 The functions are pure apart from the stored status. `x64wasm-fp` checks them natively against the CPU (inline `asm!` on x86-64, every function, edge pairs and random cases under every rounding mode, FTZ/DAZ and precision control), and `tests/node/fp.test.mjs` checks the wasm build against vectors that the native build writes.
 
-## Wine boundary (v5 draft, Phase 2)
+## Wine boundary (v5, Phase 2)
 
-Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The boundary"), tested by M1's boundary spike (`native/spike/boundary/`, below) in Node 24 and in a Chromium Worker. M2 fixes the C header, the Unix side's host entries, the host region and `depth` across nested runs (below, and `wine-unix.md` v1). M3 fixes the remaining constants.
+Status:
+- **Draft:** from Phase 2's planning (`docs/status/phase-2.md`, "The boundary"), tested by M1's boundary spike (`native/spike/boundary/`, below) in Node 24 and in a Chromium Worker.
+- **M2** fixed the C header, the Unix side's host entries, the host region and `depth` across nested runs (below, and `wine-unix.md` v1).
+- **M3 makes it final:**
+  - the bridge;
+  - the syscall and unix-call dispatchers and their addresses;
+  - `depth` in C;
+  - process exit;
+  - the new imports (`wine-unix.md` v2, sections 11 and 12).
 
 ### Instances
 - **Shared per Windows process:**
@@ -319,34 +334,118 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
   - The flags (Emscripten 6.0.12, proven by the spike): `-m64 -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH -sINITIAL_MEMORY=<bytes> -sMAXIMUM_MEMORY=16GB -sGLOBAL_BASE=2GB -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=node,worker`, plus `-sEXPORTED_FUNCTIONS=_malloc,_emscripten_stack_set_limits,__emscripten_stack_restore`. `-sSHARED_MEMORY` without pthreads enables atomics and bulk memory. `INITIAL_MEMORY` must cover `GLOBAL_BASE` plus the static data, stack and heap; from M2 it is 4 GiB, the whole host region ("Memory growth"), and JS creates the memory with at least that many pages: the import's minimum is `INITIAL_MEMORY`, its maximum 262144 pages.
   - **Not `-sJSPI`.** JS wraps the raw exports in `WebAssembly.promising` and the blocking imports in `WebAssembly.Suspending` itself; Emscripten's JSPI support (which wraps every export and import listed in `JSPI_EXPORTS`/`JSPI_IMPORTS` in its glue) isn't needed.
   - **Raw exports past the glue:** the `instantiateWasm` hook (`Module.instantiateWasm(imports, receive)`). JS passes the memory as `Module.wasmMemory`. In the hook it replaces the imports the Unix side declares (in a `--js-library` whose stub bodies never run) with the real ones, instantiates, keeps `instance.exports` as the raw exports and hands the instance to `receive`. The glue's own copy of the exports converts pointers to Numbers, so it is never used for `env.table` or `promising`. Plain imports that need the glue's scope (`memory_grown`) stay library functions.
-- **Translated modules** are as in v4. Built with `Options::shared_memory` (`x64wasm-cli translate --shared`).
+- **Translated modules** are as in v4. They are built with `Options::shared_memory`, and in a Wine process with both memory checks too: `x64wasm-cli translate --shared`, `translate-pe --shared --null-check --store-check`, and the run-time translator's flag bits 0, 1 and 5.
+  - They import `env.lookup` and, with the store check, `env.page_flags`, which are immutable and point into the host region. So JS instantiates them only after the Unix side exists.
+- **The bridge** (M3) is one small module emitted by `x64wasm` (below). JS instantiates it before the Unix side, which imports its functions.
 
 ### Who calls whom
 1. **JS → Unix side.** Only through `WebAssembly.promising` around a raw export: `boot`, and `thread_main` once per green thread. JS may call a raw export directly only if it never blocks (queries such as reading the exit code).
-2. **Unix side → translated code.** The Unix side imports `run: (state i64) -> i32` from a translated module instance, wasm to wasm. The run loop is C:
+2. **Unix side → translated code.** The Unix side imports `tw_run: (state i64) -> i32`, the bridge's `run`, wasm to wasm. The run loop is C (`wine-unix.md`, section 12):
    ```
-   for (;;) switch (run(state)) {
-     case EXIT_LEFT_CODE:   translate(state->rip); continue;   // import: translate and link
-     case EXIT_HOST:        return;                            // the host function recorded why
-     case EXIT_FAULT:       raise or stop (M5);                // until M5: stop loudly
-     case EXIT_UNSUPPORTED: stop loudly;
+   for (;;) switch (tw_run(state)) {
+     case EXIT_LEFT_CODE:   tw_translate(rip, base, size) or stop loudly; continue;  // the executable pages around rip
+     case EXIT_HOST:        return;                  // the host function recorded why, in C
+     case EXIT_FAULT:       stop loudly;             // M5 raises the exception
+     case EXIT_UNSUPPORTED: stop loudly;             // store-check hits included
    }
    ```
    Phase 1's JS run loop (`process.mjs`) doesn't apply to Wine processes.
 3. **Translated code → Unix side.**
    - Host functions in `env.table` are **raw Unix-side exports** of the guest-function type `(state i64, entry i32, ret i64) -> i32`. They follow "Host functions" above: read the arguments, perform the guest's `ret`, return a status.
    - JS installs them with `table.set(i, instance.exports.f)`. An Emscripten JS wrapper (memory64 BigInt conversion) must never go there: it would be a JS frame.
-   - Lookup slots map guest addresses to them:
-     - the syscall-dispatcher address the Unix side stores at `0x7ffe1000`;
-     - the address stored in ntdll's `__wine_unix_call_dispatcher`.
-   - The addresses are fixed in M3.
+   - Lookup slots map guest addresses to them, entry 0 (M3, "Syscalls and unix calls" below):
+     - `SYSCALL_DISPATCHER` (0x7ffe_1100), which the Unix side stores at `0x7ffe1000` and in ntdll's `__wine_syscall_dispatcher`, to the raw export `tw_syscall_dispatcher`;
+     - `UNIX_CALL_DISPATCHER` (0x7ffe_1110), which it stores in ntdll's `__wine_unix_call_dispatcher`, to `tw_unix_call_dispatcher`.
 4. **Unix side → JS.**
-   - Plain imports for work that returns without blocking: translate and link, image map and unmap, output, memory growth.
+   - Plain imports for work that returns without blocking: translate and link (`tw_translate`), image mapped (`tw_image_mapped`), invalidate (`tw_invalidate`), output, memory growth.
    - `Suspending` imports for the only blocking point, `green_block`.
+   - The bridge's functions are imports too, but they are wasm, not JS.
 5. **Nested guest calls** (`KeUserModeCallback`, later APCs) run the same C loop recursively, after saving the caller's registers. The callee ends through a host function that returns `STATUS_EXIT` with a reason the loop knows. No JS is involved.
 
 **The rule:** no JS frame between a `promising` entry and a `Suspending` import. V8 cannot suspend JS frames. A plain import that has returned before the suspension is not on the stack, so it is fine.
 - **Observed (the spike's negative test):** a JS function in `env.table` that calls the raw host function makes the `Suspending` call throw `WebAssembly.SuspendError: trying to suspend JS frames`, which unwinds the thread's wasm stack and rejects its `promising` Promise. Node 24.22 (V8 13.6) first calls the import's JS function and drops the Promise it returns; Chromium 153 throws before calling it. So a blocking import must not commit side effects that only make sense if the suspension happens.
+
+### The bridge (M3)
+**Why it exists:**
+- The Unix side needs `tw_run` when it is instantiated, but translated modules can only be instantiated after it ("Instances").
+- A JS function as `tw_run` would be a JS frame between `boot`'s `promising` entry and `green_block`'s `Suspending` import ("The rule").
+
+So `x64wasm` emits a bridge module (`x64wasm::bridge`, `x64wasm-cli bridge --out FILE`). JS instantiates it once per process, before the Unix side.
+
+**Imports:** `env.memory`, `env.table` (minimum `TABLE_RESERVED` = 2 slots) and `env.depth`.
+
+**Exports:**
+
+| Export | Type | Does |
+|---|---|---|
+| `run` | `(state i64) -> i32` | `return_call_indirect` of type `(i64) -> i32` through `env.table[RUN_INDEX]`. |
+| `depth_get` | `() -> i32` | Reads `env.depth`. |
+| `depth_set` | `(i32) -> ()` | Writes `env.depth`. |
+| `flags_materialize` | `(state i64) -> ()` | `rflags = (rflags & !STATUS) \| flags(cc_op, cc_a, cc_b, cc_r)`, then `cc_op = 0` and `cc_a = rflags`. This is the trampoline's step 3, emitted by the same code, so C never reimplements the lazy flags. |
+
+**The reserved table slots.** An active element segment writes them when the bridge is instantiated:
+- `RUN_INDEX` (0) gets `left_code: (state i64) -> i32`. It stores `state.exit = EXIT_LEFT_CODE` and returns it, touching nothing else, so the C loop translates `state.rip`. JS replaces the slot with the `run` of the first module it links (see "Trampoline").
+- `TOMBSTONE_INDEX` (1) gets `tombstone`, of the guest-function type. It stores `state.rip = LOOKUP_TOMBSTONE` and `state.exit = EXIT_UNSUPPORTED`, and returns `STATUS_EXIT`.
+
+Host functions and modules' chunks start at index `TABLE_RESERVED`.
+
+**Wiring:** JS gives the Unix side the bridge's raw exports as the imports `tw_run`, `tw_depth_get`, `tw_depth_set` and `tw_flags_materialize`. These calls are wasm to wasm.
+
+The bridge has no `x64wasm.blocks` section, and nothing in it is linked.
+
+### Syscalls and unix calls (M3)
+The two dispatchers are host functions: raw exports of the Unix side that Wine's unmodified PE code reaches as it does on Windows. Line numbers below are in wine-11.0's `dlls/ntdll/unix/signal_x86_64.c` unless another file is named. What the C behind them does is `wine-unix.md`, section 11.
+
+**Addresses:**
+- `SYSCALL_DISPATCHER` = 0x7ffe_1100 and `UNIX_CALL_DISPATCHER` = 0x7ffe_1110 lie in the page the Unix side commits at 0x7ffe_1000. They are lookup keys, not code: JS inserts a slot for each, entry 0, before `boot` runs guest code.
+- Nothing is translated there. No executable page lies there, so an `EXIT_LEFT_CODE` at either address stops the run loop loudly (`wine-unix.md`, section 12), and a missing slot can't be papered over.
+- The Unix side writes the addresses:
+  - `SYSCALL_DISPATCHER` at 0x7ffe_1000, which every PE syscall thunk calls through (`include/wine/asm.h` L287-301), and into ntdll's `__wine_syscall_dispatcher`;
+  - `UNIX_CALL_DISPATCHER` into ntdll's `__wine_unix_call_dispatcher`.
+- `__wine_unixlib_handle` stays an opaque host handle (`wine-unix.md`, section 8).
+
+**`tw_syscall_dispatcher`** is Wine's `__wine_syscall_dispatcher` (L3026-3334).
+- **Entry:** a PE thunk runs `mov r10, rcx; mov eax, id; …; call *0x7ffe1000` (`asm.h` L287-301), so `[RSP]` is the thunk's return address and `[RSP + 8]` its caller's.
+  - EAX holds the id: table = bits 12-13, number = bits 0-11; bits 14-31 are ignored (L3139-3146).
+  - The arguments are R10, RDX, R8 and R9. Argument i ≥ 4 (counting from 0) is at `[RSP + 8 + 0x28 + 8 * (i - 4)]` (L3099, L3157, L3166-3167).
+- **The frame record is the state block.** At entry the dispatcher does what Wine's prologue does to its `struct syscall_frame` (L462-495):
+  - it pops the return address `t`: `RSP += 8` (L3029, L3054);
+  - it stores `rip = t - 0xb`, which is the thunk's `ret` after its `syscall` (L3063);
+  - it calls `tw_flags_materialize`, so the frame's EFLAGS is exact, as Wine's `pushfq` is (L3032-3034);
+  - `restore_flags` = 0 (L3036).
+
+  Wine's context calls on the current thread read and write this record (`wine-unix.md`, section 11).
+- **The call** goes to the wrapper for the number in table 0. A number at or above the table's limit returns `STATUS_INVALID_SYSTEM_SERVICE` (L3145-3146, L3324-3327). Tables 1-3 are empty until win32u adds table 1 (M4).
+
+**`tw_unix_call_dispatcher`** is Wine's `__wine_unix_call_dispatcher` (L3352-3464).
+- **Entry:** RCX = the handle, EDX = the code (an `unsigned int`, `include/wine/unixlib.h` L275), R8 = the argument pointer (L3353, L3424-3425).
+- **The frame record:** it pops the return address `t` into the frame's `rip` unadjusted (L3356) and sets `restore_flags` = 0x20000 (L3359). It doesn't materialize the flags: the frame is incomplete, as Wine marks it.
+- **The call:** only ntdll's `unix_call_funcs` are reachable, through the handle the Unix side stored. An unknown handle or a code past the table stops loudly. Wine checks neither.
+
+**Return,** for both, by the frame's `restore_flags` (Wine's return path, L3191-3276; for a unix call, L3438):
+- **CONTROL (0x1) or INTEGER (0x2):** the new-context return ("Host functions"). The frame's RIP, RSP and EFLAGS are the context's, since Wine resumes with `iretq` (L3256-3276).
+  - With INTEGER every GPR is the frame's, RAX included (L3266-3272).
+  - Otherwise RAX is the status.
+- **Otherwise:** RAX = the status, then the guest's `ret` with `t`: `STATUS_RETURNED` if `t == ret`, else `state.rip = t` and `STATUS_UNWIND`.
+  - Wine jumps to the frame's `rip` instead: `t - 0xb` after a syscall (L3231-3252), `t` after a unix call (L3441-3464).
+  - For a syscall both are `ret` instructions of Wine's own thunk, with the same RSP, so the result is the same.
+- **What the state block already holds:**
+  - RBX, RSI, RDI, RBP and R12-R15 always come from the frame (L3216-3224).
+  - MXCSR and XMM6-15 come from it too without restore flag 0x48, and the full FP state with it (L3192-3215).
+- **Unspecified:** RCX, RDX, R8-R11 and XMM0-5 are unspecified after the call, as on Wine. They keep their entry values.
+
+**A raw `syscall` instruction** stays `EXIT_UNSUPPORTED`. Wine's thunks never execute it: KUSER's `SystemCall` is 1 (`dlls/ntdll/unix/virtual.c` L4450), so the thunk's `testb` sends them to `call *0x7ffe1000` (`asm.h` L293-299).
+
+### Process exit (M3)
+- **Wine's chain:**
+  - `ExitProcess` is `RtlExitUserProcess` (`dlls/ntdll/loader.c` L3907-3914). It calls `NtTerminateProcess(0, status)`, then `LdrShutdownProcess`, where msvcrt flushes its streams (`dlls/msvcrt/main.c` L145), then `NtTerminateProcess(GetCurrentProcess(), status)`.
+  - The first call sets `process_exiting`, so the second reaches `exit_process` (`dlls/ntdll/unix/process.c` L965-985, `dlls/ntdll/unix/thread.c` L1520-1524). A process that ends itself without the first call reaches `abort_process` instead (`process.c` L982, `thread.c` L1485-1488).
+  - Both cut the status with `get_unix_exit_code` (`thread.c` L89-94) before the host's `exit`.
+- **Our hook** (`wine-unix.md`, section 8): `exit_process`, and `NtTerminateProcess` before its `abort_process` call, record the full Windows status, before `get_unix_exit_code`, and `longjmp` to `boot`.
+  - `boot` sets `depth` to 0 and returns the status.
+  - The `longjmp` unwinds the translated frames on the wasm stack as a wasm exception (`-sSUPPORT_LONGJMP=wasm`).
+- **Other ends:** any other `exit()` or `_exit()` still rejects `boot`'s promise. That includes `abort_process` reached from `abort_thread` (`thread.c` L1477), Wine's end for server errors and killed threads (`wine-unix.md`, section 8).
+- **One process per instance:** after the process exits, the instance is finished. A program runs in a fresh instance.
 
 ### Green threads
 - **What one is:** a `promising` entry (`thread_main`), a CPU state block, and a region for the Emscripten shadow stack (Wine's kernel stack for that thread).
@@ -354,7 +453,7 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
   - `__stack_pointer`, plus the stack base and end;
   - `errno`, which is one global without pthreads;
   - the current state-block pointer;
-  - `depth` (`env.depth`), from M3, when translated code runs. It counts the running thread's guest frames, so a value another thread left behind moves the depth guard: it unwinds too early or too late. It is restored in C after `green_block` returns, on the resumed stack like the rest, never in `green_block`'s JS continuation, which can run before another woken thread resumes. A new thread starts with 0. M4's test with two threads checks it (found by M2's WP0).
+  - `depth` (`env.depth`), from M3, read and written through the bridge's `depth_get` and `depth_set` (the imports `tw_depth_get`, `tw_depth_set`). It counts the running thread's guest frames, so a value another thread left behind moves the depth guard: it unwinds too early or too late. It is restored in C after `green_block` returns, on the resumed stack like the rest, never in `green_block`'s JS continuation, which can run before another woken thread resumes. A new thread starts with 0. M4's test with two threads checks it (found by M2's WP0).
 - **A new thread's stack pointer and limits** are set by JS through the exported stack functions, immediately before its `promising` entry. `thread_main` itself must not run on another thread's stack region.
   - The region comes from the raw `malloc` export (the spike: 64 KiB). Then `emscripten_stack_set_limits(top, bottom)` (Emscripten's names: base = the high end, end = the low end) and `_emscripten_stack_restore(top)`, both raw exports of compiler-rt's stack functions, which use no shadow stack themselves. A C wrapper that sets them would have its own frame and restore the old pointer on return.
   - The save in C: `emscripten_stack_get_current`, `emscripten_stack_get_base` and `emscripten_stack_get_end` before `green_block`; after it, `emscripten_stack_set_limits` and `_emscripten_stack_restore` with the saved values, then `errno` and the current-thread pointer. The spike checks that the save set is needed: without the restores, the first thread resumes on the second thread's stack pointer with its `errno` and state pointer.
@@ -382,14 +481,21 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
   - the lookup: the header offsets, the slot size, `TW_LOOKUP_HASH_MUL`, `TW_LOOKUP_HASH_SHIFT`, and an inline `tw_lookup_hash(key, mask)` equal to `abi::lookup_hash`;
   - `TW_NO_RET`, `TW_SENTINEL_RET`, `TW_NULL_LIMIT` and `TW_MAX_MEMORY_PAGES`;
   - the CPU profile: `TW_CPUID_LEAVES`, an initializer of `{ leaf, eax, ebx, ecx, edx }` rows from the table the translator's `cpuid` returns (`instruction-scope.md`, "`cpuid` results"), with `TW_CPUID_LEAF_COUNT`; `TW_MXCSR_MASK`, the value the translator's `fxsave` stores (0xFFFF); `TW_XCR0` (3);
-  - `TW_NO_DISPATCHER` = 0xDEAD_0000_0000_0000, the non-canonical poison value for the host-pointer slots in ntdll.dll (`wine-unix.md`, section 8). A guest call through it misses the lookup, and translating a non-canonical address stops loudly.
+  - from M3:
+    - `TW_SYSCALL_DISPATCHER` (0x7ffe_1100) and `TW_UNIX_CALL_DISPATCHER` (0x7ffe_1110);
+    - `TW_RUN_INDEX` (0), `TW_TOMBSTONE_INDEX` (1) and `TW_TABLE_RESERVED` (2);
+    - `TW_LOOKUP_TOMBSTONE` (0xDEAD_0000_0000_0001);
+    - `TW_IMAGE_RANGE_END` (0x1_6000_0000): where the server's image range and the image search above 4 GiB end, below the rebased closure (`guest-memory.md`);
+    - `TW_INIT_MXCSR`, `TW_INIT_FCW` and `TW_INIT_FTW` ("CPU state block").
+- **The JS mirror is checked:** a Node test compares every constant of `runtime/src/abi.mjs` that `abi.h` also defines with the header (M3).
 
 ### Host entries of the Unix side (M2)
 **Raw exports** (`instance.exports`), called by JS:
 
 | Export | Type | Use |
 |---|---|---|
-| `boot` | `(argc i32, argv i64, flags i32) -> i32` | Entered through `promising` (`wine-unix.md`, section 8). `BOOT_STOP_AT_ENTRY` = 1. Returns 0 once stopped at the entry. |
+| `boot` | `(argc i32, argv i64, flags i32) -> i32` | Entered through `promising` (`wine-unix.md`, section 8). `flags` 0 runs the process (M3) and returns its exit status, the full Windows status ("Process exit"). `BOOT_STOP_AT_ENTRY` = 1 returns 0 once stopped at the entry. |
+| `tw_syscall_dispatcher`, `tw_unix_call_dispatcher` | `(state i64, entry i32, ret i64) -> i32` | Host functions (M3, "Syscalls and unix calls"). JS installs them in `env.table` and maps the dispatcher addresses to them. |
 | `malloc`, `free` | `(size i64) -> i64`, `(ptr i64) -> ()` | The host heap. |
 | `tw_page_flags` | `() -> i64` | The page-state table's address. |
 | `tw_main_state` | `() -> i64` | The main thread's state block, once `boot` has stopped at the entry. |
@@ -407,15 +513,26 @@ Status: the draft from Phase 2's planning (`docs/status/phase-2.md`, "The bounda
 | `green_block` | `(thread i32) -> i64` | `WebAssembly.Suspending`, the only switch point. It resumes with the value JS passes (0 in M2), or throws the scheduler's deadlock error. |
 | `green_wake` | `(thread i32) -> ()` | Plain. C has made the thread runnable; JS resumes its `green_block` after the current call into the module returns. |
 | `memory_grown` | `() -> ()` | Plain, as in the spike. |
-| `tw_run` | `(state i64) -> i32` | Plain. In M2 a stub that stops loudly, since boot stops before guest code; M3 links a translated module's `run` here. |
+| `tw_run` | `(state i64) -> i32` | The bridge's `run` (M3). In M2 a JS stub that stopped loudly. |
+| `tw_depth_get`, `tw_depth_set` | `() -> i32`, `(i32) -> ()` | The bridge's `depth_get` and `depth_set` (M3). |
+| `tw_flags_materialize` | `(state i64) -> ()` | The bridge's `flags_materialize` (M3). |
+| `tw_translate` | `(rip i64, base i64, size i64) -> i32` | Plain (M3). It translates from `rip` inside `[base, base + size)`, the run of committed executable pages around `rip` in its view (`tw_exec_range`, `wine-unix.md` section 12), with the run-time translator, links the module and sets `PAGE_CODE` on those pages. Returns 0 when `rip` then has a block. Otherwise it returns 1, after printing `tempwind: translate: <rip> <reason>` on stderr, and the C loop stops. |
+| `tw_image_mapped` | `(fd i32, base i64, size i64) -> ()` | Plain (M3). The Unix side has mapped an image from the open file `fd` at `base`. JS finds the file's path from `fd`, and links the AOT module when the catalog has one for that path, its sha256 and `base` (`wine-build.md`, "Packaging"). Otherwise it counts a fallback, and the image's code is translated at run time. A module the catalog has but that can't be loaded or linked stops loudly: it prints `tempwind: catalog: <path>: <reason>` and throws, which rejects `boot`. |
+| `tw_invalidate` | `(base i64, size i64) -> ()` | Plain (M3). It removes from the lookup table every block of every linked module whose code overlaps the range, and clears `PAGE_CODE` where no linked module remains. A module's blocks call each other directly, so a module goes whole. The Unix side calls it before it unmaps or remaps pages that have `PAGE_CODE` (`wine-unix.md`, section 6). |
 
 The Emscripten runtime's own imports are listed, each with a reason, in `native/wine/imports.txt`; the build fails on any import not listed there.
 
-### Not fixed yet (M3)
-- how C reads and writes `env.depth` for the green-thread save set (an imported global or a pair of plain imports; "Green threads");
-- the dispatcher addresses;
-- whether a raw `syscall` instruction exits or stops;
-- the Unix side's exit reasons for thread exit, process exit and callback return.
+### Settled in M3, and what is left
+- **Settled:**
+  - `env.depth` from C: the bridge's `depth_get` and `depth_set` ("The bridge");
+  - the dispatcher addresses ("Syscalls and unix calls");
+  - a raw `syscall` instruction: `EXIT_UNSUPPORTED`;
+  - process exit: a `longjmp` to `boot`, not an exit reason ("Process exit").
+- **Later:**
+  - **Thread exit (M4):** `EXIT_HOST`, with the reason kept in C.
+  - **Callback return (M4):** `KeUserModeCallback`'s callee ends in `NtCallbackReturn`, a host function that returns `STATUS_EXIT` with a reason the nested loop knows ("Who calls whom", item 5).
+  - **APC delivery (M4):** `call_user_apc_dispatcher`.
+  - **Exceptions (M5):** `EXIT_FAULT` raises through Wine's own dispatcher.
 
 ### The spike (M1)
 
@@ -486,12 +603,15 @@ The guest code of a case sees no difference from v2.
 | `cargo run -p testkit --release -- spike --bench --out target/bench/translator` | Write the translator measurement modules and their manifest (the spike format plus `options`, `nativeMs`, `guestInstructions`, `functions`, `chunks`) for `node tests/bench/translator/bench.mjs` |
 | `node tests/bench/translator/bench.mjs` / `… --browser` | Translator measurements in V8: Node under four V8 configurations, or the recursion-depth probes in Chromium page and Worker |
 | `cargo run -p testkit --release -- census FILE... [--check]` | Instruction and import census of PE files |
-| `cargo run -p x64wasm-cli --release -- translate-pe FILE --out-dir DIR [--entries all\|entry]` | AOT-translate a PE image: `DIR/<stem>.wasm` (v3 module) and `DIR/<stem>.plan.json` (load plan, `runtime.md`) |
+| `cargo run -p x64wasm-cli --release -- translate-pe FILE --out-dir DIR [--entries all\|entry] [--shared] [--null-check] [--store-check]` | AOT-translate a PE image: `DIR/<stem>.wasm` (v3 module) and `DIR/<stem>.plan.json` (load plan, `runtime.md`). A Wine process's modules use all three flags. |
+| `cargo run -p x64wasm-cli --release -- bridge --out FILE` | Write the bridge module ("Wine boundary", "The bridge", M3) |
 | `cargo build -p x64wasm-rt --release --target wasm32-unknown-unknown` | The run-time translator, `target/wasm32-unknown-unknown/release/x64wasm_rt.wasm` |
 | `cargo build -p x64wasm-fp --release --target wasm32-unknown-unknown` | The floating-point helper module, `target/wasm32-unknown-unknown/release/x64wasm_fp.wasm` (v4) |
 | `tests/pe/build.sh` | Build the M2 test program `target/pe/basic.exe`; its expected output is in `tests/pe/` |
 | `npm ci` then `npm run test:node` | Node: spike cases and the PE runtime tests |
 | `npm run test:browser` | Playwright, headless Chromium: translator spike, threads spike, WebGPU spike |
+| `npm run test:wine` | Node: the Unix side's C harnesses, its JS host and the M3 programs on Wine (`wine-unix.md`, section 10). Needs `tests/wine/prepare.sh`'s output. |
+| `npm run test:browser:wine` | Playwright project `wine`: hello.exe on Wine in a Chromium Worker. Needs `tests/wine/prepare.sh`'s output. |
 | `native/spike/run.sh` | Emscripten probe (Docker `emscripten/emsdk`) vs native gcc. Fails on any LP64 mismatch. |
 | `tests/native/build.sh` | MinGW-build `target/native/hello.exe`. Expected output is in `tests/native/hello.expected`. |
 | `scripts/fetch-artifact.sh TAG ASSET [DIR]` | Download a release asset of this repo |

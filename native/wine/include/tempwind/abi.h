@@ -70,7 +70,21 @@ static inline uint64_t tw_lookup_hash(uint64_t key, uint64_t mask) {
 #define TW_SENTINEL_RET UINT64_C(0x7fffffff0000)
 #define TW_NULL_LIMIT UINT64_C(0x10000)
 #define TW_MAX_MEMORY_PAGES UINT64_C(0x40000)
-#define TW_NO_DISPATCHER UINT64_C(0xdead000000000000)
+
+/* Wine processes (abi.md v5): the dispatcher addresses, the bridge's table
+   slots, the tombstone key and the end of the image range. */
+#define TW_SYSCALL_DISPATCHER UINT64_C(0x7ffe1100)
+#define TW_UNIX_CALL_DISPATCHER UINT64_C(0x7ffe1110)
+#define TW_RUN_INDEX 0
+#define TW_TOMBSTONE_INDEX 1
+#define TW_TABLE_RESERVED 2
+#define TW_LOOKUP_TOMBSTONE UINT64_C(0xdead000000000001)
+#define TW_IMAGE_RANGE_END UINT64_C(0x160000000)
+
+/* A new thread's FP state (abi.md, "CPU state block"). */
+#define TW_INIT_MXCSR UINT32_C(0x1f80)
+#define TW_INIT_FCW 0x27f
+#define TW_INIT_FTW 0xffff
 
 /* CPU profile: what the translator's cpuid and fxsave return, and XCR0.
    TW_CPUID_LEAVES initializes rows of { leaf, eax, ebx, ecx, edx }; other

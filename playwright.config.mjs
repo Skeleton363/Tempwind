@@ -33,7 +33,14 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      testIgnore: /webgpu\.spec/,
+      testIgnore: /webgpu\.spec|wine-hello\.spec/,
+      use: { browserName: 'chromium', launchOptions: { executablePath: CHROME_PATH } },
+    },
+    {
+      // hello.exe on Wine in a Worker: needs target/wine (or TW_WINE_DIR and the
+      // others, which the server maps). `npm run test:browser:wine`.
+      name: 'wine',
+      testMatch: /wine-hello\.spec/,
       use: { browserName: 'chromium', launchOptions: { executablePath: CHROME_PATH } },
     },
     {

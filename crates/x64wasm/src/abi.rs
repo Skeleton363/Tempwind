@@ -269,6 +269,9 @@ pub const RT_FLAG_COUNTERS: u32 = 1 << 2;
 pub const RT_FLAG_SYNC_ALL: u32 = 1 << 3;
 /// Request flag: translate with `Options::structured` false (the reference layout).
 pub const RT_FLAG_REFERENCE_LAYOUT: u32 = 1 << 4;
+/// Request flag (v5): translate with `Options::shared_memory`, so the module
+/// imports a shared memory, as every module of a Wine process must.
+pub const RT_FLAG_SHARED_MEMORY: u32 = 1 << 5;
 /// Size of a run-time translator result.
 pub const RT_RESULT_SIZE: usize = 20;
 /// Result field: 0 ok, 1 error (u32).
@@ -335,10 +338,45 @@ pub const MXCSR_MASK: u32 = 0xFFFF;
 /// has no OSXSAVE, so guest code cannot read it; Wine's Unix side reports it.
 pub const XCR0: u64 = 3;
 
-/// The non-canonical poison value for host-pointer slots in ntdll.dll
-/// (`wine-unix.md`, section 8): a guest call through it misses the lookup,
-/// and translating a non-canonical address stops loudly.
-pub const NO_DISPATCHER: u64 = 0xDEAD_0000_0000_0000;
+/// Wine processes (abi.md v5, "Syscalls and unix calls"): the lookup key of
+/// the syscall dispatcher. The Unix side stores it at 0x7ffe1000, which every
+/// PE syscall thunk calls through, and in ntdll's `__wine_syscall_dispatcher`.
+/// It is not code: its lookup slot names the host function.
+pub const SYSCALL_DISPATCHER: u64 = 0x7ffe_1100;
+/// The lookup key of the unix-call dispatcher, stored in ntdll's
+/// `__wine_unix_call_dispatcher`.
+pub const UNIX_CALL_DISPATCHER: u64 = 0x7ffe_1110;
+
+/// Wine processes (abi.md v5, "The bridge"): the `env.table` slot the bridge's
+/// `run` calls through. It starts with the bridge's placeholder, which returns
+/// `EXIT_LEFT_CODE`, and then holds the first linked module's `run`.
+pub const RUN_INDEX: u32 = 0;
+/// The `env.table` slot of the tombstone's stop function, which removed lookup
+/// slots name.
+pub const TOMBSTONE_INDEX: u32 = 1;
+/// The `env.table` slots the bridge fills; host functions and modules start here.
+pub const TABLE_RESERVED: u32 = 2;
+/// The key of a removed lookup slot (abi.md, "Lookup table"). Non-canonical,
+/// and not [`NO_RET`]; the probe passes over it.
+pub const LOOKUP_TOMBSTONE: u64 = 0xDEAD_0000_0000_0001;
+/// Export names of the bridge besides [`RUN_EXPORT`] (abi.md v5, "The bridge").
+pub const BRIDGE_DEPTH_GET_EXPORT: &str = "depth_get";
+pub const BRIDGE_DEPTH_SET_EXPORT: &str = "depth_set";
+pub const BRIDGE_FLAGS_MATERIALIZE_EXPORT: &str = "flags_materialize";
+
+/// Where the server's image range and the Unix side's image search above
+/// 4 GiB end: below the rebased closure DLLs in [0x1_6000_0000, 0x1_7000_0000)
+/// (`guest-memory.md`; `wine-unix.md`, section 4).
+pub const IMAGE_RANGE_END: u64 = 0x1_6000_0000;
+
+/// A new thread's MXCSR (abi.md, "CPU state block"): every exception masked,
+/// round to nearest.
+pub const INIT_MXCSR: u32 = 0x1F80;
+/// A new thread's x87 control word: every exception masked, round to nearest,
+/// double precision. Not `fninit`'s 0x037F.
+pub const INIT_FCW: u16 = 0x027F;
+/// A new thread's x87 tag word (full form): every register empty.
+pub const INIT_FTW: u16 = 0xFFFF;
 
 /// Where `x64wasm-cli gen-header` writes [`c_header`] by default, relative to
 /// the repository root. The file is committed.
@@ -463,7 +501,39 @@ pub fn c_header() -> String {
         "#define TW_MAX_MEMORY_PAGES {}",
         u64c(MAX_MEMORY_PAGES)
     ));
-    out.push(format!("#define TW_NO_DISPATCHER {}", u64c(NO_DISPATCHER)));
+
+    section(
+        &mut out,
+        "Wine processes (abi.md v5): the dispatcher addresses, the bridge's table\n   \
+         slots, the tombstone key and the end of the image range.",
+    );
+    out.push(format!(
+        "#define TW_SYSCALL_DISPATCHER {}",
+        u64c(SYSCALL_DISPATCHER)
+    ));
+    out.push(format!(
+        "#define TW_UNIX_CALL_DISPATCHER {}",
+        u64c(UNIX_CALL_DISPATCHER)
+    ));
+    out.push(format!("#define TW_RUN_INDEX {RUN_INDEX}"));
+    out.push(format!("#define TW_TOMBSTONE_INDEX {TOMBSTONE_INDEX}"));
+    out.push(format!("#define TW_TABLE_RESERVED {TABLE_RESERVED}"));
+    out.push(format!(
+        "#define TW_LOOKUP_TOMBSTONE {}",
+        u64c(LOOKUP_TOMBSTONE)
+    ));
+    out.push(format!(
+        "#define TW_IMAGE_RANGE_END {}",
+        u64c(IMAGE_RANGE_END)
+    ));
+
+    section(
+        &mut out,
+        "A new thread's FP state (abi.md, \"CPU state block\").",
+    );
+    out.push(format!("#define TW_INIT_MXCSR {}", u32c(INIT_MXCSR)));
+    out.push(format!("#define TW_INIT_FCW {:#x}", INIT_FCW));
+    out.push(format!("#define TW_INIT_FTW {:#x}", INIT_FTW));
 
     section(
         &mut out,

@@ -96,7 +96,7 @@ fn known_addresses_are_not_translated_again() {
 /// `translate_regions` makes with them.
 #[test]
 fn flags_name_the_options() {
-    for flags in 0..32u32 {
+    for flags in 0..64u32 {
         let req = Req { flags, ..request() };
         let wasm = handle(&memory(&req, &[]), REQ_PTR).unwrap();
         let opts = x64wasm::Options {
@@ -105,6 +105,7 @@ fn flags_name_the_options() {
             counters: flags & abi::RT_FLAG_COUNTERS != 0,
             sync_all: flags & abi::RT_FLAG_SYNC_ALL != 0,
             structured: flags & abi::RT_FLAG_REFERENCE_LAYOUT == 0,
+            shared_memory: flags & abi::RT_FLAG_SHARED_MEMORY != 0,
             ..x64wasm::Options::default()
         };
         let region = x64wasm::CodeRegion {
@@ -121,6 +122,7 @@ fn flags_name_the_options() {
     assert!(w(0) != w(abi::RT_FLAG_COUNTERS));
     assert!(w(0) != w(abi::RT_FLAG_SYNC_ALL));
     assert!(w(0) != w(abi::RT_FLAG_REFERENCE_LAYOUT));
+    assert!(w(0) != w(abi::RT_FLAG_SHARED_MEMORY));
 }
 
 fn error(req: &Req, known: &[u64], req_ptr: u32) -> String {
@@ -194,7 +196,16 @@ fn bad_requests_are_errors() {
     assert!(e.contains("already"), "{e}");
     let e = error(
         &Req {
-            flags: 1 << 5,
+            flags: 1 << 6,
+            ..request()
+        },
+        &[],
+        REQ_PTR,
+    );
+    assert!(e.contains("flags"), "{e}");
+    let e = error(
+        &Req {
+            flags: 1 << 31 | abi::RT_FLAG_SHARED_MEMORY,
             ..request()
         },
         &[],

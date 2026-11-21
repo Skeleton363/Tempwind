@@ -10,13 +10,18 @@ on:
     branches: [main, "claude/**"]
     paths:
       - "native/wine/**"
-      - "runtime/src/wine/**"
+      - "runtime/src/**"
       - "tests/wine/**"
-      - "tests/native/hello.c"
+      - "tests/browser/**"
+      - "playwright.config.mjs"
+      - "tests/native/**"
+      - "tests/node/v3-mini.mjs"
+      - "crates/x64wasm/**"
+      - "crates/x64wasm-cli/**"
+      - "crates/x64wasm-rt/**"
+      - "crates/x64wasm-fp/**"
       - "tests/targets/sources.json"
       - "tests/targets/wine.lock"
-      - "runtime/src/abi.mjs"
-      - "runtime/src/memory.mjs"
       - "scripts/emcc.sh"
       - "scripts/fetch-artifact.sh"
       - "scripts/release-publish.sh"
@@ -26,13 +31,18 @@ on:
   pull_request:
     paths:
       - "native/wine/**"
-      - "runtime/src/wine/**"
+      - "runtime/src/**"
       - "tests/wine/**"
-      - "tests/native/hello.c"
+      - "tests/browser/**"
+      - "playwright.config.mjs"
+      - "tests/native/**"
+      - "tests/node/v3-mini.mjs"
+      - "crates/x64wasm/**"
+      - "crates/x64wasm-cli/**"
+      - "crates/x64wasm-rt/**"
+      - "crates/x64wasm-fp/**"
       - "tests/targets/sources.json"
       - "tests/targets/wine.lock"
-      - "runtime/src/abi.mjs"
-      - "runtime/src/memory.mjs"
       - "scripts/emcc.sh"
       - "scripts/fetch-artifact.sh"
       - "scripts/release-publish.sh"
@@ -68,6 +78,11 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
       # scripts/emcc.sh keeps Emscripten's cache here (docker's /emcache).
       - uses: actions/cache@v4
         with:
@@ -78,7 +93,8 @@ jobs:
             wine-unix-emcache-
 
       # Fetches the Wine 11 release (target/wine: hello.exe, kuser.bin, native tree),
-      # then builds the Unix side with native/wine/build.sh into target/wine-unix.
+      # builds the Unix side with native/wine/build.sh into target/wine-unix, then
+      # packages the release (rebase, catalog, boot-set.json).
       - name: Prepare the inputs and build the Unix side
         run: |
           set -euo pipefail
@@ -86,11 +102,28 @@ jobs:
           sudo apt-get install -y -qq zstd gcc-mingw-w64-x86-64
           tests/wine/prepare.sh
 
+      # The catalog gate (docs/design/wine-build.md, "Where it is built"): prepare.sh
+      # rebased and verified the whole closure; this translates it with the shared-memory
+      # options, and every module compiled in V8. A failure names the file.
+      - name: Catalog gate (translate the whole closure, compile in V8)
+        run: |
+          set -euo pipefail
+          node tests/wine/catalog.mjs --all
+          node tests/wine/catalog.mjs --check --all
+
       - name: npm run test:wine
         run: |
           set -euo pipefail
           npm ci
           npm run test:wine
+
+      # hello.exe in a Chromium Worker, through the browser host (wine-unix.md,
+      # section 10): the server maps target/wine and target/wine-unix by default.
+      - name: npm run test:browser:wine
+        run: |
+          set -euo pipefail
+          npx playwright install --with-deps chromium
+          npm run test:browser:wine
 
       - name: Collect the release files
         run: |

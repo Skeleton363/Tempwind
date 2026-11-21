@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan, checkPlan, addressMap, sha256 } from '../../runtime/src/plan.mjs';
+import { requestFlags } from '../../runtime/src/process.mjs';
+import * as abi from '../../runtime/src/abi.mjs';
 import { fakeExe, fakePlan, BASE, TLS_PLAN } from './pe-fixture.mjs';
 
 const exe = fakeExe();
@@ -76,3 +78,25 @@ for (const [label, edit, re] of [
     await assert.rejects(check(edit), re);
   });
 }
+
+test('options: sharedMemory reads as given, and false in a plan without it', async () => {
+  const read = async (options) => parsePlan(await fakePlan(exe, (j) => { if (options) j.options = options; })).options;
+  assert.equal((await read(undefined)).sharedMemory, false, 'no options');
+  assert.equal((await read({ nullCheck: true })).sharedMemory, false, 'an older plan');
+  assert.equal((await read({ sharedMemory: true })).sharedMemory, true);
+  await assert.rejects(read({ sharedMemory: 1 }), /sharedMemory must be a boolean/);
+});
+
+test('the plan options map to the run-time translator\'s request flags', () => {
+  const none = { nullCheck: false, storeCheck: false, counters: false, syncAll: false, structured: true, sharedMemory: false };
+  assert.equal(requestFlags(none), 0);
+  const one = [
+    ['nullCheck', true, abi.RT_FLAG_NULL_CHECK],
+    ['storeCheck', true, abi.RT_FLAG_STORE_CHECK],
+    ['counters', true, abi.RT_FLAG_COUNTERS],
+    ['syncAll', true, abi.RT_FLAG_SYNC_ALL],
+    ['structured', false, abi.RT_FLAG_REFERENCE_LAYOUT],
+    ['sharedMemory', true, abi.RT_FLAG_SHARED_MEMORY],
+  ];
+  for (const [key, value, bit] of one) assert.equal(requestFlags({ ...none, [key]: value }), bit, key);
+});

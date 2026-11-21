@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/x64wasm", "crates/x64wasm-cli", "crates/x64wasm-rt", "crates/x64wasm-fp", "crates/testkit"]
+members = ["native/wine/rebase", "crates/x64wasm", "crates/x64wasm-cli", "crates/x64wasm-rt", "crates/x64wasm-fp", "crates/testkit"]
 
 [workspace.package]
 version = "0.0.0"

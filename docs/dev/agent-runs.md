@@ -50,15 +50,15 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 
 | Change | Applied as | Baseline | Measure | Decided at |
 |---|---|---|---|---|
-| 6. Context checkpoints: the coordinator reads `context_usage` from `get_session` at each checkpoint (plan approved, contracts pushed, each work package merged, before `/milestone-close`, after its reviews). Above 25 % (35 % until M2's close), and always between planning and execution, it asks the owner to run `/compact` with a ready focus line, once the state is in files (the plan, the contracts, the status note, the agents' tracks). Agents read the sources; the coordinator reads diffs and the lines it cites. | One line in `CLAUDE.md`'s "Working efficiently" | M2's planning stretch: 483,687 of 1,000,000 tokens of context before any work, $15.42, 34.2M cache reads, 256k output (`main` line of 2026-11-13). Auto-compaction would have started at 901,600. Compacted at the approval to 98,077. | `context_usage` at each checkpoint; the number of compactions; M2's cache reads per coordinator request, after against before; rework traced to lost context, which must stay 0 | Reshaped at M2's close (retro below); decided at M3's close |
+| 6. Context checkpoints: the coordinator reads its context at each checkpoint (plan approved, contracts pushed, each work package merged, before `/milestone-close`, after its reviews) and, from M3's close, at each commit during a long stretch in the main loop, with `scripts/context-usage.mjs` (`context_usage` from `get_session` until then). Above 300k tokens (25 % of `context_usage` until M3's close, 35 % until M2's), and always between planning and execution, it asks the owner to run `/compact` with a ready focus line, once the state is in files (the plan, the contracts, the status note, the agents' tracks). Agents read the sources; the coordinator reads diffs and the lines it cites. | One line in `CLAUDE.md`'s "Working efficiently"; `scripts/context-usage.mjs` from M3's close | M2's planning stretch: 483,687 of 1,000,000 tokens of context before any work, $15.42, 34.2M cache reads, 256k output (`main` line of 2026-11-13). Auto-compaction would have started at 901,600. Compacted at the approval to 98,077. | The context at each checkpoint; the number of compactions; the cache reads per coordinator request, after against before; from M2's close, the execution segments' mean context per coordinator request, at most 220k; rework traced to lost context, which must stay 0 | Reshaped at M2's and M3's closes (retros below); decided at M4's close |
 
-**Problem:** every request re-reads the whole context, so a session that fills half its window while planning pays that half again at every later step. **Lead for M3, not adopted yet:** delegate the research pass's source reading to a subagent, so the coordinator's context holds findings, not sources.
+**Problem:** every request re-reads the whole context, so a session that fills half its window while planning pays that half again at every later step. **Lead, adopted in M3:** the research pass's source reading went to three Explore agents, so the coordinator's context held findings, not sources. Planning read 39 % less than M2's (M3's retro).
 
 ## Trial 7 (started 2026-11-14, the owner's change)
 
 | Change | Applied as | Baseline | Measure | Decided at |
 |---|---|---|---|---|
-| 7. A branch list at each close: the report names the GitHub branches that can be deleted, each with its evidence, and gives the owner one delete command | `milestone-close` step 6, item 4 | At M2's close, 25 branches besides `main` and the PR branch:<br>• the work tracks of M1 (6), M6 (7) and M2 (7);<br>• 4 old session branches and `bench-data`.<br><br>None had been deleted, and a session's delete gets HTTP 403. 23 could go. `bench-data` and Phase 1's branch, which has its own commits, stay. | Branches left after the owner's cleanup at M3's close, other than `main`, `bench-data` and open PRs: 0 | M3's close |
+| 7. A branch list at each close: the report names the GitHub branches that can be deleted, each with its evidence, and gives the owner one delete command | `milestone-close` step 6, item 4 | At M2's close, 25 branches besides `main` and the PR branch:<br>• the work tracks of M1 (6), M6 (7) and M2 (7);<br>• 4 old session branches and `bench-data`.<br><br>None had been deleted, and a session's delete gets HTTP 403. 23 could go. `bench-data` and Phase 1's branch, which has its own commits, stay. | Branches left after the owner's cleanup at M3's close, other than `main`, `bench-data` and open PRs: 0 | Kept at M3's close (retro below) |
 
 **Problem:** sessions push a work track per agent and can't delete branches, so every milestone left its tracks behind.
 
@@ -239,3 +239,76 @@ Trials 4 and 5 are cheap; if they show nothing, they are removed.
 | 6. Context checkpoints | 4 compactions, each asked for by the coordinator and run by the owner; no auto-compaction.<br>• The coordinator's context per request: 313k before the first compaction, then 205k, 210k, 320k and 134k so far.<br>• Rework from lost context: 0. The double-assigned `section` checks came from two copies of the table, not from a compaction.<br>• The miss: the fourth segment (above). | **Reshaped:** 25 %, plus a checkpoint after the close's reviews. Decided at M3's close: the execution segments' mean context per coordinator request at most 220k, and rework from lost context 0. |
 
 **After the merge (2026-11-14):** trial 4 is reverted. The owner's verdict on PR #12's merge-danger line was "noise", so `milestone-close` step 4 no longer asks for it.
+
+## Retro: Phase 2 M3 (2026-11-21)
+
+**CI, rework and escalations:**
+- **No red runs.** All green:
+  - `wine-unix` #15-#26 and #28 on the branch's pushes, with #27 and #29 skipped on the PR's events by design;
+  - `artifacts` #13;
+  - `ci` from #82 and `bench` from #43 on the PR.
+- **Rework rounds:** 0.
+- **Escalations:** none.
+- **Findings:** 12 in the work packages, attributed with `git log -S`: deep-workers 9 and builders 3 (`agent-stats.mjs --milestone P2-M3`). The exit hook's contract defect, below, counts for no run.
+
+**Avoidable costs, worst first:**
+- **The coordinator's context: 201.3M cache reads in 761 requests** up to the retro (`scripts/context-usage.mjs`). That is 54 % of the session's 373.1M ($144.36 at 11:37 UTC; M2's session: 282.7M, $120.33).
+
+  | Segment | Requests | Mean (max) | Cache reads |
+  |---|---|---|---|
+  | Planning | 57 | 300k (460k) | 16.7M |
+  | The contracts and the first briefs | 158 | 339k (515k) | 53.1M |
+  | Execution, up to the close's reviews (4 segments) | 85, 102, 104, 72 | 231k, 206k, 236k, 233k (max 348k) | 80.5M |
+  | The close's fixes, code review, status note and PR | 183 | 281k (449k) | 51.0M |
+
+  - **Two segments passed 300k with no checkpoint due,** since checkpoints are events:
+    - The contracts' segment passed 300k at its 58th request. The next commit was the contracts' (`986f037`), and 65 requests followed at a mean of 444k (28.9M).
+    - The close's segment passed 300k at its 107th request, at `158f5d6`'s commit, and 74 requests followed at 380k (28.1M).
+
+    A `/compact` at those two commits would have read about 25M less, an estimate that puts the later requests at the execution mean of about 230k.
+  - **The reading went stale:** `get_session`'s `context_usage` updates only at a turn's start. It was stale at three checkpoints: after WP4's merge, after a compaction, and after the close's reviews. At the last one it read 107k, and the coordinator estimated about 19 %. The transcript read 442k, 2.3 times that.
+  - **Fix: trial 6 reshaped** (below).
+- **Two owner pauses and the rate limits: 6 days, 7 hours and 10.5 hours.** WP1 and WP2 resumed after 6 days and wrote their caches again. Recorded only.
+- **A contract defect: the exit hook** (decision 10) named `abort_process`, but not its other caller, `abort_thread` (`unix/thread.c` L1477).
+  - Wine ends there on its errors: a server protocol error (`unix/server.c` L163, L174), a lost server pipe (L238, L267, L977, L1032) and a killed thread (L361).
+  - The hook would have resolved `boot` with 0 or 1 instead of rejecting it. A lost pipe would have looked like a clean exit.
+  - The spec review caught it at the close. The contract changed first (`6969aab`), then the patch, with two `syscall` checks that failed first (`ed5bae8`).
+  - **Fix:** a rule in `.claude/rules/wine.md`: a hook or change inside a Wine function lists the function's callers and what it does on each caller's path.
+- **Drift: 4 of the spec review's 13 items were code that departed from its contract** (WP5 2, WP3 1, WP6 1).
+  - Both agents' fixed rules have forbidden this since M2, and the merge reviews passed all four. WP5's report even described `tw_exec_range`, while the contract still said "the view".
+  - The wording commit `3066e27` fixed them.
+  - **Fix** (`CLAUDE.md`): at a merge, the coordinator checks what the report says the code does against the contract sections the brief names. A difference gets a doc commit before the merge.
+- **`wine-unix.yml`'s path triggers missed files the Wine host reads, at the second close running** (M2: `hello.c`, `abi.mjs` and others; M3: `link.mjs`, `rt.mjs`, `x64wasm-fp` and others, `158f5d6`). This is a mechanical mistake, so **the fix is an automated check:** `tests/node/workflow-paths.test.mjs` (`524d743`).
+  - It is part of `test:node`, so `ci` runs it on every PR.
+  - It walks the imports of the Wine host and its tests, the crates `prepare.sh` builds with their path dependencies, and the files the scripts name.
+  - It fails on the list before `158f5d6`.
+  - It found two gaps the code review had missed: `process.mjs` pulls in the JS shim, and a linker test imports `tests/node/v3-mini.mjs`. The triggers now take `runtime/src/**`.
+- **hello.exe wasn't a reproducible build.** WP4's `prepare.sh` rebuilt it after the native step had translated it, so its sha256-keyed plans went stale. The verification found it as a `test:node` failure. **Fix:** `-Wl,--no-insert-timestamp`, with a test that the programs carry no build timestamp (`ef513b7`).
+- **WP5's test rewrite dropped two assertions;** the merge review caught it (`360efec`). **Fix:** both agents' fixed rules: a test you rewrite keeps every assertion it had, or the report names each one dropped and why.
+- **Recorded, with no new fix:**
+  - the install-copies gap in the contract: first light found it as intended, and the contract widened before any code (`09fad41`);
+  - one `wine-unix` run's 46.6-minute prepare step, with no cause found; the others take 1.5-3 minutes, so it is watched;
+  - run-wine's exit code, which dropped `get_unix_exit_code`'s rule (WP3); now fixed, with its test (`8556fe5`);
+  - the coordinator's slips: `prepare.sh` missed the wasm32 builds (`4226986`), and a `cd` moved the working directory.
+
+**Changes from this retro:**
+- **Trial 6 reshaped** (`CLAUDE.md`, `scripts/context-usage.mjs`):
+  - read the context from the transcript, which is exact and doesn't lag;
+  - check at each checkpoint and at each commit during a long stretch in the main loop;
+  - ask for `/compact` above 300k tokens, about the old 25 % plus the 75k that reading left out.
+- **Hooks in Wine** (`.claude/rules/wine.md`): list the hooked function's callers.
+- **Drift at merges** (`CLAUDE.md`): the coordinator checks the report against the brief's contract sections.
+- **Test rewrites** (both agents' fixed rules): keep every assertion, or name each one dropped.
+- **Path triggers:** checked by `tests/node/workflow-paths.test.mjs`.
+
+**M2's leads:**
+- **The research pass's source reading went to three Explore agents.** Planning read 16.7M in 57 requests at 300k, against M2's 27.5M in 88 at 313k: 39 % less. Kept.
+- **One initial FP state for C and JS** (decision 16): done, with a Node test of `abi.mjs` against `abi.h`.
+
+**Trials:**
+
+| Trial | Result | Verdict |
+|---|---|---|
+| 5. `/diverge` gates | No run used `/diverge` in M3; WP5's first light didn't need it. | running |
+| 6. Context checkpoints | 7 compactions, each asked for by the coordinator and run by the owner; no auto-compaction.<br>• Execution and the close: 546 requests at a mean of 244k, against the 220k target. The execution segments ran 231k, 206k, 236k and 233k, and the close 281k.<br>• Rework from lost context: 0.<br>• The misses: the contracts' segment and the close's, each past 300k with no checkpoint due, and a stale reading after the close's reviews. | **Reshaped:** the transcript reading, 300k, and a check at each commit during a long main-loop stretch. Decided at M4's close with the same measure. |
+| 7. The branch list | The owner deleted all 23 branches on M2's list. The 2 older branches left were never on it: M2's PR branch, reused for PR #13, and Phase 1's branch, merged as PR #14 after the list. Both are on M3's list of 8. | **Kept** |

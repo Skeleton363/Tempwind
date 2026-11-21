@@ -9,12 +9,12 @@ import {
   FAULT_READ, FAULT_WRITE, FAULT_EXECUTE, SENTINEL_RET, LOOKUP_HEADER_ADDR, MAIN_STATE_ADDR,
   THUNK_BASE, THUNK_SIZE, THUNK_BYTES, HOST_FUNC_INDEX, MAX_THUNKS, MIN_LOOKUP_SLOTS, LOOKUP_SLOT_SIZE,
   PEB_ADDR, TEB_ADDR, PROCESS_ID, THREAD_ID, RFLAGS_INIT, GUEST_CALL_FRAME, DLL_PROCESS_ATTACH,
-  STATE_XMM, STATE_MXCSR, STATE_FCW, STATE_FTW, STATE_FP_END, MXCSR_INIT, FCW_INIT, FTW_EMPTY,
+  STATE_XMM, STATE_MXCSR, STATE_FCW, STATE_FTW, STATE_FP_END, INIT_MXCSR, INIT_FCW, INIT_FTW,
   TEB_STACK_BASE, TEB_STACK_LIMIT, TEB_SELF, TEB_CLIENT_ID_PROCESS, TEB_CLIENT_ID_THREAD,
   TEB_TLS_POINTER, TEB_PEB, PEB_BEING_DEBUGGED, PEB_IMAGE_BASE, PEB_NUMBER_OF_PROCESSORS,
   PEB_OS_MAJOR, PEB_OS_MINOR, PEB_OS_BUILD, PEB_OS_PLATFORM_ID, OS_VERSION, gprOffset,
   DLL_THREAD_ATTACH, DLL_THREAD_DETACH, TEB_SIZE, STACK_ALIGN, COUNTER_SLOTS,
-  RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_FLAG_COUNTERS, RT_FLAG_SYNC_ALL, RT_FLAG_REFERENCE_LAYOUT,
+  RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_FLAG_COUNTERS, RT_FLAG_SYNC_ALL, RT_FLAG_REFERENCE_LAYOUT, RT_FLAG_SHARED_MEMORY,
 } from './abi.mjs';
 import { createMemory64 } from './memory.mjs';
 import { GuestMemory } from './guest-memory.mjs';
@@ -40,6 +40,12 @@ const roundUp = (v, a) => (v + a - 1n) / a * a;
 
 /** An error stop of the process (exit status 125 in the CLI). */
 export class ProcessError extends Error {}
+
+/** The run-time translator's request flags (abi.md, "Request") for a plan's `options` (runtime.md, "Load plan"). */
+export function requestFlags(o) {
+  return (o.nullCheck ? RT_FLAG_NULL_CHECK : 0) | (o.storeCheck ? RT_FLAG_STORE_CHECK : 0) | (o.counters ? RT_FLAG_COUNTERS : 0)
+    | (o.syncAll ? RT_FLAG_SYNC_ALL : 0) | (o.structured ? 0 : RT_FLAG_REFERENCE_LAYOUT) | (o.sharedMemory ? RT_FLAG_SHARED_MEMORY : 0);
+}
 
 /** A bump allocator over [base, limit) of guest memory (fresh memory is zero). */
 export class Bump {
@@ -345,9 +351,9 @@ export class Process {
   /** The FP state of a new thread, as on Windows x64 (runtime.md, "Start of the main thread"). */
   initFpState(state = this.state) {
     const m = this.mem;
-    m.setU32(state + BigInt(STATE_MXCSR), MXCSR_INIT);
-    m.setU16(state + BigInt(STATE_FCW), FCW_INIT);
-    m.setU16(state + BigInt(STATE_FTW), FTW_EMPTY);
+    m.setU32(state + BigInt(STATE_MXCSR), INIT_MXCSR);
+    m.setU16(state + BigInt(STATE_FCW), INIT_FCW);
+    m.setU16(state + BigInt(STATE_FTW), INIT_FTW);
   }
 
   /**
@@ -542,9 +548,7 @@ export class Process {
     const s = executableSection(this.plan, rip);
     try {
       // The image's options (the plan's `options`): the same checks, counters and reference modes as the AOT module.
-      const o = this.plan.options;
-      const flags = (o.nullCheck ? RT_FLAG_NULL_CHECK : 0) | (o.storeCheck ? RT_FLAG_STORE_CHECK : 0) | (o.counters ? RT_FLAG_COUNTERS : 0)
-        | (o.syncAll ? RT_FLAG_SYNC_ALL : 0) | (o.structured ? 0 : RT_FLAG_REFERENCE_LAYOUT);
+      const flags = requestFlags(this.plan.options);
       return this.rt.translate({ codeBase: s.va, code: this.mem.read(s.va, Number(s.mappedSize)), entry: rip, known: this.linker.sortedKeys(), flags });
     } catch (e) {
       throw new ProcessError(`run-time translation at ${hex(rip)}: ${e.message}`);

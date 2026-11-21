@@ -260,3 +260,78 @@ Asked by the owner.
 - **Setup:** it installs Bun and uv on first run. In our cloud environment that likely needs a setup script and new network hosts.
 
 **What would change this:** a close that traces rework to lost context (trial 6's measure, 0 so far), or the ledger showing a milestone re-reading the sources the previous one read. Then run a one-milestone trial with telemetry off and the observer on our plan, measured against M2's usage per session.
+
+## 2026-11-14: Phase 2 M3, boot
+
+The M3 planning pass, in a fresh session. Sources:
+- the wine-11.0 tarball (dl.winehq.org, sha256 checked), unpacked in the scratchpad; `wine-4c6ec0d`'s `closure.json`;
+- Emscripten 6.0.12's `src/lib/libfs.js`, `libmemfs.js` and `libpipefs.js`, and its ChangeLog, as single files through raw.githubusercontent.com;
+- Microsoft Learn (`/BASE`), v8.dev and blink-dev (JSPI), wine-devel's archive, and searches for community ports.
+
+Trial 6's lead was applied: three Explore runs read the sources, one Plan run reviewed the draft against them, and the coordinator re-read only the lines a decision rests on. Line numbers are in the pristine tarball.
+
+### Wine 11.0
+- **The syscall thunk** (`include/wine/asm.h` L287-301, instantiated by PE `dlls/ntdll/signal_x86_64.c` L46-47): `mov r10,rcx; mov eax,id; testb $1,0x7ffe0308; jne; syscall; ret; …; call *0x7ffe1000; ret`. KUSER `SystemCall` is 1 (`unix/virtual.c` L4450), so only `call *0x7ffe1000` runs. The dispatcher takes the table from bits 12-13 and the number from bits 0-11, and ignores bits 14-31 (`unix/signal_x86_64.c` L3138-3145).
+- **`dlls/ntdll/ntsyscalls.h`:** 258 x86-64 entries `SYSCALL_ENTRY(id, name, argbytes)` (L270-527), two of them through variant macros (L295, L360; defined L538-539). 252 prototypes are in `include/winternl.h`; six are stubs, `static void name(void)` with 0 argbytes (`unix/loader.c` L138-139, `ntsyscalls.h` L531-537), which raise an exception. The only struct by value is `LDT_ENTRY` (`NtSetLdtEntries`, `winternl.h` L4797); the only non-NTSTATUS return is `NtGetCurrentProcessorNumber`'s ULONG. Tables: `unix/loader.c` L141-158; win32u adds table 1 (`KeAddSystemServiceTable` L625-634).
+- **`__wine_syscall_dispatcher`** (`unix/signal_x86_64.c` L3026-3334): it pops the thunk's return address (L3029), so the fifth argument is at `rsp+0x28` (L3099), entry RSP + 0x30. The frame records `rsp` = entry + 8 (L3054) and `rip` = the thunk's return address − 0xb (L3063); `struct syscall_frame` is L462-495. A bad id returns `STATUS_INVALID_SYSTEM_SERVICE` (L3324-3327).
+- **Its return** (L3191-3276): RBX, RSI, RDI, RBP and R12-R15 always from the frame (L3216-3224); with no restore flags also RSP, EFLAGS, MXCSR and XMM6-15, then the frame's rip (L3194-3204, L3221, L3231, L3244-3252); INTEGER also RAX, RCX, RDX and R8-R11, so the status is discarded (L3266-3272); CONTROL resumes by `iretq`; 0x48 restores the whole FP state (L3192, L3211, L3215). `+syscall` traces: L3159, L3281-3327.
+- **`__wine_unix_call_dispatcher`** (L3350-3464): RCX handle, RDX code, R8 args, `((unixlib_entry_t *)handle)[code](args)` with no range check; it marks the frame with `restore_flags` 0x20000 (L3438). ntdll's table has 8 entries (`unix/loader.c` L1132-1142), and only ntdll has a UNIXLIB in the closure (`dlls/ntdll/Makefile.in` L3).
+- **Thread start:** PE `LdrInitializeThunk` (`signal_x86_64.c` L1039-1044) → `loader_init` → `signal_start_thread` (L1018-1033) → `NtContinue(context, TRUE)`. `NtContinueEx` (`unix/server.c` L847-865) polls for APCs with a zero timeout (`server/thread.c` L1190) and never blocks. The context functions: `signal_set_full_context` (L1083-1090), `NtSetContextThread` (L1116-1208), `NtGetContextThread` (L1215-1346). APCs reach PE code only through `call_user_apc_dispatcher` (L1661-1705), after `STATUS_USER_APC` from a wait.
+- **Exit:** msvcrt `exit()` → `ExitProcess` → `RtlExitUserProcess` (`loader.c` L3907-3913: `NtTerminateProcess(0)`, `LdrShutdownProcess`, `NtTerminateProcess(self)`) → `unix/process.c` L965-985 → `exit_process` (`unix/thread.c` L1520-1524) or `abort_process` (L1485-1488). `get_unix_exit_code` (L89-94) turns a nonzero status with a zero low byte into 1; the 8-bit cut is the host `exit()`'s. The server never kills the current thread (`server/process.c` L933-950). With a pipe, msvcrt flushes stdout at `DLL_PROCESS_DETACH` (`msvcrt/main.c` L145).
+- **Relocation:** the Unix side relocates only to a server-assigned `map_addr` and sets `ImageBase` (`unix/virtual.c` L3205-3223); the PE loader's `perform_relocations` acts only when the module isn't at `ImageBase` (`loader.c` L2162-2231). Nothing validates the checksum (`loader.c` L2791 only matches modules). The server's builtin detection uses the DOS stub and `DYNAMIC_BASE` (`server/mapping.c` L934-944).
+- **Top-down:** `map_view` searches from `min(user_space_limit, host_addr_space_limit)` (`unix/virtual.c` L2287-2295). No closure DLL passes `MEM_TOP_DOWN` (grep of ntdll, kernelbase, kernel32, msvcrt, ucrtbase); the Unix side uses it for images (L3363, L3369), the TEB block (L4055) and the LDT (L4188).
+- **Write-copy:** Wine 11 has no `VPROT_WRITTEN`; `virtual_handle_fault` (L4538-4595) changes only guard and write-watch pages, and the host's `MAP_PRIVATE` makes the copy. `NtQueryVirtualMemory` reports `PAGE_WRITECOPY` before and after a write (`get_win32_prot` L1866-1872). This corrects M2's note that a fault would turn the page into a written one.
+- **stdio:** the server makes a plain `file` object with `FD_TYPE_CHAR` for a FIFO as for a char device (`server/file.c` L132-160, L294-300). `get_device_info` (`unix/file.c` L7156-7221) gives our char devices (major 200) `FILE_DEVICE_UNKNOWN` and a FIFO `FILE_DEVICE_NAMED_PIPE` (L7215); kernelbase's `GetFileType` (`file.c` L3297-3309) makes them `FILE_TYPE_CHAR` and `FILE_TYPE_PIPE`; msvcrt (`file.c` L757-765) `WX_TTY` and `WX_PIPE`. A tty stdout gets per-call buffers, a pipe the 4 KiB buffer (L866-906); `_write` calls `WriteConsoleW` only if `VerifyConsoleIoHandle` succeeds (L3605, L3710-3716). `NtWriteFile` is a plain `write()` (`unix/file.c` L6261+, L6374). kernelbase starts conhost only for `CONSOLE_HANDLE_SHELL` (`console.c` L2356, L2401); non-tty fds give `SHELL_NO_WINDOW` (`unix/env.c` L1369-1370).
+- **Version:** the Unix `init_peb` sets 10.0.19045 (`unix/env.c` L1827-1834); PE `version_init` applies `AppDefaults\<exe>\Version` to the PEB (`version.c` L473-535, from `loader.c` L4452). wineboot writes KUSER from its own `RtlGetVersion` (`wineboot.c` L343-350): the prefix default, never a program's.
+- **The closure** (`wine-4c6ec0d`): hello, l2_int, l2_crt, l2_float and coremark each load ntdll, kernelbase, kernel32, msvcrt, apisetschema (data) and the exe, with no base conflict. 7zz loads 20 modules, 15 at 0x1_8000_0000. The 58 DLLs at that shared base, packed downward from 0x1_7000_0000 in 64 KiB steps, span 26.1 MiB (lowest base 0x1_6e5e_0000).
+
+### Emscripten 6.0.12
+- **`FS.createLazyFile` throws on a stat before the first read in Node:** its node's `contents` is null and `usedBytes` reads `contents.length` (`libfs.js` L1912-1919), a TypeError that the syscall layer doesn't catch. Wine stats first (`unix/file.c` L2970, `server/fd.c` L1999, `server/mapping.c` L1087 and L1158). In a Worker it fetches 1 MiB chunks by synchronous XHR, and outside a Worker it aborts (L1774-1899).
+  - Decision: our own lazy node, sized from a manifest.
+- **FIFO nodes:** MEMFS refuses them (`libmemfs.js` L15); PIPEFS nodes are `S_IFIFO` (`libpipefs.js` L40-41, L80); a `mkdev` node whose `mode` is set to `S_IFIFO` keeps routing I/O by `rdev` (`libfs.js` L578-583).
+  - Decision: fds 0-2 become FIFO devices, so Windows sees `FILE_TYPE_PIPE`, as in a native run whose output a pipe captures.
+- **Releases:** 6.0.13 and 7.0.0 change nothing we use (7.0.0's 64 KiB pipes as recorded on 2026-11-13); 7.0.1 is unreleased. Decision: stay on 6.0.12.
+
+### Official
+- **Microsoft Learn, `/BASE`:** the x64 defaults are 0x1_4000_0000 for an EXE and 0x1_8000_0000 for a DLL.
+  - Decision: the closure DLLs are rebased below ntdll, into [0x1_6000_0000, 0x1_7000_0000), where users' own DLLs don't default. The rebase tool lives in `native/wine/` under the LGPL (the owner's decision: LGPL-2.1 §0 counts installation scripts as corresponding source).
+- **JSPI** (v8.dev, blink-dev's intent to ship): phase 4, on by default since Chrome 137, no API change since M1. Third-party writeups from 2026 describe V8 JSPI security bugs; nothing for us to do.
+- **Wine's PE/Unix design history:** wine-devel's "PE Conversion" thread (2021-08) and the December 2022 commit that turned `__wine_unix_call` from a syscall into a function calling through `__wine_unix_call_dispatcher`. Our dispatcher follows the current form.
+
+### Community
+- **No port of Wine's Unix side to Emscripten turned up** (searches; Hacker News). Boxedwine stays off-limits, and we read nothing of it.
+
+### Review
+- **A Plan-agent review of the draft** checked every statement about Wine against its line: 1 was wrong (the INTEGER restore path loads RAX from the frame), 5 imprecise (the id decode's line, the syscall table's variant entries, `NtGetContextThread`'s range, `get_unix_exit_code`'s meaning, the argument formula's base). It found 1 blocker, the lazy files above, and should-fix items: the wrapper special cases, tombstone rules for invalidation (a module's blocks call each other directly, so a whole module goes), a placeholder `run` for an empty bridge slot, `depth` through the bridge's exports, the FIFO mechanics, where the exit hook sits, and one constant for the image range. All are in the plan and the contracts.
+
+### Workflow
+- **Claude Code 2.1.325:** subagents cut off at the output limit are asked again more briefly; plan-mode fixes. Leads only: no measured cost of ours. Not adopted.
+- **Trial 6's lead, measured:** the planning stretch cost $14.31 and 32.9M cache reads, of which the four agents read 24.2M, so the coordinator read about 8.7M, against 27.5M for M2's planning. Its context was 373,677 tokens at the plan's approval (M2: 483,687).
+- **Caveman** (`JuliusBrussee/caveman` v4.1, Apache-2.0), looked at on the owner's request. Only its README was read, through raw.githubusercontent.com; nothing was installed or cloned.
+  - **What it is:**
+    - a voice that shortens the agent's prose;
+    - a local proxy that compresses tool output before the model reads it;
+    - "Auto", which picks model and effort per request through its cloud;
+    - "Blocks", reusable scripts;
+    - a compressor for memory files such as `CLAUDE.md`.
+  - **Not adopted, because it can't run here:**
+    - The plugin and the skill install from its GitHub repository, which sessions can't reach.
+    - The proxy must sit between Claude Code and the API, which a managed cloud session doesn't allow.
+    - The CLI sends telemetry by default, and Auto sends prompts and attached files to its cloud. Our private-data rule rules that out without the owner's approval.
+  - **Not adopted, because it targets a small part of our spend.** By the ledger's weights (input 1, cache read 0.1, cache write 1.25, output 5):
+    - Output is 17.3 % of the agents' spend (76 runs) and 28.7 % of this coordinator session's ($18.40 at the contracts).
+    - In this session's transcript, the visible text is 4.3 % of the output's characters and tool input (contracts, briefs, edits) 94.7 %. Thinking isn't stored there: text and tool input come to about 80k of the 446,638 output tokens, so the rest, about 82 %, is presumably thinking at max effort.
+    - So the voice could save well under 1 % of the coordinator's output. Its own figures on Opus 5.5: `/caveman` gives 3 % fewer output tokens than "Answer concisely.".
+    - Its rules add about 1,160 input tokens per request. Over this session's 503 requests, read from the cache, that is about 0.75 % of the spend: more than the voice could save.
+  - **Ideas we already have:**
+    - narrow reads and short command output (`CLAUDE.md`);
+    - model and effort tiers per agent (`.claude/agents/`);
+    - our own ledger in place of `caveman learn`;
+    - scripts in `scripts/`;
+    - the one-hour cache TTL.
+  - **The one lead that maps to our evidence is effort.** Its Auto saves mostly by lowering effort on easy requests: an interim run cost 0.46× Opus 5.5 at xhigh, with the score within noise. Our coordinator runs at max, and about 82 % of its output, roughly 23 % of its spend, is the presumed thinking. Whether routine coordinator stretches (merges, briefs) need max is the owner's call, and the ledger can measure it.
+
+### Not adopted
+- **Translating each closure DLL at the base it lands on in each program** (`translate-pe --base`): the slot depends on the load order, so every program would need its own modules. Rebasing once at packaging gives one module per file.
+- **Packing the rebased DLLs from 0x1_8000_0000 up** (the status note's earlier idea): that is MSVC's default for users' DLLs, which would then collide with Wine's.
+- **`FS.createLazyFile`:** it fails Wine's stat-before-read, above.

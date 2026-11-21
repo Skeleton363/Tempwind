@@ -821,6 +821,18 @@ pub enum Op {
         code: bool,
         when: Option<Value>,
     },
+    /// The store check of a `rep` string range (`translator.md`, "Memory
+    /// checks"): the page-state byte of every page from the one holding
+    /// byte `lo` to the one holding byte `hi` (inclusive) is tested against
+    /// PAGE_CODE | PAGE_WATCH, and a hit exits with EXIT_UNSUPPORTED with the
+    /// state from before the instruction. A range whose `hi` is below `lo`
+    /// (it wrapped) tests `lo`'s page only, whose access traps. With `when`,
+    /// only if `when != 0`.
+    PageRangeCheck {
+        lo: Value,
+        hi: Value,
+        when: Option<Value>,
+    },
     /// 128-by-64-bit division of `hi:lo` by `d` through the `div128`
     /// helper: quotient, remainder, and 1 in `fault` if `d` is 0 or the
     /// quotient doesn't fit in 64 bits (signed or unsigned).
@@ -1433,6 +1445,13 @@ impl fmt::Display for Op {
                 if *code {
                     write!(f, " code")?;
                 }
+                if let Some(w) = when {
+                    write!(f, " if {w}")?;
+                }
+                Ok(())
+            }
+            Op::PageRangeCheck { lo, hi, when } => {
+                write!(f, "check code pages {lo} ..= {hi}")?;
                 if let Some(w) = when {
                     write!(f, " if {w}")?;
                 }

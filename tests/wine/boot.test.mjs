@@ -2,16 +2,20 @@
 // boots to LdrInitializeThunk without running guest code. The harness is
 // native/wine/tests/boot.c; the boot set comes from
 // runtime/src/wine/boot-set.mjs.
+// From M3 the boot set is section 8's: the prefix, the overlay and the
+// program up front, and every file of boot-set.json's manifest marked lazy
+// as a lazy node (the closure's PE files, rebased, and its data files).
 // Needs native/wine/build.sh's output in target/wine-unix (or TW_WINE_UNIX_DIR)
 // and tests/wine/prepare.sh's target/wine (or TW_WINE_DIR): the PE tree, the
-// install tree's data files, the prefix, hello.exe and kuser.bin.
+// install tree's data files, the prefix, boot-set.json, hello.exe and kuser.bin.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, readlinkSync, lstatSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { STATE_RIP, STATE_GS_BASE } from '../../runtime/src/abi.mjs';
 import { createUnixHost, DEFAULT_ENV } from '../../runtime/src/wine/unix-host.mjs';
-import { installBootSet, recordOpens, boot, BOOT_DLLS, OVERLAY_PATH, PE_DIR } from '../../runtime/src/wine/boot-set.mjs';
+import { installBootSet, recordOpens, boot, parseBootSetManifest, OVERLAY_PATH, PE_DIR } from '../../runtime/src/wine/boot-set.mjs';
+import { readPrefix, nodeReader } from '../../runtime/src/wine/node-files.mjs';
 
 const root = new URL('../../', import.meta.url);
 const dirUrl = (env, fallback) => (process.env[env]
@@ -25,27 +29,16 @@ const PROGRAM = 'C:\\tempwind\\hello.exe';
 /** Where the harness reads the KUSER oracle. */
 const KUSER_PATH = '/tempwind-test/kuser.bin';
 
-/** The boot set from target/wine (section 8). */
+/** The boot set from target/wine (section 8): lazy nodes from boot-set.json. */
 function bootSet() {
-  const prefixDir = fileURLToPath(new URL('wine-prefix/', wineDir));
-  const prefixFiles = {}, prefixDirs = [], prefixLinks = [];
-  const walk = (rel) => {
-    for (const name of readdirSync(prefixDir + rel)) {
-      const path = rel ? `${rel}/${name}` : name;
-      const st = lstatSync(prefixDir + path);
-      if (st.isSymbolicLink()) prefixLinks.push([path, readlinkSync(prefixDir + path)]);
-      else if (st.isDirectory()) { prefixDirs.push(path); walk(path); }
-      else if (!rel) prefixFiles[name] = readFileSync(prefixDir + path);
-    }
-  };
-  walk('');
-  const share = 'native/opt/wine-11.0/share/wine/';
-  const data = { 'wine.inf': read(`${share}wine.inf`) };
-  for (const name of readdirSync(new URL(`${share}nls/`, wineDir))) data[`nls/${name}`] = read(`${share}nls/${name}`);
-  const dlls = {};
-  for (const name of BOOT_DLLS) dlls[name] = read(`pe/lib/wine/x86_64-windows/${name}`);
+  const dir = fileURLToPath(wineDir);
+  const prefix = readPrefix(dir);
+  assert.equal(prefix.path, DEFAULT_ENV.WINEPREFIX);
+  const json = JSON.parse(read('boot-set.json'));
   return {
-    prefixPath: DEFAULT_ENV.WINEPREFIX, prefixFiles, prefixDirs, prefixLinks, dlls, data,
+    prefixPath: prefix.path, prefixFiles: prefix.files, prefixDirs: prefix.dirs, prefixLinks: prefix.links,
+    lazy: parseBootSetManifest(json).filter((f) => f.lazy),
+    read: nodeReader(dir, json),
     programs: { [PROGRAM]: read('hello.exe') },
     overlay: readFileSync(new URL('native/wine/prefix/overlay.reg', root)),
   };
@@ -74,7 +67,7 @@ async function start(name) {
 }
 
 const CHECKS = ['rip_ldr_initialize_thunk', 'context_and_state', 'images_at_preferred_bases', 'apiset_map',
-  'registry_values', 'nls_loaded', 'kuser'];
+  'registry_values', 'nls_loaded', 'kuser', 'processor_environment', 'kuser_cpu'];
 
 // The files of the boot set that the boot opens, in the order of their first
 // open (section 10): NLS (init_environment, then the server's
@@ -125,7 +118,7 @@ test('boot: wine-unix stops at LdrInitializeThunk (measured)', async (t) => {
   const state = Number(host.raw.tw_main_state());
   // LdrInitializeThunk from ntdll's export table, at ntdll's preferred base
   // (the PE optional header's ImageBase).
-  const dll = SET.dlls['ntdll.dll'];
+  const dll = SET.read(SET.lazy.find((f) => f.path === `${PE_DIR}/ntdll.dll`).source);
   const file = new DataView(dll.buffer, dll.byteOffset, dll.byteLength);
   const base = Number(file.getBigUint64(file.getUint32(0x3c, true) + 0x18 + 0x18, true));
   assert.equal(mem().getBigUint64(state + STATE_RIP, true), BigInt(base + exportRva(mem(), base, 'LdrInitializeThunk')));

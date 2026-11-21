@@ -3,13 +3,20 @@
 // in Node, from the static assets in the browser) and passes their bytes.
 //
 // - the prefix at its recorded path: its .reg files, the dosdevices
-//   symlinks and drive_c's directories (not drive_c's files);
+//   symlinks and drive_c's directories (not drive_c's files), and from M3
+//   the install copies: each drive_c file named like a closure PE file is a
+//   symlink to it in PE_DIR;
 // - Wine's install tree at the constant paths of section 8: the PE files the
 //   boot opens under PE_DIR, the data files (closure.json's data_files, the
 //   NLS files and wine.inf) under DATA_DIR;
 // - the programs, by DOS path on C: (C:\tempwind\hello.exe), in drive_c;
 // - overlay.reg, wineboot's per-boot keys (native/wine/prefix/overlay.reg),
-//   at OVERLAY_PATH, which the server loads right after user.reg.
+//   at OVERLAY_PATH, which the server loads right after user.reg;
+// - from M3, lazy nodes (lazy-node.mjs) for the boot-set manifest's lazy
+//   files (boot-set.json: every closure PE file, rebased, and closure.json's
+//   data_files), sized from the manifest and read whole on their first read.
+
+import { createLazyFile } from './lazy-node.mjs';
 
 /** Where init_paths finds the PE files (section 8). */
 export const PE_DIR = '/wine/lib/wine/x86_64-windows';
@@ -28,10 +35,16 @@ export const BOOT_DLLS = Object.freeze(['ntdll.dll', 'apisetschema.dll']);
  * @param {Record<string, Uint8Array>} set.prefixFiles  top-level prefix files by name (system.reg, user.reg, userdef.reg, ...)
  * @param {string[]} set.prefixDirs  the prefix's directories, relative (drive_c, drive_c/windows, ...)
  * @param {[string, string][]} set.prefixLinks  symlinks [relative path, target] (dosdevices/c:, ...)
- * @param {Record<string, Uint8Array>} set.dlls  PE files by name, for PE_DIR
- * @param {Record<string, Uint8Array>} set.data  data files by path relative to DATA_DIR (nls/locale.nls, wine.inf)
+ * @param {string[]} [set.installFiles]  the paths of drive_c's files, relative to the prefix
+ *   (drive_c/windows/system32/kernel32.dll, ...): each whose name is a lazy file's in PE_DIR
+ *   becomes a symlink to it (the install copies); the others are not written
+ * @param {Record<string, Uint8Array>} [set.dlls]  PE files by name, for PE_DIR, written up front (M2)
+ * @param {Record<string, Uint8Array>} [set.data]  data files by path relative to DATA_DIR (nls/locale.nls, wine.inf), up front (M2)
+ * @param {{path: string, size: number, source: string}[]} [set.lazy]  lazy files (the manifest's entries with `lazy`)
+ * @param {(source: string) => Uint8Array} [set.read]  loads a lazy file's `source` (relative to target/wine), whole
  * @param {Record<string, Uint8Array>} set.programs  programs by DOS path on C: (C:\tempwind\hello.exe)
  * @param {Uint8Array} set.overlay  native/wine/prefix/overlay.reg
+ * @returns {{files: number, bytes: number}} the lazy files loaded so far and their bytes, kept current
  */
 export function installBootSet(FS, set) {
   const prefix = set.prefixPath.replace(/\/+$/, '');
@@ -42,21 +55,67 @@ export function installBootSet(FS, set) {
     FS.symlink(target, `${prefix}/${path}`);
   }
   for (const [name, bytes] of Object.entries(set.prefixFiles)) FS.writeFile(`${prefix}/${name}`, bytes);
-  writeTree(FS, PE_DIR, set.dlls);
-  writeTree(FS, DATA_DIR, set.data);
+  writeTree(FS, PE_DIR, set.dlls ?? {});
+  writeTree(FS, DATA_DIR, set.data ?? {});
+  const loaded = { files: 0, bytes: 0 };
+  for (const f of set.lazy ?? []) {
+    if (!set.read) throw new Error('installBootSet: lazy files need set.read');
+    createLazyFile(FS, f.path, f.size, () => {
+      const bytes = set.read(f.source);
+      loaded.files++;
+      loaded.bytes += bytes.length;
+      return bytes;
+    });
+  }
+  // The install copies (wine-unix.md, section 8): Wine's loader finds a DLL
+  // only by its file in drive_c, then maps the builtin from PE_DIR instead.
+  // A symlink to the lazy node loads nothing extra, and an fd opened through
+  // it carries the node's own path, which the catalog matches. drive_c's
+  // files are never written otherwise, so a clash throws (EEXIST).
+  const pe = new Set((set.lazy ?? []).filter((f) => parent(f.path) === PE_DIR).map((f) => f.path));
+  for (const rel of set.installFiles ?? []) {
+    const target = `${PE_DIR}/${rel.slice(rel.lastIndexOf('/') + 1)}`;
+    if (pe.has(target)) FS.symlink(target, `${prefix}/${rel}`);
+  }
   FS.mkdirTree(parent(OVERLAY_PATH));
   FS.writeFile(OVERLAY_PATH, set.overlay);
   for (const [dosPath, bytes] of Object.entries(set.programs)) {
-    const m = /^[cC]:\\(.+)$/.exec(dosPath);
-    if (!m) throw new Error(`${dosPath}: a program's path must be a DOS path on C:`);
-    const path = `${prefix}/drive_c/${m[1].replaceAll('\\', '/')}`;
+    const path = drivePath(prefix, dosPath);
     FS.mkdirTree(parent(path));
     FS.writeFile(path, bytes);
   }
+  return loaded;
+}
+
+/** The MEMFS path of a program's DOS path on C: under the prefix. */
+export function drivePath(prefixPath, dosPath) {
+  const m = /^[cC]:\\(.*)$/.exec(dosPath);
+  if (!m) throw new Error(`${dosPath}: not a DOS path on C:`);
+  const rest = m[1].replaceAll('\\', '/').replace(/\/+$/, '');
+  return `${prefixPath.replace(/\/+$/, '')}/drive_c${rest ? '/' + rest : ''}`;
+}
+
+/**
+ * Validates boot-set.json (schema 1; wine-build.md, "The catalog").
+ * @returns {{path: string, source: string, size: number, sha256: string, lazy: boolean}[]}
+ */
+export function parseBootSetManifest(json) {
+  if (json?.schema !== 1) throw new Error(`boot-set.json: schema ${JSON.stringify(json?.schema)}, expected 1`);
+  if (!Array.isArray(json.files)) throw new Error('boot-set.json: files must be an array');
+  return json.files.map((f, i) => {
+    const w = `boot-set.json: files[${i}]`;
+    if (typeof f.path !== 'string' || !f.path.startsWith('/')) throw new Error(`${w}: path must be an absolute MEMFS path`);
+    if (typeof f.source !== 'string') throw new Error(`${w} (${f.path}): source must be a path relative to target/wine`);
+    if (!Number.isSafeInteger(f.size) || f.size < 0) throw new Error(`${w} (${f.path}): size must be a byte count`);
+    if (typeof f.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(f.sha256)) throw new Error(`${w} (${f.path}): sha256 must be 64 hex digits`);
+    return { path: f.path, source: f.source, size: f.size, sha256: f.sha256, lazy: f.lazy === true };
+  });
 }
 
 /** boot's flags (abi.md v5, "Host entries of the Unix side"). */
 export const BOOT_STOP_AT_ENTRY = 1;
+/** Runs the process to its exit (M3). */
+export const BOOT_RUN = 0;
 
 /**
  * Enters `boot` (section 8): writes argv into the host heap through the raw
@@ -64,8 +123,9 @@ export const BOOT_STOP_AT_ENTRY = 1;
  * its arguments) and calls boot through `promising`.
  * @param {object} host  a createUnixHost of wine-unix
  * @param {string[]} args  the program's DOS path, then its arguments
- * @param {number} [flags]  BOOT_STOP_AT_ENTRY, M2's only mode
- * @returns {Promise<number>} boot's result: 0 once stopped at the entry
+ * @param {number} [flags]  BOOT_STOP_AT_ENTRY (M2), or BOOT_RUN (M3)
+ * @returns {Promise<number>} boot's result: 0 once stopped at the entry; in
+ *   run mode the process's exit status, the full Windows status as an i32
  */
 export function boot(host, args, flags = BOOT_STOP_AT_ENTRY) {
   const argv = ['/wine/bin/wine', ...args];

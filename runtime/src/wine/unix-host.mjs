@@ -11,7 +11,7 @@
 //   `memory_grown` are library functions that call back here) and keeps the
 //   raw exports, which take and return BigInts;
 // - sets ENV in preRun: wine-unix.md section 8's defaults, then the caller's;
-// - makes fds 0-2 non-tty character devices that hand bytes to callbacks;
+// - makes fds 0-2 FIFOs (S_IFIFO, not a tty) that hand bytes to callbacks;
 // - exposes MEMFS (`FS`) and the glue's Module;
 // - enters a raw export through WebAssembly.promising (`call`);
 // - schedules the green threads (wine-unix.md, section 9): it resumes the
@@ -44,6 +44,9 @@ export const DEFAULT_ENV = Object.freeze({
 // Character-device majors for the three stdio devices (Emscripten's own
 // createDevice counts up from 64).
 const STDIO_MAJOR = 200;
+/** The file-type bits of st_mode, and a FIFO's (POSIX; Emscripten's values). */
+export const S_IFMT = 0o170000;
+export const S_IFIFO = 0o010000;
 
 /**
  * Instantiates a Unix-side module.
@@ -56,7 +59,14 @@ const STDIO_MAJOR = 200;
  * @param {(max: number) => Uint8Array|null} [opts.stdin]  bytes for fd 0; null = end of file
  * @param {(thread: number) => Promise<bigint>|bigint} [opts.greenBlock]  green_block in place of the scheduler (tests)
  * @param {(thread: number) => void} [opts.onGreenWake]  green_wake with opts.greenBlock
- * @param {(state: bigint) => number} [opts.run]  tw_run: a translated module's raw `run` (M3)
+ * @param {(state: bigint) => number} [opts.run]  tw_run: the bridge's raw `run` (M3)
+ * @param {Record<string, Function>} [opts.imports]  more `env` imports, replacing the defaults of
+ *   M3's imports (abi.md v5, "Host entries of the Unix side"): the bridge's raw exports for
+ *   tw_depth_get, tw_depth_set and tw_flags_materialize, and the host's tw_translate,
+ *   tw_image_mapped and tw_invalidate. Without them tw_flags_materialize and tw_translate stop
+ *   loudly, tw_depth_get and tw_depth_set keep a cell of the host's (0 unless set), and
+ *   tw_image_mapped and tw_invalidate do nothing, which is right for a host that links no
+ *   translated code (the boot and harness tests).
  * @param {() => void} [opts.onMemoryGrown]  after the module grew the memory
  * @param {WebAssembly.Memory} [opts.memory]  the process's memory, if it exists already
  */
@@ -81,6 +91,24 @@ export async function createUnixHost(opts) {
   const run = opts.run ?? ((state) => {
     throw new Error(`tw_run(0x${BigInt.asUintN(64, state).toString(16)}): no translated module (M3)`);
   });
+  const noBridge = (name) => () => {
+    throw new Error(`${name}: no bridge in this host (abi.md v5, "The bridge")`);
+  };
+  // Without a bridge, env.depth is a cell of this host's: green.c saves and
+  // restores it at every switch (abi.md v5, "Green threads"), and a host
+  // that links no translated code keeps it at 0.
+  let depthCell = 0;
+  const m3Imports = {
+    tw_depth_get: () => depthCell,
+    tw_depth_set: (d) => { depthCell = d; },
+    tw_flags_materialize: noBridge('tw_flags_materialize'),
+    tw_translate: (rip) => {
+      throw new Error(`tw_translate(0x${BigInt.asUintN(64, rip).toString(16)}): no translator in this host`);
+    },
+    tw_image_mapped: () => {},
+    tw_invalidate: () => {},
+    ...(opts.imports ?? {}),
+  };
 
   const Module = {
     wasmMemory: memory,
@@ -91,6 +119,7 @@ export async function createUnixHost(opts) {
       Object.assign(imports.env, {
         green_block: new WebAssembly.Suspending(greenBlock),
         tw_run: run,
+        ...m3Imports,
       });
       // Synchronous, as the spike: the caller compiled the module already.
       const instance = new WebAssembly.Instance(wasm, imports);
@@ -229,9 +258,15 @@ function createScheduler(getRaw, stderr, encoder) {
   };
 }
 
-// fds 0-2: non-tty character devices (wine-unix.md, section 8). No tty, so
-// isatty() is false, libc buffers stdout fully, and Wine passes them to the
-// server as plain handles.
+// fds 0-2: FIFOs (wine-unix.md, section 8, "stdio, as FIFOs"). Each is a
+// device node from mkdev whose mode is then set to S_IFIFO: MEMFS refuses
+// FIFO nodes, but I/O keeps going to the device's callbacks by rdev
+// (research.md, 2026-11-14). So fstat reports S_IFIFO and Windows sees pipes:
+// get_device_info reports FILE_DEVICE_NAMED_PIPE (unix/file.c L7215-7218),
+// GetFileType FILE_TYPE_PIPE (kernelbase/file.c L3297-3309), and msvcrt
+// marks the stream WX_PIPE (msvcrt/file.c L755-766), as a native run whose
+// output a pipe captures. No tty, so isatty() is false, and Wine passes them
+// to the server as plain handles (env.c L1363-1370).
 function createStdio(FS, { stdin, stdout, stderr }) {
   const device = (minor, path, ops, flags) => {
     let pending = null; // what ops.read returned beyond the last read's length
@@ -255,7 +290,8 @@ function createStdio(FS, { stdin, stdout, stderr }) {
         return length;
       },
     });
-    FS.mkdev(path, 0o666, dev);
+    const node = FS.mkdev(path, 0o666, dev);
+    node.mode = S_IFIFO | 0o666;
     return FS.open(path, flags);
   };
   const fds = [
