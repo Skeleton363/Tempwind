@@ -474,6 +474,28 @@ static const char *syscall_trace( void )
     return NULL;
 }
 
+/* Process exit's ends (section 8), each alone. abort_thread of the last
+ * thread is Wine's end for errors (unix/thread.c L1477): abort_process keeps
+ * its _exit, so the JS test sees Emscripten's exit status 1 and no
+ * tempwind: line. */
+static const char *abort_thread_exits( void )
+{
+    abort_thread( 1 );
+    return tw_fail( "abort_thread returned" );
+}
+
+/* NtTerminateProcess of the current process without RtlExitUserProcess's
+ * first call (unix/process.c L982) reaches tw_process_exit, which stops
+ * loudly outside boot. Without the hook it would end in _exit. */
+static const char *terminate_reaches_exit_hook( void )
+{
+    BYTE *state = new_state();
+    UINT64 args[2] = { (UINT64)(ULONG_PTR)NtCurrentProcess(), 0x25 };
+
+    do_syscall( state, "NtTerminateProcess", args, 2 );
+    return tw_fail( "NtTerminateProcess returned" );
+}
+
 static const struct tw_check checks[] =
 {
     { "dispatcher_page", dispatcher_page },
@@ -487,6 +509,8 @@ static const struct tw_check checks[] =
     { "syscall_trace", syscall_trace },
     { "stub_stops", stub_stops, TW_ALONE },
     { "unix_call_bad_code", unix_call_bad_code, TW_ALONE },
+    { "abort_thread_exits", abort_thread_exits, TW_ALONE },
+    { "terminate_reaches_exit_hook", terminate_reaches_exit_hook, TW_ALONE },
 };
 
 int tw_test_main( void )

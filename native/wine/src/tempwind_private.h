@@ -90,8 +90,9 @@ void tw_page_watch( const void *addr, size_t size, int on );
 /* boot.c (section 8): boot's flags, 0 (run) or BOOT_STOP_AT_ENTRY (1). */
 extern int tw_boot_flags;
 
-/* M3 WP5. boot.c (section 8): process exit, from exit_process and
- * abort_process (patch 0302); back to boot with the full Windows status. */
+/* M3 WP5. boot.c (section 8): process exit, from exit_process and from
+ * NtTerminateProcess's abort_process call (patch 0302); back to boot with
+ * the full Windows status. */
 _Noreturn void tw_process_exit( int status );
 
 /* M3 WP5. run.c (section 12): set by a host function that stops with

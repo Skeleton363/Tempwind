@@ -3,8 +3,8 @@
 // of section 11, on synthetic state blocks, with no guest code. The harness
 // is native/wine/tests/syscall.c; it starts the in-process server, so the
 // prefix directory and l_intl.nls go into MEMFS first. Checks that expect a
-// loud stop run alone in a fresh instance (TW_TEST_ONLY), and so does the
-// +syscall trace, with WINEDEBUG.
+// loud stop or an _exit run alone in a fresh instance (TW_TEST_ONLY), and so
+// does the +syscall trace, with WINEDEBUG.
 // Needs native/wine/build.sh's output in target/wine-unix (or TW_WINE_UNIX_DIR)
 // and tests/wine/prepare.sh's target/wine (or TW_WINE_DIR) for l_intl.nls.
 import { test } from 'node:test';
@@ -73,6 +73,8 @@ test('syscall: +syscall lines in Wine\'s format', async () => {
 for (const [check, line] of [
   ['stub_stops', 'tempwind: unsupported: syscall NtTraceEvent'],
   ['unix_call_bad_code', 'tempwind: unsupported: tw_unix_call_dispatcher: a code past ntdll\'s unix calls'],
+  // Process exit's hook in NtTerminateProcess (section 8): outside boot it stops.
+  ['terminate_reaches_exit_hook', 'tempwind: unsupported: tw_process_exit outside boot'],
 ]) {
   test(`syscall: ${check} stops loudly`, async () => {
     const { host, out } = await start({ TW_TEST_ONLY: check });
@@ -81,3 +83,23 @@ for (const [check, line] of [
     assert.ok(!/^done /m.test(out.stdout), `stdout: ${out.stdout}`);
   });
 }
+
+// abort_thread of the last thread is Wine's end for errors (section 8):
+// abort_process keeps its _exit, so boot's caller sees a rejection with
+// Emscripten's ExitStatus, not the exit hook. Emscripten's Node quit_ also
+// sets process.exitCode, which this test restores.
+test('syscall: abort_thread ends in _exit with its status, not in the exit hook', async () => {
+  const saved = process.exitCode;
+  try {
+    const { host, out } = await start({ TW_TEST_ONLY: 'abort_thread_exits' });
+    await assert.rejects(host.call('tw_test_main'), (err) => {
+      assert.equal(err?.name, 'ExitStatus', `${err?.stack ?? err}\n${out.stderr}`);
+      assert.equal(err.status, 1);
+      return true;
+    });
+    assert.ok(!/^tempwind:/m.test(out.stderr), `stderr: ${out.stderr}`);
+    assert.ok(!/^done /m.test(out.stdout), `stdout: ${out.stdout}`);
+  } finally {
+    process.exitCode = saved;
+  }
+});

@@ -5,7 +5,8 @@
  * signal_start_thread (signal_wasm64.c) has built the main thread's start
  * state, BOOT_STOP_AT_ENTRY comes back here, and run mode (flags 0) enters
  * tw_run_loop (run.c). In run mode the process's exit comes back here too:
- * exit_process and abort_process call tw_process_exit (patch 0302).
+ * exit_process, and NtTerminateProcess before its abort_process call, call
+ * tw_process_exit (patch 0302).
  *
  * Copyright 2026 the Tempwind authors
  *
@@ -86,10 +87,12 @@ _Noreturn void tw_boot_stopped( void )
     longjmp( boot_stop, BOOT_STOPPED );
 }
 
-/* Process exit (patch 0302): exit_process and abort_process call it with the
- * full Windows status, before get_unix_exit_code cuts it. Back to boot,
- * which returns the status; the longjmp unwinds the translated frames on the
- * wasm stack as a wasm exception. The instance is finished after it. */
+/* Process exit (patch 0302): exit_process, and NtTerminateProcess before its
+ * abort_process call, call it with the full Windows status, before
+ * get_unix_exit_code cuts it. Back to boot, which returns the status; the
+ * longjmp unwinds the translated frames on the wasm stack as a wasm
+ * exception. The instance is finished after it. abort_thread's error ends
+ * keep abort_process's _exit, which rejects boot's promise. */
 _Noreturn void tw_process_exit( int status )
 {
     if (!booting) tw_unsupported( "tw_process_exit outside boot" );
