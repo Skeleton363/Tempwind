@@ -868,10 +868,16 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 
 - **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
 - **The coordinator** reviews each diff, checks each report against its contract sections, merges each track into the PR branch and reads the context after each merge. After WP2 and WP4 merge it pushes so `wine-unix.yml` publishes a release, then bumps `tests/targets/wine-unix.lock`.
+- **Settled in the briefs (2026-11-23):**
+  - WP2 also adds `7zz.exe` and `coremark.exe` to `catalog.mjs`'s `PROGRAMS` and their fetch to `prepare.sh`, since its first light needs 7zz's AOT module; WP3 adds `basic.exe`, `l2_threads.exe` and `l2_suspend.exe` to the same list. The coordinator resolves the merge.
+  - `l2_threads` and `l2_suspend` join `programs.test.mjs` when they pass, by WP1 and WP4; WP3 writes them and their `.expected`, checked under native Wine 11 and in `ci.yml`'s Windows job.
+  - The matrix keeps Phase 1's run as `--mode shim` until WP6, so `ci.yml`'s Linux matrix job stays green; `--mode translated` is our Wine, in its own `wine-unix.yml` job, red until WP5.
+  - **The worktree tool makes agents' worktrees from `main`, not from the branch head.** WP1 and WP2 stopped at their base check (`c9a3b35`); the coordinator fast-forwarded WP2's worktree and resumed it, and relaunched WP1 (its empty worktree had been cleaned up). Later briefs carry the fast-forward step.
 
 ### Checkpoints (trial 6)
 - **At the plan's approval:** 363k tokens (51 requests, 11.3M cache reads for the coordinator). The planning stretch: $14.48 and 45.8M cache reads, 35.8M of them the four agents'.
 - **After the compaction:** 110k tokens (2026-11-23).
+- **After the contracts and the first three briefs:** 369k tokens; segment 1 so far 101 requests, mean 253k, 25.3M cache reads. Writing the contracts again took the most, as in M3. A compaction was asked for, with WP1-WP3 running.
 
 ## What works
 
