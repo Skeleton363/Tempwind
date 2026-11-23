@@ -820,6 +820,59 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
     The main tree now has the spike, `pe`, `native` and `wine-spike` inputs, built while WP6 ran.
 - **Next:** `/milestone-close`, once CI is green on `f2c2c80`.
 
+## M4: Console programs on Wine (in progress)
+
+Session 4 started fresh from M3's hand-off, on `claude/brave-lovelace-hurayr` from `main` = `c9a3b35` (PR #16 merged). The research pass is in `docs/dev/research.md`, "2026-11-21: Phase 2 M4, console programs". Done when: green threads; win32u loads; CoreMark validates and the 7-Zip matrix gives 138/138 on Wine; both benchmarks are tracked on Wine; the JS shim is deleted.
+
+### Decisions taken when planning M4 (2026-11-21)
+**The owner's:**
+- **Deferred:** services to Phase 4 (with child processes); `\KnownDlls` to M5, if conformance shows the difference, with ranged lazy reads; `KeUserModeCallback` to Phase 3's desktop, or to M5 if a conformance unit needs it first. Their loud stops stay.
+- **Phase 1's loader and run loop go with the shim:** `process.mjs`, `run-pe.mjs`, `hostcall.mjs`, `threads.mjs` and `vfs-host.mjs`, with `runtime/src/win32/`.
+
+**Ours** (each is a contract line in `wine-unix.md` v3, with its Wine citation):
+1. **Green threads in C:** `pthread_create` records the routine, takes Wine's 1 MiB kernel stack from `pthread_attr_setstack`, counts the thread runnable and calls the import `green_spawn`; JS starts it with the raw export `tw_thread_main` after the current call returns. `pthread_exit` `longjmp`s to `tw_thread_main`; `pthread_join` waits for the end. Each thread gets its frame record and state block. The main thread parks when it exits with others alive. The schedule stays deterministic FIFO; `green_wake` is idempotent.
+2. **Process exit from any thread:** on the main thread, the M3 `longjmp` to `boot`; on another, a `longjmp` to its `tw_thread_main`, which returns `TW_THREAD_PROCESS_EXIT`, and JS settles with `tw_exit_status()`, clears its timers and resumes nothing. A rejection of any thread's promise settles the process too.
+3. **Signals, delivered at the wait:** `send_thread_signal` marks the signal pending and wakes the target, which handles it once its waiter is unlinked, at an unblock, or before the dispatcher returns. SIGQUIT → `abort_thread(0)`; SIGUSR1 → `usr1_handler`'s in-syscall branch (suspension, another thread's context, the system-APC kick). Masks per green thread.
+4. **User APCs:** `call_user_apc_dispatcher` ported against the frame record, returning by the new-context path.
+5. **win32u's Unix side** in the same module, without FreeType, fontconfig, Vulkan or EGL; patch 0107's static unix library table in place of `dlopen`; the unix-call dispatcher accepts win32u's table; table 1's 478 prototyped entries get typed wrappers and its 1,062 stubs loud stops; table 1 is served once `KeAddSystemServiceTable` registers it.
+6. **Session shared memory = one memory:** the server's session blocks are ranges of one 16 MiB host-heap reservation (patch 0203); win32u's `map_shared_session_block` takes `tw_session_view`. No guest view.
+7. **Timing:** no ticker Worker. Every syscall refreshes KUSER's clock, and QPC and `GetProcessTimes` are syscalls. WP5 checks for a `GetTickCount` spin.
+8. **Host files:** `createWineProcess` takes `files` and offers `collect(dir)`; `run-wine.mjs --dir HOST` mounts HOST at `C:\work`, as Phase 1's `--dir`. The matrix's `translated` mode means our Wine.
+9. **Programs:** `prepare.sh` fetches 7zz.exe and coremark.exe; the catalog adds them, basic.exe, `l2_threads` and `l2_suspend`; `programs.test.mjs` adds basic.exe, the two new L2 programs and CoreMark with a small fixed count. 7zz's test is the matrix.
+10. **Benchmarks on Wine:** `coremark.mjs` and `sevenzip.mjs` through the Wine host with Phase 1's arguments; `bench.yml` prepares `target/wine` and records `"host": "wine"`; ratio warnings compare lines of the same host.
+11. **The shim's deletion** comes last (WP6), with Wine-level replacements or named coverage for the translator features its tests covered (`memory-checks`, `pe`, `l2`, `guestcall`).
+12. **Deferred** as the owner decided (above); `wine-unix.md` section 13 records each.
+13. **Leftovers:** `depth` across a switch (WP1's test); `process_sigkill` unreachable (WP1's test); `get_image_map_address` under the mutex stays harmless.
+
+### Decided while writing the contracts (2026-11-23)
+The contracts are `wine-unix.md` v3, `abi.md` v5's M4 parts, `runtime.md` (the shim's removal, benchmarks on Wine), `wine-build.md` ("The catalog", "Where it is built") and `tests/sevenzip/README.md`. Each Wine line they cite was read again in the tarball first. Writing them settled these details:
+- **WP1 delivers SIGQUIT,** not WP4. `ExitProcess` with another thread alive kills it through the server, and a thread outside a server wait (a non-alertable `Sleep`, which sleeps in `select`) gets SIGQUIT (`server/thread.c` L1608-1631). Today that is `exit(0)`, so neither process exit nor a thread's kill works without it. WP4 keeps SIGUSR1 and the masks.
+- **Wine never joins the main thread:** its `pthread_id` stays 0, since only `start_thread` sets it (`unix/thread.c` L1128), and `exit_thread` skips the join for 0 (L1507). The planned "join of a parked main returns at once" isn't needed; such a join stops loudly instead.
+- **The scheduler gets its own stack:** a thread that ended leaves the stack pointer in its region, which Wine frees and may map again. JS's direct raw calls (`tw_next_timeout`, `tw_run_timeouts`, `tw_exit_status`) run on a 64 KiB region JS takes from `malloc`.
+- **The programs' expected AOT links** are the modules our boot maps, not `closure.json`'s lists: basic.exe's native trace caught a prefix's first boot (54 modules, wineboot and services among them).
+- **Interrupted waits return as interrupted calls** (`EINTR`, or a spurious condition wakeup), and Wine's loops carry on (`unix/sync.c` L2463, `unix/server.c` L377). Re-arming a condition wait inside a handler could lose a signal.
+- **`tw_unixlib_count`** joins `tw_unixlib_funcs`, so the unix-call dispatcher can check a code against win32u's table.
+- **Declared before the agents start:** `green_spawn` (`library.js`, `imports.txt`), and `tw_thread_main`, `tw_exit_status`, `TW_THREAD_PROCESS_EXIT`, `tw_unixlib_funcs`, `tw_unixlib_count`, `tw_session_view` and `TW_SESSION_CAP` (`tempwind_private.h`).
+
+### Work packages
+At most two deep-workers at once and three subagents in all. Each brief names its files, contract sections, tests and WIP track `m4-wpN-wip`, and asks the agent to check its worktree base first. This table is the only copy kept current.
+
+| WP | Agent | When | Owns | Done when |
+|---|---|---|---|---|
+| WP1: threads | deep-worker | after the contracts | decisions 1, 2 and 13, and SIGQUIT's delivery: `green.c`, `green_pthread.c`, `boot.c`, `signal_wasm64.c`'s thread setup, 0201's `send_thread_signal` hunk (SIGQUIT), the `unix-host.mjs` scheduler (spawn, scheduler stack, settling), `native/wine/tests/thread.c` and `tests/wine/thread.test.mjs` | `wine-unix.md` section 10's `thread` checks; `l2_threads` matches native on Wine |
+| WP2: win32u | deep-worker | after the contracts, in parallel | decisions 5 and 6: `build.sh`, `config.h`, `rename-win32u.h`, `gen-syscalls.mjs` (table 1), `src/unixlibs.c`, the dispatchers' table-1 and unix-call parts, patches 0107, 0203 and 04xx, the `syscall` and `session` checks | the gates clean; section 10's WP2 checks; 7zz.exe with no arguments on Wine (`prepare.sh --all`) prints native Wine 11's text, exits 0, every image linked, no `tempwind:` line |
+| WP3: tests and CI | builder | after the contracts, in parallel | decisions 8, 9 and 10: host files (`wine-process.mjs`, `run-wine.mjs --dir`), the matrix's and the benches' Wine mode, `catalog.mjs` and `prepare.sh`, `programs.test.mjs`, `tests/native/l2_threads.c` and `l2_suspend.c` with `.expected` (deterministic, checked under native Wine 11 here and on Windows in CI), `wine-unix.yml` (a separate matrix job), `bench.yml`, `commands.md` | unit tests for copy-in, collect and mtimes; the runner and the benches run end to end on today's programs; CI wired (red until WP5) |
+| WP4: signals and APCs | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
+| WP5: first light and the matrix | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
+| WP6: delete the shim | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
+
+- **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
+- **The coordinator** reviews each diff, checks each report against its contract sections, merges each track into the PR branch and reads the context after each merge. After WP2 and WP4 merge it pushes so `wine-unix.yml` publishes a release, then bumps `tests/targets/wine-unix.lock`.
+
+### Checkpoints (trial 6)
+- **At the plan's approval:** 363k tokens (51 requests, 11.3M cache reads for the coordinator). The planning stretch: $14.48 and 45.8M cache reads, 35.8M of them the four agents'.
+- **After the compaction:** 110k tokens (2026-11-23).
+
 ## What works
 
 | Item | Evidence |

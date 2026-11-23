@@ -1,4 +1,4 @@
-# 7-Zip command matrix (M5)
+# 7-Zip command matrix (Phase 1 M5; on Wine from Phase 2 M4)
 
 Phase 1's goal: the 64-bit 7-Zip CLI (`7zz.exe`, the pinned targets release) compresses, tests, lists, extracts and hashes exactly like native Windows. This directory holds the matrix that proves it.
 
@@ -15,7 +15,7 @@ Phase 1's goal: the 64-bit 7-Zip CLI (`7zz.exe`, the pinned targets release) com
 **Modes:**
 - **native:** runs `7zz.exe` directly (Windows).
 - **wine:** runs it through `wine64`.
-- **translated:** uses `run-pe` with `--dir` on the work directory, the AOT module and plan from `translate-pe`, `--rt` and `--fp`. Each step is one process.
+- **translated:** from Phase 2 M4, runs `7zz.exe` on our Wine: `runtime/src/wine/run-wine.mjs --dir` on the work directory (`wine-unix.md` v3, section 8, "Host files"), with `target/wine`'s catalog (`TW_WINE_DIR`) and both memory checks on. Each step is one process, so one fresh instance. In Phase 1 it used `run-pe` with `--dir`, the AOT module and plan from `translate-pe`, `--rt` and `--fp`; that path goes with the shim.
 
 All modes use relative paths inside the work directory, so no host path shows in an output.
 
@@ -61,10 +61,10 @@ Its total size is about 300 KiB. Every file and directory gets a fixed mtime on 
 
 - **Generating them:** `matrix.mjs --mode wine` in a session writes `expected/`. The files are small (archives of a ~300 KiB tree).
 - **windows-x64 (gating):** runs `--mode native` on windows-2025 and compares with `expected/`. Real Windows is the reference of truth, so when it disagrees, the expected files are fixed from its results.
-- **linux-x64 (gating):** runs `--mode translated` in Node and compares with `expected/`.
+- **linux-x64 (gating):** runs `--mode translated` in Node and compares with `expected/`. From Phase 2 M4 that is the `wine-unix` workflow's own matrix job, on the Unix side and catalog that workflow builds (`wine-build.md`, "Where it is built").
 - **`--mode wine`:** a non-gating cross-check where Wine is installed.
-- **Time budget:** the translated matrix stays under about five minutes in CI.
+- **Time budget:** the translated matrix stays under about five minutes in CI. Phase 2 M4 measures it on Wine, where each step boots a fresh instance.
 
 ## `7z b`
 
-`.github/workflows/bench.yml` runs `7zz b -mmt1` with fixed parameters next to CoreMark. It runs translated in Node and natively under wine64 on the same runner (the ratio of the "Tot:" ratings), plus a windows-2025 run for the record. Main appends one JSON line to `sevenzip.jsonl` on the `bench-data` branch. Pull requests warn, never fail, when the ratio is more than 10 % worse.
+`.github/workflows/bench.yml` runs `7zz b 2 -mmt1 -md18` next to CoreMark. It runs translated in Node, on our Wine from Phase 2 M4 (lines with `"host": "wine"`), and natively under wine64 on the same runner (the ratio of the "Tot:" ratings), plus a windows-2025 run for the record. Main appends one JSON line to `sevenzip.jsonl` on the `bench-data` branch. Pull requests warn, never fail, when the ratio is more than 10 % worse than the last line of the same host.

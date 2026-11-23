@@ -19,6 +19,7 @@ env.tw_flags_materialize       the bridge's flags_materialize: the syscall frame
 env.tw_translate               translate at run time and link (M3, section 12)
 env.tw_image_mapped            an image was mapped, so JS links its AOT module (M3, section 6)
 env.tw_invalidate              remove translations before an unmap or remap of code pages (M3, section 6)
+env.green_spawn                C made a green thread; JS starts it with tw_thread_main (M4, section 9)
 
 # ---- Files, directories, pipes: Emscripten's FS (MEMFS and the host's stdio devices) ----
 env.__syscall_chdir            server and loader change the cwd (section 8)

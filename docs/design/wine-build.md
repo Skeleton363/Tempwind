@@ -130,7 +130,7 @@ They are built from `wine.lock`'s release and the translator at the commit: by `
 ### The catalog
 - **One AOT module per PE file:**
   - each closure DLL, rebased or at its own base;
-  - each test program: hello, l2_int, l2_crt and l2_float.
+  - each test program: hello, l2_int, l2_crt and l2_float, and from M4 basic, l2_threads, l2_suspend, coremark and 7zz (`tests/wine/catalog.mjs`'s `PROGRAMS`).
 
   Each is translated with `x64wasm-cli translate-pe --shared --null-check --store-check` (`translator.md`, "Wine processes"). `apisetschema.dll` is data and gets none.
 - **`catalog.json` schema 1:**
@@ -167,6 +167,8 @@ They are built from `wine.lock`'s release and the translator at the commit: by `
 ### Where it is built
 - **In a session:** `tests/wine/prepare.sh` builds the catalog for the modules the test programs load (`closure.json`'s `roots`), or for the whole closure with `--all`.
 - **In CI:** `wine-unix.yml` builds the whole closure and compiles every module in V8 (Node 24, `new WebAssembly.Module`). That is the translation gate, and a failure names the file. Then it runs the programs test in Node, and from M3's browser work package hello.exe in Chromium.
+  - **From M4** a separate job runs the 7-Zip matrix on our Wine (`tests/sevenzip/README.md`) from the same build, so the programs job stays short and a matrix failure is reported on its own.
+  - `bench.yml` prepares `target/wine` the same way, from the `wine.lock` and `wine-unix.lock` releases, for the benchmarks (`runtime.md`, "Benchmarks").
 
 ## The prefix
 - **How it is made:** with the native build installed at its final path, `/opt/wine-11.0`: `WINEPREFIX=$HOME/wine-prefix WINEDEBUG=-all /opt/wine-11.0/bin/wine wineboot --init`, then `wineserver -w`.

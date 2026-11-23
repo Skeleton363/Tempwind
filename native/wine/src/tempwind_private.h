@@ -104,4 +104,39 @@ extern const char *tw_host_stop_reason;
  * view (size 0: none), which the run loop passes to tw_translate. */
 unsigned int tw_exec_range( uint64_t addr, uint64_t *base, uint64_t *size );
 
+/* ---- M4 (wine-unix.md v3; abi.md v5, "Green threads" and "Host entries of
+ * the Unix side"). Declared before the work packages start; a package that
+ * needs more appends below, each with its reason. ---- */
+
+/* Import (library.js): C made the green thread `thread`, whose shadow stack
+ * is [bottom, top); JS starts it after the current call into the module
+ * returns (section 9). */
+void green_spawn( int32_t thread, uint64_t top, uint64_t bottom );
+
+/* green_pthread.c (section 9): raw exports. tw_thread_main runs a spawned
+ * thread on its own stack, entered through WebAssembly.promising; it returns
+ * 0 when the thread ended, TW_THREAD_PROCESS_EXIT when the process exited on
+ * it (section 8). tw_exit_status gives that exit's full Windows status. */
+#define TW_THREAD_PROCESS_EXIT 1
+int32_t tw_thread_main( int32_t thread );
+int32_t tw_exit_status( void );
+
+/* unixlibs.c (section 2, patch 0107): the static unix library table, in
+ * place of dlopen. tw_unixlib_funcs returns the __wine_unix_call_funcs of
+ * the library named by unix_path's file name; a wow request or a library not
+ * in the table stops loudly. tw_unixlib_count returns the entry count of a
+ * table tw_unixlib_funcs returned, and 0 for any other handle (the unix-call
+ * dispatcher, section 11). */
+const void *tw_unixlib_funcs( const char *unix_path, int wow );
+unsigned int tw_unixlib_count( const void *funcs );
+
+/* server/mapping.c (section 7, patch 0203): the session's shared memory, one
+ * reservation of TW_SESSION_CAP bytes in the host heap. tw_session_view
+ * returns the address of offset in it and sets *size to the bytes from there
+ * to the reservation's end; past the cap, or before the server has set the
+ * session up, it stops loudly. win32u's map_shared_session_block uses it
+ * (04xx). */
+#define TW_SESSION_CAP ((size_t)16 << 20)
+void *tw_session_view( size_t offset, size_t *size );
+
 #endif /* TEMPWIND_PRIVATE_H */

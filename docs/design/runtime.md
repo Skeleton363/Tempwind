@@ -6,6 +6,11 @@ What lives where:
 - The loader, linking, the host-call protocol and run-time translation stay for later phases. In Phase 2, Wine's PE side calls into the host where the shim is now.
 - The shim exists only for Phase 1: Wine replaces it in Phase 2.
 
+**Phase 2 M4 deletes the shim** (the owner's decision of 2026-11-21, `docs/status/phase-2.md`). Wine's PE side and the Wine host (`runtime/src/wine/`, `wine-unix.md` v3) run every program instead.
+- **Deleted, with their tests:** the shim (`runtime/src/win32/`) and Phase 1's loader and run loop: `process.mjs`, `run-pe.mjs`, `hostcall.mjs`, `threads.mjs` and `vfs-host.mjs`. The work package that deletes them (M4's WP6) also cuts this file down to what stays.
+- **What stays:** the Linker (`link.mjs`), the run-time translator and floating-point hosts (`rt.mjs`, `fp.mjs`), `plan.mjs`, `memory.mjs`, `guest-memory.mjs` and `abi.mjs`, and the spike and selftest hosts (`run.mjs`, `node-host.mjs`, `browser-host.mjs`, `worker.mjs`). `requestFlags` moves from `process.mjs` to `rt.mjs`.
+- **Until then** the sections below describe Phase 1's shim as it was.
+
 ## Pieces
 
 | Piece | Job |
@@ -414,6 +419,8 @@ Integer-only C programs, built with MinGW with CRT startup included: `l2_int.c` 
 - the translated 7-Zip matrix as the acceptance test.
 
 ## Benchmarks (M4)
+
+**On Wine from Phase 2 M4:** both benchmarks run their translated side through the Wine host (`run-wine.mjs`, with the catalog's AOT modules and both memory checks, `wine-unix.md` v3), with Phase 1's arguments: CoreMark `0x0 0x0 0x66 0`, and `7zz.exe b 2 -mmt1 -md18`. Each JSON line gains `"host": "wine"`; Phase 1's lines have no `host` and were the shim's. `bench.yml` fetches the `wine.lock` and `wine-unix.lock` releases and prepares `target/wine` before it runs them, and on pull requests it compares the ratio only with the last line of the same host. The rest of this section is Phase 1's, and holds for the native sides and the records.
 
 `tests/bench/coremark.mjs` translates `coremark.exe` (all entries), runs it translated in Node with `0x0 0x0 0x66 0`, and natively under wine64 with the same arguments. Iteration count 0 makes CoreMark calibrate itself to a run of at least 10 seconds, so a valid run prints "Correct operation validated". The script prints one JSON line with:
 - the commit and the date;
