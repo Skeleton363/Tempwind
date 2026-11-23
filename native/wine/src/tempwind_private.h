@@ -44,19 +44,24 @@ void tw_invalidate( uint64_t base, uint64_t size );
 void tw_run_loop( uint64_t state );
 
 /* green_pthread.c: a green thread as the pthread layer sees it (section 9).
- * M2 has one, the main thread. */
+ * M2 has one, the main thread; M4 adds the spawned ones, with their signal
+ * state (green.c delivers it). */
 #define GREEN_KEYS_MAX 128
+struct green_waiter;
 struct green_thread
 {
     int32_t id;               /* the id green_block and green_wake carry */
     int mutexes_held;         /* suspending while > 0 is a bug */
     void *keys[GREEN_KEYS_MAX];
+    /* M4 (section 9, "Signals"): bit sig - 1 of each */
+    uint64_t sig_pending;
+    uint64_t sig_blocked;     /* the thread's mask (WP4); SIGQUIT is never blocked */
+    struct green_waiter *waiter;  /* the wait it is in, which a signal ends */
 };
 extern struct green_thread *green_current;
 
 /* green.c (section 9). */
 int64_t green_switch( void );  /* the only switch point, around green_block */
-struct green_waiter;
 struct green_queue             /* all zero is an empty queue */
 {
     int waiters;
@@ -138,5 +143,44 @@ unsigned int tw_unixlib_count( const void *funcs );
  * (04xx). */
 #define TW_SESSION_CAP ((size_t)16 << 20)
 void *tw_session_view( size_t offset, size_t *size );
+
+/* M4 WP1 (wine-unix.md v3, sections 7 and 9), appended: what green.c,
+ * green_pthread.c, boot.c, signal_wasm64.c and patch 0201's ptrace.c hunk
+ * call across files. */
+
+/* green.c: signals. green_signal marks sig pending on the green thread with
+ * that id and wakes it if it waits; 1, or 0 when no such green thread is
+ * alive (send_thread_signal, section 7). green_deliver_signals handles the
+ * running thread's pending signals that its mask doesn't block, at the
+ * delivery points; it returns 1 when a handler ran and returned.
+ * green_runnable_add counts spawned threads that have yet to start as
+ * runnable, for sched_yield. green_parked is the parked main thread, for the
+ * deadlock report. */
+int inproc_thread_signal( int tid, int sig );
+int green_deliver_signals( void );
+void green_runnable_add( int count );
+extern struct green_thread *green_parked;
+
+/* green_pthread.c: the live green thread with that id, or NULL; whether the
+ * running thread is the main one; process exit on a thread other than the
+ * main one (tw_process_exit): records the status and longjmps to the
+ * thread's tw_thread_main, which returns TW_THREAD_PROCESS_EXIT. */
+struct green_thread *green_thread_by_id( int32_t id );
+int green_is_main( void );
+_Noreturn void green_thread_process_exit( int status );
+
+/* signal_wasm64.c: the handler of a delivered signal (SIGQUIT: abort_thread,
+ * as quit_handler); it returns only for a handler that returns (WP4). */
+void tw_handle_signal( int sig );
+
+/* signal_wasm64.c: NULL in the real module. A test harness sets it to run a
+ * C routine in place of the guest entry of a thread signal_start_thread
+ * starts (entry and arg as NtCreateThreadEx got them, and the thread's state
+ * block); the routine ends the thread itself, through Wine. */
+extern void (*tw_thread_start_hook)( void *entry, void *arg, void *state );
+
+/* patch 0201 (server/ptrace.c): the server's side of a thread's end, the
+ * hang-up thread_poll_event sees natively (section 7, "A thread's end"). */
+void inproc_thread_hangup( int tid );
 
 #endif /* TEMPWIND_PRIVATE_H */

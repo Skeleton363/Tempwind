@@ -30,8 +30,16 @@ the signals and main_loop don't run.
   timeout skips the registry's periodic save.
 - Loud stops: main_loop, receive_fd (only main_loop reads msg_fd), a
   partial reply write (only main_loop would deliver POLLOUT), and
-  send_thread_signal of anything but SIGQUIT, which exits (M2: one
-  thread, as quit_handler's abort_thread(0) of the last thread).
+  send_thread_signal of anything but SIGQUIT.
+- Threads (server/ptrace.c, M4): send_thread_signal sends SIGQUIT to the
+  green thread whose id is the thread's unix_tid (inproc_thread_signal:
+  pending, and a wake), which handles it with abort_thread(0) as
+  quit_handler does. Its callers (wine-unix.md, section 7): kill_thread
+  (SIGQUIT, server/thread.c L1608-1631), stop_thread and queue_apc
+  (SIGUSR1, which stops), propagate_console_signal_cb (unreachable: no
+  conhost). inproc_thread_hangup is the hang-up of a thread's
+  request pipe that main_loop would see (thread_poll_event), called when
+  a green thread ends.
 - The declarations shared by the server and Tempwind's src/ are at the
   end of server/file.h.
 
@@ -275,20 +283,48 @@ diff --git a/server/mapping.c b/server/mapping.c
 diff --git a/server/ptrace.c b/server/ptrace.c
 --- a/server/ptrace.c
 +++ b/server/ptrace.c
-@@ -255,6 +255,18 @@
+@@ -250,11 +250,46 @@
+ {
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/* Tempwind (wine-unix.md, section 7): the green threads, found by unix_tid,
++ * which is the green thread's id ("Which green thread"). Defined in
++ * native/wine/src/green.c: */
++extern int inproc_thread_signal( int tid, int sig );
++
++/* A thread's end (section 7): its client closed the request pipe and its
++ * green thread ends. What thread_poll_event (thread.c) does natively when
++ * main_loop sees the hang-up, for the thread whose unix_tid is tid, unless
++ * the server killed it already. Called by the green layer's pthread_exit. */
++void inproc_thread_hangup( int tid )
++{
++    struct thread *thread = get_thread_from_tid( tid );
++
++    if (!thread || thread->state == TERMINATED) return;
++    grab_object( thread );
++    kill_thread( thread, 0 );
++    release_object( thread );
++}
++#endif
++
+ /* send a Unix signal to a specific thread */
+ int send_thread_signal( struct thread *thread, int sig )
  {
      int ret = -1;
  
 +#ifdef __EMSCRIPTEN__
-+    /* Tempwind (wine-unix.md, section 7): no Unix signals in-process. SIGQUIT
-+     * ends the thread, as the client's quit_handler does with abort_thread(0);
-+     * M2 has one thread, so the process exits. Any other signal stops. */
-+    if (sig == SIGQUIT)
-+    {
-+        if (debug_level) fprintf( stderr, "%04x: *killed* by SIGQUIT: the process exits\n", thread->id );
-+        exit( 0 );
-+    }
-+    tw_unsupported( "send_thread_signal of a signal other than SIGQUIT (in-process server, M4)" );
++    /* Tempwind (wine-unix.md, sections 7 and 9): no Unix signals in-process.
++     * SIGQUIT goes to the target's green thread, pending, and wakes it if it
++     * waits; the thread handles it at its next delivery point with
++     * abort_thread(0), as quit_handler does. 1 as a tkill that reached a live
++     * thread; 0 when its green thread has ended or isn't known yet (unix_tid
++     * -1), as below. Any other signal stops (M4 WP4 takes SIGUSR1). */
++    if (sig != SIGQUIT)
++        tw_unsupported( "send_thread_signal of a signal other than SIGQUIT (in-process server, M4)" );
++    ret = thread->unix_tid != -1 && inproc_thread_signal( thread->unix_tid, sig );
++    if (debug_level && ret) fprintf( stderr, "%04x: *sent signal* %s\n", thread->id, get_signal_name( sig ));
++    return ret;
 +#endif
 +
      if (thread->unix_tid != -1)

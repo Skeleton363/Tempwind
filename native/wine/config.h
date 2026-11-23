@@ -103,4 +103,11 @@
 /* Builtins. */
 #define HAVE___BUILTIN_POPCOUNT 1
 
+/* M4 WP1 (wine-unix.md v3, section 7, "Which green thread"): get_unix_tid
+ * (unix/server.c L1527-1549) returns the green thread's id, which
+ * native/wine/src/green_pthread.c defines; FreeBSD's <pthread_np.h> would
+ * declare it, and no such header exists here. */
+#define HAVE_PTHREAD_GETTHREADID_NP 1
+int pthread_getthreadid_np( void );
+
 #endif /* __WINE_CONFIG_H */
