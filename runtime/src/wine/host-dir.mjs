@@ -39,15 +39,14 @@ export function loadHostDir(hostDir, under = 'work') {
       const key = nameKey(ent.name);
       if (seen.has(key)) throw new Error(`${hp} differs from ${seen.get(key)} only in case`);
       seen.set(key, ent.name);
+      if (!ent.isDirectory() && !ent.isFile()) throw new Error(`${hp} is neither a file nor a directory`);
       const st = fs.statSync(hp, { bigint: true });
       const r = `${rel}/${ent.name}`;
       if (ent.isDirectory()) {
         out.push({ path: r, dir: true, mtime: mtimeMs(st) });
         load(hp, r);
-      } else if (ent.isFile()) {
-        out.push({ path: r, bytes: new Uint8Array(fs.readFileSync(hp)), mtime: mtimeMs(st) });
       } else {
-        throw new Error(`${hp} is neither a file nor a directory`);
+        out.push({ path: r, bytes: new Uint8Array(fs.readFileSync(hp)), mtime: mtimeMs(st) });
       }
     }
   };
