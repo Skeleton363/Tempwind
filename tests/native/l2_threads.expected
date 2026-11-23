@@ -1,0 +1,63 @@
+return: 7
+ExitThread: 9
+_beginthreadex: 11
+running: 259
+held: 13
+wait all threads: 0
+exit code sum: 303
+wait any, none set: 258
+wait any, #1 set: 1
+wait any again (auto-reset): 258
+wait all, 2 of 3: 258
+wait all, 3 of 3: 0
+wait all consumed them: 258
+pings: 5
+ping after the wait: 258
+through before set: 0
+join: 0
+through: 3
+still set: 0
+after reset: 258
+join: 0
+count: 400
+try from another thread, held twice: 0
+try, held once: 0
+try, free: 1
+join: 0
+count: 150
+probe, owned twice: 258
+release 1: 1
+probe, owned once: 258
+release 2: 1
+blocked thread got it: 0
+release unowned: 0 error 288
+release 3: 1 previous 0
+join: 0
+got: 3
+empty: 258
+release 1: 1 previous 0
+release 3 over the maximum: 0 error 298
+take the one: 0
+join: 0
+workers that kept their own value: 4, values 64
+main's value: 12345
+TlsFree: 1
+join: 0
+long: 3000  int64: 3000  max: 3249
+exchange: 5 now 9
+cas hit: 9 now 11
+cas miss: 11 now 11
+exchange add: 11 now 7
+or: 7 now 55
+and: 55 now 52
+decrement: 51 now 51
+64-bit exchange: 1099511627776 now 77
+64-bit cas: 77 now 8589934592
+pointer cas: 1
+yielder finished: 1
+main yielded
+sleeping: 259
+TerminateThread: 1
+join: 0
+exit code: 77
+main returns

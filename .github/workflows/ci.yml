@@ -211,6 +211,8 @@ jobs:
             target/native/l2_int.exe
             target/native/l2_crt.exe
             target/native/l2_float.exe
+            target/native/l2_threads.exe
+            target/native/l2_suspend.exe
             target/native/exes.sha256
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
@@ -268,7 +270,7 @@ jobs:
       - name: Run the L2 programs natively and compare
         run: |
           # msvcrt's stdout is in text mode: the raw output is the expected text with CRLF line ends.
-          for name in l2_int l2_crt l2_float; do
+          for name in l2_int l2_crt l2_float l2_threads l2_suspend; do
             code=0
             ./l2-exes/$name.exe > $name.actual || code=$?
             tr -d '\r' < tests/native/$name.expected | sed 's/$/\r/' > $name.expected
