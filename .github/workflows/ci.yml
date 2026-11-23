@@ -123,11 +123,13 @@ jobs:
 
       # The 7-Zip command matrix (tests/sevenzip/README.md): 7zz.exe translated, each step compared byte for
       # byte with tests/sevenzip/expected/ (written from Wine, checked against real Windows in windows-x64).
-      - name: 7-Zip command matrix, translated in Node
+      # --mode shim is Phase 1's run (run-pe with the Win32 shim) until WP6 deletes it; the Wine host's own
+      # matrix (--mode translated) is a job of wine-unix.yml.
+      - name: 7-Zip command matrix, translated in Node (shim)
         if: ${{ !cancelled() }}
         run: |
           cargo run -q -p x64wasm-cli --release -- translate-pe target/targets/7zz.exe --out-dir target/sevenzip
-          node tests/sevenzip/matrix.mjs --mode translated --out target/sevenzip-out --skip-translate --jobs "$(nproc)" --quiet
+          node tests/sevenzip/matrix.mjs --mode shim --out target/sevenzip-out --skip-translate --jobs "$(nproc)" --quiet
           node tests/sevenzip/compare.mjs target/sevenzip-out tests/sevenzip/expected
 
       - name: Upload the 7-Zip matrix results

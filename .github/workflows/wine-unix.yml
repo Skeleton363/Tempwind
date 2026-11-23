@@ -137,6 +137,65 @@ jobs:
           name: wine-unix
           path: dist
 
+      # What `run-wine.mjs` reads (target/wine without the release tarballs, target/wine-unix and the two
+      # wasm32 helpers), for the matrix job below.
+      - name: Pack the inputs of run-wine.mjs
+        run: |
+          set -euo pipefail
+          tar -C target --exclude='wine/*.tar.zst' --exclude='wine/*.sha256' -I 'zstd -T0 -3' -cf wine-inputs.tar.zst \
+            wine wine-unix wasm32-unknown-unknown/release/x64wasm_rt.wasm wasm32-unknown-unknown/release/x64wasm_fp.wasm
+          ls -l wine-inputs.tar.zst
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wine-inputs
+          path: wine-inputs.tar.zst
+          retention-days: 3
+          compression-level: 0
+
+  # The 7-Zip command matrix on this workflow's own Unix side and catalog (tests/sevenzip/README.md):
+  # 7zz.exe through run-wine.mjs --dir, one process per step, compared byte for byte with
+  # tests/sevenzip/expected/. It is red until 7zz.exe runs on this Wine (Phase 2 M4 WP5), so `publish`
+  # does not depend on it.
+  sevenzip-matrix:
+    needs: build
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'claude/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@v8
+        with:
+          name: wine-inputs
+          path: inputs
+      - name: Unpack the inputs and fetch 7zz.exe (targets release)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd
+          mkdir -p target
+          tar -C target -I zstd -xf inputs/wine-inputs.tar.zst
+          scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets
+      - name: 7-Zip command matrix on Wine, compared with the expected results
+        run: |
+          set -euo pipefail
+          bad=0
+          node tests/sevenzip/matrix.mjs --mode translated --out target/sevenzip-out --jobs "$(nproc)" --quiet || bad=1
+          node tests/sevenzip/compare.mjs target/sevenzip-out tests/sevenzip/expected || bad=1
+          exit $bad
+      - name: Upload the 7-Zip matrix results
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sevenzip-wine
+          path: target/sevenzip-out/results
+          if-no-files-found: ignore
+
   # Publish only from a push or a manual run of this repository's branches; the
   # release starts as soon as the build and its tests pass.
   publish:
