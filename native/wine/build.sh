@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build Wine 11's ntdll Unix part and wineserver with Emscripten as one wasm64
-# module (docs/design/wine-unix.md, section 2).
+# Build Wine 11's ntdll Unix part, wineserver and win32u's Unix part (M4) with
+# Emscripten as one wasm64 module (docs/design/wine-unix.md, section 2).
 #
 #   native/wine/build.sh [--out DIR] [--jobs N] [--census]
 #
@@ -14,9 +14,10 @@
 #   test-NAME.{mjs,wasm}      one per native/wine/tests/NAME.c
 #   build-info.json           emcc version, tarball and patch hashes, imports, sizes
 # Then the four gates: no undefined symbols (the link), every import listed in
-# native/wine/imports.txt, no server/ntdll symbol collision that
-# native/wine/rename-server.h doesn't rename (--census prints the
-# collisions), and the syscall generator's checks.
+# native/wine/imports.txt, no global symbol defined by two of the three parts
+# (the server, ntdll with src/, win32u) that native/wine/rename-server.h or
+# rename-win32u.h doesn't rename (--census prints the collisions), and the
+# syscall generator's checks for tables 0 and 1.
 # Needs Docker (scripts/emcc.sh), curl, patch, xz, gzip and Node 24.
 set -euo pipefail
 
@@ -65,7 +66,8 @@ got="$(sha256sum "$tarball" | cut -d' ' -f1)"
 tree="$out/src/wine-$version"
 treerel="$rel/src/wine-$version"
 members=("wine-$version/dlls/ntdll/unix" "wine-$version/dlls/ntdll/*.h" "wine-$version/dlls/ntdll/Makefile.in"
-         "wine-$version/server" "wine-$version/include" "wine-$version/COPYING.LIB")
+         "wine-$version/server" "wine-$version/include" "wine-$version/COPYING.LIB"
+         "wine-$version/dlls/win32u")
 patches=()
 while IFS= read -r p; do patches+=("$p"); done < <(find "$wn/patches" -name '*.patch' 2>/dev/null | LC_ALL=C sort)
 stamp="$( { echo "$sha256"; printf '%s\n' "${members[@]}"; \
@@ -85,6 +87,27 @@ if [ "$(cat "$tree/.tw-stamp" 2>/dev/null || true)" != "$stamp" ]; then
   echo "$stamp" > "$tree/.tw-stamp"
 fi
 
+# The headers Wine's build generates with widl from include/*.idl, which
+# win32u's sources include (wine-unix.md, section 2, step 1): from the native
+# tree of tests/targets/wine.lock's release, built from the same tarball, as
+# tests/wine/prepare.sh unpacks it. Each NAME.h there that the tarball's
+# include/ lacks and whose include/NAME.idl it has (widl's output; not every
+# .idl makes a header) goes to gen/include, after the tarball's include/.
+wine_tag=$(cat tests/targets/wine.lock)
+native_inc=target/wine/native/opt/wine-$version/include/wine/windows
+[ "$(cat target/wine/.tag 2>/dev/null || true)" = "$wine_tag" ] && [ -d "$native_inc" ] \
+  || die "the generated headers come from $wine_tag's native tree in target/wine/native: run tests/wine/prepare.sh (its step 1 unpacks it)"
+mkdir -p "$out/gen/include.new"
+for idl in "$tree"/include/*.idl; do
+  h="$(basename "$idl" .idl).h"
+  [ -f "$native_inc/$h" ] && [ ! -e "$tree/include/$h" ] || continue
+  cp -p "$native_inc/$h" "$out/gen/include.new/$h"
+done
+# Replaced only when it changes, so make doesn't rebuild every object.
+if diff -rq "$out/gen/include.new" "$out/gen/include" >/dev/null 2>&1; then rm -rf "$out/gen/include.new"
+else rm -rf "$out/gen/include"; mv "$out/gen/include.new" "$out/gen/include"; fi
+ngenh=$(ls "$out/gen/include" | wc -l)
+
 # The syscall wrappers (wine-unix.md, section 11), from the patched tree at
 # every build; written only when they change. Gate 4: the generator's checks.
 node "$wn/gen-syscalls.mjs" "$tree" "$out/gen/syscall_table.c" \
@@ -97,12 +120,16 @@ mk_sources() { # FILE PREFIX: the .c entries of SOURCES that start with PREFIX
 }
 ntdll_srcs=$(mk_sources "$tree/dlls/ntdll/Makefile.in" unix/ | grep -v '^unix/signal_' | sed 's|^unix/||')
 server_srcs=$(mk_sources "$tree/server/Makefile.in" "")
+# win32u's Unix part (M4): the SOURCES whose file has `#pragma makedep unix`
+# (all but main.c, the PE side; dibdrv/ included).
+win32u_srcs=$(for f in $(mk_sources "$tree/dlls/win32u/Makefile.in" ""); do
+  if grep -q '^#pragma makedep unix' "$tree/dlls/win32u/$f"; then echo "$f"; fi; done)
 own_srcs=$(cd "$wn/src" && ls *.c)
 tests=$(cd "$wn/tests" && ls *.c 2>/dev/null | sed 's/\.c$//' || true)
-[ -n "$ntdll_srcs" ] && [ -n "$server_srcs" ] || die "no sources found in Wine's makefiles"
+[ -n "$ntdll_srcs" ] && [ -n "$server_srcs" ] && [ -n "$win32u_srcs" ] || die "no sources found in Wine's makefiles"
 
 obj="$rel/obj"
-mkdir -p "$out/obj/ntdll" "$out/obj/server" "$out/obj/own" "$out/obj/gen" "$out/obj/tests"
+mkdir -p "$out/obj/ntdll" "$out/obj/server" "$out/obj/win32u/dibdrv" "$out/obj/own" "$out/obj/gen" "$out/obj/tests"
 # The host entries of abi.md v5 ("Host entries of the Unix side").
 exports_common="_tw_syscall_dispatcher,_tw_unix_call_dispatcher,_malloc,_free,_tw_page_flags,_tw_main_state,_tw_next_timeout,_tw_run_timeouts,_emscripten_stack_set_limits,__emscripten_stack_restore"
 mk="$out/obj/build.mk"
@@ -118,7 +145,9 @@ mk="$out/obj/build.mk"
   # wine-unix.md section 8's constant paths).
   echo "NTDLL := -D__WINESRC__ -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= -I\$(W)/include -I\$(T)/dlls/ntdll -I\$(T)/include"
   echo "PATHS := -DBINDIR='\"/wine/bin\"' -DLIBDIR='\"/wine/lib\"' -DDATADIR='\"/wine/share\"' -DSYSTEMDLLPATH='\"\"'"
-  echo "SERVER := -D__WINESRC__ -I\$(W)/include -I\$(T)/server -I\$(T)/include -include \$(W)/rename-server.h"
+  echo "SERVER := -D__WINESRC__ -I\$(W)/include -I\$(T)/server -I\$(T)/include -I\$(W)/src -include \$(W)/rename-server.h"
+  # win32u's EXTRADEFS (dlls/win32u/Makefile.in L1), and its renames.
+  echo "WIN32U := -D__WINESRC__ -D_WIN32U_ -I\$(W)/include -I\$(T)/dlls/win32u -I\$(T)/include -I$rel/gen/include -I\$(W)/src -include \$(W)/rename-win32u.h"
   echo "OWN := \$(NTDLL) -I\$(T)/dlls/ntdll/unix -Wall"
   echo "LDFLAGS := -m64 -O2 -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH -sINITIAL_MEMORY=4GB \\"
   echo "  -sMAXIMUM_MEMORY=16GB -sGLOBAL_BASE=2GB -fwasm-exceptions -sSUPPORT_LONGJMP=wasm \\"
@@ -135,6 +164,10 @@ mk="$out/obj/build.mk"
     o="\$(O)/server/${f%.c}.o"; objs+=("$o")
     extra=""; [ "$f" = unicode.c ] && extra=" \$(PATHS)"
     printf '%s: $(T)/server/%s $(MK)\n\temcc $(CFLAGS) $(SERVER)%s -c -o $@ $<\n' "$o" "$f" "$extra"
+  done
+  for f in $win32u_srcs; do
+    o="\$(O)/win32u/${f%.c}.o"; objs+=("$o")
+    printf '%s: $(T)/dlls/win32u/%s $(MK)\n\temcc $(CFLAGS) $(WIN32U) -c -o $@ $<\n' "$o" "$f"
   done
   for f in $own_srcs; do
     o="\$(O)/own/${f%.c}.o"; objs+=("$o")
@@ -158,7 +191,7 @@ mk="$out/obj/build.mk"
 # Rewritten only when it changes: every object depends on it (the flags).
 cmp -s "$mk.new" "$mk" && rm "$mk.new" || mv "$mk.new" "$mk"
 
-nsrc=$(( $(echo $ntdll_srcs | wc -w) + $(echo $server_srcs | wc -w) + $(echo $own_srcs | wc -w) + 1 ))
+nsrc=$(( $(echo $ntdll_srcs | wc -w) + $(echo $server_srcs | wc -w) + $(echo $win32u_srcs | wc -w) + $(echo $own_srcs | wc -w) + 1 ))
 run_make() { # TARGET: make inside the Emscripten container, logged to obj/make.log
   set +e
   "$emcc_sh" make --no-print-directory -k -j"$jobs" -f "$rel/obj/build.mk" "$1" >> "$out/obj/make.log" 2>&1
@@ -175,28 +208,38 @@ fi
 
 # ---- 5. Gates ----------------------------------------------------------------
 # Gate 3, before the link (which would only report a duplicate symbol):
-# global symbols defined both in the server's objects and in ntdll's (with
-# src/). rename-server.h renames NAME to wineserver_NAME, so the server's
-# original names are recovered by stripping that prefix.
+# global symbols defined by two of the three parts, the server's objects,
+# ntdll's (with src/ and the syscall wrappers) and win32u's.
+# rename-server.h renames the server's NAME to wineserver_NAME and
+# rename-win32u.h win32u's to win32u_NAME; ntdll keeps its names, since
+# win32u calls ntdll's exports by name. Stripping the prefixes recovers the
+# original names for the census.
 "$emcc_sh" emnm -g --defined-only "$obj"/server/*.o > "$out/obj/server.nm" 2>/dev/null
-"$emcc_sh" emnm -g --defined-only "$obj"/ntdll/*.o "$obj"/own/*.o > "$out/obj/ntdll.nm" 2>/dev/null
+"$emcc_sh" emnm -g --defined-only "$obj"/ntdll/*.o "$obj"/own/*.o "$obj"/gen/*.o > "$out/obj/ntdll.nm" 2>/dev/null
+"$emcc_sh" emnm -g --defined-only "$obj"/win32u/*.o "$obj"/win32u/dibdrv/*.o > "$out/obj/win32u.nm" 2>/dev/null
 syms() { awk 'NF==3 && $2 != "U" {print $3}' "$1" | sort -u; }
-syms "$out/obj/server.nm" > "$out/obj/server.syms"
-syms "$out/obj/ntdll.nm" > "$out/obj/ntdll.syms"
+for part in server ntdll win32u; do syms "$out/obj/$part.nm" > "$out/obj/$part.syms"; done
 sed 's/^wineserver_//' "$out/obj/server.syms" | sort -u > "$out/obj/server.orig"
-comm -12 "$out/obj/server.orig" "$out/obj/ntdll.syms" > "$out/obj/collisions.txt"
-comm -12 "$out/obj/server.syms" "$out/obj/ntdll.syms" > "$out/obj/unrenamed.txt"
-if [ $census -eq 1 ]; then
-  log "census: $(wc -l < "$out/obj/collisions.txt") global symbols defined by both the server and ntdll (with src/):"
-  cat "$out/obj/collisions.txt"
-fi
+sed 's/^win32u_//' "$out/obj/win32u.syms" | sort -u > "$out/obj/win32u.orig"
+cp "$out/obj/ntdll.syms" "$out/obj/ntdll.orig"
+: > "$out/obj/unrenamed.txt"
+ncoll=0
+for pair in "server ntdll rename-server.h" "win32u ntdll rename-win32u.h" "win32u server rename-win32u.h"; do
+  read -r a b hdr <<< "$pair"
+  comm -12 "$out/obj/$a.orig" "$out/obj/$b.orig" > "$out/obj/collisions-$a-$b.txt"
+  ncoll=$(( ncoll + $(wc -l < "$out/obj/collisions-$a-$b.txt") ))
+  if [ $census -eq 1 ]; then
+    log "census: $(wc -l < "$out/obj/collisions-$a-$b.txt") global symbols defined by both $a and $b (renamed in $hdr):"
+    cat "$out/obj/collisions-$a-$b.txt"
+  fi
+  comm -12 "$out/obj/$a.syms" "$out/obj/$b.syms" | sed "s|\$| ($a and $b: rename it in native/wine/$hdr)|" >> "$out/obj/unrenamed.txt"
+done
 if [ -s "$out/obj/unrenamed.txt" ]; then
-  echo "build.sh: gate 3 (collisions) failed: these globals are defined by the server and by ntdll;" \
-    "rename them in native/wine/rename-server.h (--census lists all):" >&2
+  echo "build.sh: gate 3 (collisions) failed: these globals are defined by two parts (--census lists all):" >&2
   sed 's/^/  /' "$out/obj/unrenamed.txt" >&2
   exit 1
 fi
-log "gate 3: $(wc -l < "$out/obj/collisions.txt") collisions, all renamed by rename-server.h"
+log "gate 3: $ncoll collisions, all renamed by rename-server.h and rename-win32u.h"
 
 # Gate 1: the link keeps ERROR_ON_UNDEFINED_SYMBOLS=1, with no section GC.
 log "linking"

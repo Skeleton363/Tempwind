@@ -65,6 +65,10 @@ typedef ULONG_PTR (*tw_syscall_fn)( const ULONG_PTR *args );
 extern const tw_syscall_fn tw_syscall_table[];
 extern const BYTE tw_syscall_args[];
 extern const unsigned int tw_syscall_count;
+/* M4: table 1, win32u's (section 11), in the same file. */
+extern const tw_syscall_fn tw_win32_syscall_table[];
+extern const BYTE tw_win32_syscall_args[];
+extern const unsigned int tw_win32_syscall_count;
 
 /* loader.c's unix_call_funcs, the table __wine_unixlib_handle points to
  * (patch 0301). */
@@ -233,7 +237,9 @@ int32_t tw_syscall_dispatcher( uint64_t state_addr, int32_t entry, uint64_t ret 
     struct syscall_frame *frame = entry_frame( state, "tw_syscall_dispatcher: a thread with no frame record" );
     ULONG_PTR args[32], status;
     UINT64 rsp;
-    UINT id, table, num, i, nargs;
+    UINT id, table, num, i, nargs, limit;
+    const tw_syscall_fn *fns = tw_syscall_table;
+    const BYTE *argbytes = tw_syscall_args;
     BOOL trace;
 
     set_current_time();  /* KUSER's clock, as the server's tick would have kept it */
@@ -251,18 +257,27 @@ int32_t tw_syscall_dispatcher( uint64_t state_addr, int32_t entry, uint64_t ret 
     id = frame->syscall_id = (UINT)GPR( state, RAX );
     table = (id >> 12) & 3;
     num = id & 0xfff;
+    /* the table's limit (L3145-3146): table 0's is the generated table's
+     * size; table 1's is 0 until win32u's init registers it with
+     * KeAddSystemServiceTable (win32u/syscall.c L92-106; unix/loader.c
+     * L625-634); tables 2 and 3 stay empty */
+    limit = tw_syscall_count;
     if (table)
     {
-        if (KeServiceDescriptorTable[table].ServiceLimit)
-            tw_unsupported( "tw_syscall_dispatcher: syscall table 1-3 (win32u, M4)" );
-        return dispatcher_return( state, frame, (ULONG)STATUS_INVALID_SYSTEM_SERVICE, ret );
+        limit = KeServiceDescriptorTable[table].ServiceLimit;
+        if (limit && table != 1)
+            tw_unsupported( "tw_syscall_dispatcher: a registered syscall table 2 or 3" );
+        if (limit && limit != tw_win32_syscall_count)
+            tw_unsupported( "tw_syscall_dispatcher: win32u's registered table 1 differs from the generated one" );
+        fns = tw_win32_syscall_table;
+        argbytes = tw_win32_syscall_args;
     }
-    if (num >= tw_syscall_count)
+    if (num >= limit)
         return dispatcher_return( state, frame, (ULONG)STATUS_INVALID_SYSTEM_SERVICE, ret );  /* L3324-3327 */
 
     /* the arguments: R10, RDX, R8, R9, then argument i >= 4 at
      * [RSP + 0x28 + 8 * (i - 4)] after the pop (L3099, L3157, L3166-3167) */
-    nargs = tw_syscall_args[num] / sizeof(ULONG_PTR);
+    nargs = argbytes[num] / sizeof(ULONG_PTR);
     if (nargs > ARRAY_SIZE(args)) tw_unsupported( "tw_syscall_dispatcher: too many arguments" );
     args[0] = GPR( state, R10 );
     args[1] = GPR( state, RDX );
@@ -271,8 +286,8 @@ int32_t tw_syscall_dispatcher( uint64_t state_addr, int32_t entry, uint64_t ret 
     for (i = 4; i < nargs; i++) args[i] = *(const UINT64 *)(ULONG_PTR)(rsp + 0x28 + 8 * (i - 4));
 
     trace = ntdll_get_thread_data()->syscall_trace & 1;  /* L3160-3161 */
-    if (trace) trace_syscall( id, args, tw_syscall_args[num] );
-    status = tw_syscall_table[num]( args );
+    if (trace) trace_syscall( id, args, argbytes[num] );
+    status = fns[num]( args );
     if (trace) trace_sysret( id, status );  /* L3293-3322 */
     return dispatcher_return( state, frame, status, ret );
 }
@@ -285,6 +300,8 @@ int32_t tw_unix_call_dispatcher( uint64_t state_addr, int32_t entry, uint64_t re
     struct syscall_frame *frame = entry_frame( state, "tw_unix_call_dispatcher: a thread with no frame record" );
     UINT64 rsp = GPR( state, RSP );
     UINT code = (UINT)GPR( state, RDX );
+    const unixlib_entry_t *funcs = (const unixlib_entry_t *)(ULONG_PTR)GPR( state, RCX );
+    unsigned int count;
     NTSTATUS status;
 
     /* the frame record: the return address unadjusted (L3356), and the frame
@@ -294,12 +311,18 @@ int32_t tw_unix_call_dispatcher( uint64_t state_addr, int32_t entry, uint64_t re
     S64( state, TW_STATE_RIP ) = frame->ret_addr;
     frame->restore_flags = RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
 
-    /* only ntdll's own unix calls; Wine checks neither */
-    if (GPR( state, RCX ) != (ULONG_PTR)tw_unix_call_funcs)
-        tw_unsupported( "tw_unix_call_dispatcher: a unix library other than ntdll's" );
-    if (code >= tw_unix_call_count)
-        tw_unsupported( "tw_unix_call_dispatcher: a code past ntdll's unix calls" );
-    status = tw_unix_call_funcs[code]( (void *)(ULONG_PTR)GPR( state, R8 ) );
+    /* the handle: ntdll's unix_call_funcs, or a table tw_unixlib_funcs
+     * returned (win32u's, M4), each with its count; Wine checks neither */
+    if (funcs == tw_unix_call_funcs)
+    {
+        if (code >= tw_unix_call_count)
+            tw_unsupported( "tw_unix_call_dispatcher: a code past ntdll's unix calls" );
+    }
+    else if (!(count = tw_unixlib_count( funcs )))
+        tw_unsupported( "tw_unix_call_dispatcher: a handle that is no unix library's table" );
+    else if (code >= count)
+        tw_unsupported( "tw_unix_call_dispatcher: a code past the unix library's calls" );
+    status = funcs[code]( (void *)(ULONG_PTR)GPR( state, R8 ) );
     return dispatcher_return( state, frame, (ULONG)status, ret );
 }
 
@@ -543,4 +566,15 @@ void call_raise_user_exception_dispatcher( void )
 NTSTATUS WINAPI NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status )
 {
     tw_unsupported( "NtCallbackReturn" );
+}
+
+/* M4 (WP2): win32u's calls into user32 (signal_x86_64.c L1903-1931),
+ * deferred to Phase 3's desktop (section 13). A console program's user32
+ * attach doesn't reach one (section 11); one that does stops here. */
+NTSTATUS KeUserModeCallback( ULONG id, const void *args, ULONG len, void **ret_ptr, ULONG *ret_len )
+{
+    char what[64];
+
+    snprintf( what, sizeof(what), "KeUserModeCallback %u", (unsigned int)id );
+    tw_unsupported( what );
 }
