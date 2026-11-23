@@ -36,6 +36,7 @@
 #define WIN32_NO_STATUS
 #include "windef.h"
 #include "winnt.h"
+#include "winerror.h"
 #include "winternl.h"
 #include "ddk/wdm.h"
 #include "unix_private.h"
@@ -54,6 +55,7 @@ extern const char *const tw_syscall_names[];
 extern const unsigned int tw_syscall_count;
 extern const unixlib_entry_t *const tw_unix_call_funcs;
 extern const unsigned int tw_unix_call_count;
+extern const unsigned int tw_win32_syscall_count;  /* M4: table 1 */
 
 #define THUNK_RET   0x180001234ull  /* [RSP]: the thunk's return address */
 #define CALLER_RET  0x180005678ull  /* [RSP + 8]: its caller's */
@@ -441,6 +443,126 @@ static const char *unix_call_bad_code( void )
     return tw_fail( "the call returned" );
 }
 
+/* ---- M4 (WP2): table 1 and win32u's unix calls (section 11) ---- */
+
+/* win32u's unix library, as find_builtin_dll records its path. */
+#define WIN32U_SO "/wine/lib/wine/x86_64-unix/win32u.so"
+#define TABLE1_GET_MOUSE_MOVE_POINTS 0x141f  /* NtUserGetMouseMovePointsEx (win32syscalls.h L2601) */
+
+/* A unix call to win32u's table, through the handle tw_unixlib_funcs gives
+ * (the one get_builtin_unix_funcs stores, patch 0107). */
+static int32_t win32u_unix_call( BYTE *state, UINT64 code, void *args, UINT64 ret_addr )
+{
+    UINT64 rsp = stack_top - 0x200;
+
+    *(UINT64 *)rsp = THUNK_RET;
+    GPR( state, RSP ) = rsp;
+    GPR( state, RCX ) = (uintptr_t)tw_unixlib_funcs( WIN32U_SO, 0 );
+    GPR( state, RDX ) = code;
+    GPR( state, R8 ) = (uintptr_t)args;
+    return tw_unix_call_dispatcher( (uintptr_t)state, 0, ret_addr );
+}
+
+/* NtUserGetMouseMovePointsEx with a wrong size (win32u/input.c L1570-1574):
+ * five arguments, the fifth on the stack, and an int -1 with
+ * ERROR_INVALID_PARAMETER as the last error. */
+static int32_t table1_call( BYTE *state )
+{
+    static UINT64 in[3], out[12];  /* room for MOUSEMOVEPOINTs (24 bytes each) */
+    UINT64 args[5] = { 1, (uintptr_t)in, (uintptr_t)out, 4, 1 /* GMMP_USE_DISPLAY_POINTS */ };
+
+    setup_syscall( state, TABLE1_GET_MOUSE_MOVE_POINTS, args, 5 );
+    return tw_syscall_dispatcher( (uintptr_t)state, 0, THUNK_RET );
+}
+
+/* Before win32u's init registers table 1 with KeAddSystemServiceTable, its
+ * limit is 0: a call through its wrapper returns
+ * STATUS_INVALID_SYSTEM_SERVICE, as Wine's dispatcher does (L3145-3146,
+ * L3324-3327). So does table 2, which nothing registers. */
+static const char *table1_before_init( void )
+{
+    BYTE *state = new_state();
+    int32_t ret;
+
+    TW_EXPECT( KeServiceDescriptorTable[1].ServiceLimit == 0 );
+    NtCurrentTeb()->LastErrorValue = 0;
+    ret = table1_call( state );
+    EXPECT_RETURNED( ret, state, STATUS_INVALID_SYSTEM_SERVICE );
+    TW_EXPECT( NtCurrentTeb()->LastErrorValue == 0 );
+    setup_syscall( state, 0x2000, NULL, 0 );
+    ret = tw_syscall_dispatcher( (uintptr_t)state, 0, THUNK_RET );
+    EXPECT_RETURNED( ret, state, STATUS_INVALID_SYSTEM_SERVICE );
+    free( state );
+    return NULL;
+}
+
+/* A unix call to win32u's table: code 0, init (win32u/syscall.c L92-111),
+ * which registers table 1 (unix/loader.c L625-634) with the generated
+ * table's size. The return address is popped unadjusted and the flags stay
+ * lazy, as for ntdll's (abi.md v5). */
+static const char *win32u_unix_call_init( void )
+{
+    const void *funcs = tw_unixlib_funcs( WIN32U_SO, 0 );
+    BYTE *state = new_state();
+    int32_t ret;
+
+    TW_EXPECT( funcs && funcs != (const void *)tw_unix_call_funcs );
+    TW_EXPECT( tw_unixlib_count( funcs ) == 1 );
+    TW_EXPECT( tw_unixlib_count( tw_unix_call_funcs ) == 0 );
+    TW_EXPECT( tw_unixlib_funcs( "win32u.so", 0 ) == funcs );
+    S32( state, TW_STATE_CC_OP ) = 5;
+    ret = win32u_unix_call( state, 0xffffffff00000000ull, NULL, THUNK_RET );  /* EDX: code 0 */
+    EXPECT_RETURNED( ret, state, STATUS_SUCCESS );
+    TW_EXPECT( S32( state, TW_STATE_CC_OP ) == 5 );
+    TW_EXPECT( KeServiceDescriptorTable[1].ServiceLimit == tw_win32_syscall_count );
+    free( state );
+    return NULL;
+}
+
+/* After the registration the same call reaches its wrapper: RAX is the int
+ * -1 zero-extended (section 11), the last error is Wine's. A number at the
+ * limit is still a bad id. */
+static const char *table1_after_init( void )
+{
+    BYTE *state = new_state();
+    int32_t ret;
+
+    TW_EXPECT( KeServiceDescriptorTable[1].ServiceLimit == tw_win32_syscall_count );
+    NtCurrentTeb()->LastErrorValue = 0;
+    ret = table1_call( state );
+    EXPECT_RETURNED( ret, state, 0xffffffff );
+    TW_EXPECT( GPR( state, RAX ) == 0xffffffffull );
+    TW_EXPECT( NtCurrentTeb()->LastErrorValue == ERROR_INVALID_PARAMETER );
+    TW_EXPECT( S64( state, TW_STATE_RIP ) == THUNK_RET - 0xb );
+    setup_syscall( state, 0x1000 + tw_win32_syscall_count, NULL, 0 );
+    ret = tw_syscall_dispatcher( (uintptr_t)state, 0, THUNK_RET );
+    EXPECT_RETURNED( ret, state, STATUS_INVALID_SYSTEM_SERVICE );
+    free( state );
+    return NULL;
+}
+
+/* A table-1 stub's wrapper stops loudly (section 11): NtBindCompositionSurface,
+ * id 0x1000, once table 1 is registered. Alone. */
+static const char *table1_stub_stops( void )
+{
+    BYTE *state = new_state();
+
+    if (win32u_unix_call( state, 0, NULL, THUNK_RET ) != TW_STATUS_RETURNED || GPR( state, RAX ))
+        return tw_fail( "win32u's init failed" );
+    setup_syscall( state, 0x1000, NULL, 0 );
+    tw_syscall_dispatcher( (uintptr_t)state, 0, THUNK_RET );
+    return tw_fail( "NtBindCompositionSurface returned" );
+}
+
+/* A code past win32u's one unix call stops loudly. Alone. */
+static const char *win32u_unix_call_bad_code( void )
+{
+    BYTE *state = new_state();
+
+    win32u_unix_call( state, 1, NULL, THUNK_RET );
+    return tw_fail( "the call returned" );
+}
+
 /* A syscall's entry refreshes KUSER's clock (section 11, step 1). */
 static const char *kuser_clock( void )
 {
@@ -507,8 +629,13 @@ static const struct tw_check checks[] =
     { "unix_call", unix_call },
     { "kuser_clock", kuser_clock },
     { "syscall_trace", syscall_trace },
+    { "table1_before_init", table1_before_init },
+    { "win32u_unix_call_init", win32u_unix_call_init },
+    { "table1_after_init", table1_after_init },
     { "stub_stops", stub_stops, TW_ALONE },
     { "unix_call_bad_code", unix_call_bad_code, TW_ALONE },
+    { "table1_stub_stops", table1_stub_stops, TW_ALONE },
+    { "win32u_unix_call_bad_code", win32u_unix_call_bad_code, TW_ALONE },
     { "abort_thread_exits", abort_thread_exits, TW_ALONE },
     { "terminate_reaches_exit_hook", terminate_reaches_exit_hook, TW_ALONE },
 };

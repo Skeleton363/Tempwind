@@ -45,9 +45,12 @@ async function start(env = {}) {
   return { host, out };
 }
 
-// In the harness's order (it runs them in one instance).
+// In the harness's order (it runs them in one instance). From M4 (WP2):
+// table 1 before and after win32u's init registers it, and that init as a
+// unix call to win32u's table (section 10, "The M4 checks").
 const CHECKS = ['dispatcher_page', 'stack_arguments', 'variant_entries', 'bad_id', 'nt_continue',
-  'context_round_trip', 'unix_call', 'kuser_clock', 'syscall_trace'];
+  'context_round_trip', 'unix_call', 'kuser_clock', 'syscall_trace',
+  'table1_before_init', 'win32u_unix_call_init', 'table1_after_init'];
 
 test('syscall: the harness checks pass', async () => {
   const { host, out } = await start();
@@ -75,6 +78,10 @@ for (const [check, line] of [
   ['unix_call_bad_code', 'tempwind: unsupported: tw_unix_call_dispatcher: a code past ntdll\'s unix calls'],
   // Process exit's hook in NtTerminateProcess (section 8): outside boot it stops.
   ['terminate_reaches_exit_hook', 'tempwind: unsupported: tw_process_exit outside boot'],
+  // M4 (WP2): a table-1 stub once table 1 is registered, and a code past
+  // win32u's one unix call.
+  ['table1_stub_stops', 'tempwind: unsupported: win32u syscall NtBindCompositionSurface'],
+  ['win32u_unix_call_bad_code', 'tempwind: unsupported: tw_unix_call_dispatcher: a code past the unix library\'s calls'],
 ]) {
   test(`syscall: ${check} stops loudly`, async () => {
     const { host, out } = await start({ TW_TEST_ONLY: check });
