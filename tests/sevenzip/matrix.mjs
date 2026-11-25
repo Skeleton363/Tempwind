@@ -87,7 +87,8 @@ const wasmDir = join(root, 'target/wasm32-unknown-unknown/release');
 function command(args, work) {
   if (mode === 'native') return [exe, args];
   if (mode === 'wine') return [wine, [exe, ...args]];
-  if (mode === 'translated') return [process.execPath, [join(root, 'runtime/src/wine/run-wine.mjs'), '--dir', work, exe, ...args]];
+  // Our Wine reads only the environment its host is given (wine-unix.md section 8), not this process's: pass WINEDEBUG on.
+  if (mode === 'translated') return [process.execPath, [join(root, 'runtime/src/wine/run-wine.mjs'), '--env', `WINEDEBUG=${env.WINEDEBUG}`, '--dir', work, exe, ...args]];
   const a = values['aot-dir'];
   return [process.execPath, [join(root, 'runtime/src/run-pe.mjs'), '--exe', exe, '--aot', join(a, '7zz.wasm'), '--plan', join(a, '7zz.plan.json'),
     '--rt', join(wasmDir, 'x64wasm_rt.wasm'), '--fp', join(wasmDir, 'x64wasm_fp.wasm'), '--dir', work, '--', ...args]];
