@@ -183,4 +183,12 @@ extern void (*tw_thread_start_hook)( void *entry, void *arg, void *state );
  * hang-up thread_poll_event sees natively (section 7, "A thread's end"). */
 void inproc_thread_hangup( int tid );
 
+/* M4 WP4 (wine-unix.md v3, section 9, "Signals"), appended. */
+
+/* green_pthread.c: the running green thread's mask, pthread_sigmask's
+ * contract; config.h renames Wine's calls to it. An unblock of a pending
+ * signal is delivery point 2. */
+#include <signal.h>
+int tw_pthread_sigmask( int how, const sigset_t *set, sigset_t *old );
+
 #endif /* TEMPWIND_PRIVATE_H */

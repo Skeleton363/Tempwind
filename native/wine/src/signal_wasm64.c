@@ -9,17 +9,19 @@
  *   (signal_alloc_thread), its state block and run loop
  *   (signal_start_thread), both freed by signal_free_thread (section 9).
  * - Signal handlers (M4, section 9): SIGQUIT's, as quit_handler's in-syscall
- *   path; pending signals are delivered before a dispatcher returns to guest
- *   code (delivery point 3).
+ *   path, and SIGUSR1's, usr1_handler's (suspension, another thread's
+ *   context); pending signals are delivered before a dispatcher returns to
+ *   guest code (delivery point 3).
  * - The syscall and unix-call dispatchers (section 11; abi.md v5, "Syscalls
  *   and unix calls"): host functions, raw exports of the guest-function type
  *   (state i64, entry i32, ret i64) -> i32. The frame record is the state
  *   block; the thread data keeps the rest of Wine's struct syscall_frame.
- * - The context functions for the current thread, with the FP conversion
- *   that agrees with the translator's fxsave (translator.md, "fxsave m512").
+ * - The context functions, with the FP conversion that agrees with the
+ *   translator's fxsave (translator.md, "fxsave m512"); from M4 another
+ *   thread's through the server, and the user APC's dispatch.
  *
- * The rest stops loudly until M4-M5 own it (other threads' contexts, APCs, exceptions,
- * user callbacks). NtCurrentTeb() needs no entry here: thread.c's reads
+ * The rest stops loudly until M5 or later owns it (exceptions, user
+ * callbacks). NtCurrentTeb() needs no entry here: thread.c's reads
  * teb_key on every machine. Line numbers are wine-11.0's
  * dlls/ntdll/unix/signal_x86_64.c unless another file is named.
  *
@@ -35,6 +37,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,8 +50,12 @@
 #include "wine/unixlib.h"
 #include "unix_private.h"
 
+#include "wine/debug.h"
+
 #include "tempwind/abi.h"
 #include "tempwind_private.h"
+
+WINE_DEFAULT_DEBUG_CHANNEL(seh);
 
 /* The x86-64 user selectors (section 3). The thread's FS selector is 0: no
  * WoW64. */
@@ -154,19 +161,58 @@ void signal_free_thread( TEB *teb )
     thread_data->syscall_frame = NULL;
 }
 
-/* SIGQUIT's handler, quit_handler's path inside a syscall (L2608-2614): our
- * threads are always inside one when a signal is delivered (section 9). The
- * other signals' handlers are WP4's; until then nothing sends them (patch
- * 0201's send_thread_signal stops loudly first). */
+/* SIGUSR1's handler, usr1_handler's branch inside a syscall (L2626-2669),
+ * against the frame record: the thread's context from its state block,
+ * wait_suspend, then the context back. No xstate (the profile has no AVX)
+ * and no WoW64. */
+static void usr1_handler( void )
+{
+    struct syscall_frame *frame = get_syscall_frame();
+    CONTEXT context;
+
+    if (!frame || !frame->state) tw_unsupported( "SIGUSR1 outside a syscall (no state block in the frame record)" );
+    memset( &context, 0, sizeof(context) );
+    context.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_EXCEPTION_REQUEST;
+    if (frame->restore_flags & RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT)
+    {
+        /* a unix call's frame (L2640-2645): its flags were never saved; the
+         * state block holds the FP state, so there is nothing to fix up */
+        frame->restore_flags &= ~RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
+        S64( frame->state, TW_STATE_RFLAGS ) = 0x200;
+    }
+    NtGetContextThread( GetCurrentThread(), &context );
+    wait_suspend( &context );
+    if (context.ContextFlags & 0x40)
+    {
+        /* xstate is updated directly in frame's xstate */
+        context.ContextFlags &= ~0x40;
+        frame->restore_flags |= 0x40;
+    }
+    NtSetContextThread( GetCurrentThread(), &context );
+}
+
+/* The handler of a delivered signal (section 9). Our threads are always
+ * inside a syscall then, so each runs its handler's in-syscall path. As
+ * Wine installs them (L2862-2863: sa_mask = server_block_set, no
+ * SA_NODEFER), a handler runs with server_block_set and its own signal
+ * blocked, and the mask is restored when it returns, as sigreturn does. */
 void tw_handle_signal( int sig )
 {
+    sigset_t block = server_block_set, old;
+
+    sigaddset( &block, sig );
+    pthread_sigmask( SIG_BLOCK, &block, &old );
     switch (sig)
     {
-    case SIGQUIT:
+    case SIGQUIT:  /* quit_handler (L2608-2614) */
         abort_thread( 0 );
+    case SIGUSR1:
+        usr1_handler();
+        break;
     default:
-        tw_unsupported( "a pending signal with no handler (M4: SIGQUIT only)" );
+        tw_unsupported( "a pending signal with no handler (SIGQUIT and SIGUSR1 only)" );
     }
+    pthread_sigmask( SIG_SETMASK, &old, NULL );
 }
 
 /* The harness's routine in place of a thread's guest entry; NULL in the
@@ -193,7 +239,6 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     BYTE *state;
     int is_main = green_is_main();
 
-    if (suspend) tw_unsupported( "signal_start_thread: a suspended start (M4 WP4)" );
     if (teb != NtCurrentTeb()) tw_unsupported( "signal_start_thread: a TEB other than the running thread's" );
     if (!frame) tw_unsupported( "signal_start_thread: no frame record (signal_init_process, signal_alloc_thread)" );
     if (frame->own_state) tw_unsupported( "signal_start_thread: a thread started twice" );
@@ -213,6 +258,10 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     context.FltSave.ControlWord = 0x27f;
     context.FltSave.MxCsr = context.MxCsr = 0x1f80;
 
+    /* M4: a thread created suspended waits until it is resumed (L2957),
+     * with SIGUSR1 still blocked; another thread may change its context */
+    if (suspend) wait_suspend( &context );
+
     ctx = (CONTEXT *)((ULONG_PTR)context.Rsp & ~15) - 1;
     *ctx = context;
     ctx->ContextFlags = CONTEXT_FULL;
@@ -220,18 +269,20 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     if (!(state = aligned_alloc( 64, TW_STATE_SIZE )))
         tw_unsupported( "signal_start_thread: no host memory for the state block" );
     memset( state, 0, TW_STATE_SIZE );
-    GPR( state, RCX ) = (ULONG_PTR)ctx;
-    GPR( state, RDX ) = (ULONG_PTR)arg;      /* the PEB, or a new thread's argument */
-    GPR( state, RSP ) = (ULONG_PTR)ctx - 8;
-    S64( state, TW_STATE_RIP ) = (ULONG_PTR)pLdrInitializeThunk;
-    S64( state, TW_STATE_RFLAGS ) = 0x200;
-    S64( state, TW_STATE_GS_BASE ) = (ULONG_PTR)teb;
-    S32( state, TW_STATE_MXCSR ) = TW_INIT_MXCSR;
-    S16( state, TW_STATE_FCW ) = TW_INIT_FCW;
-    S16( state, TW_STATE_FTW ) = TW_INIT_FTW;  /* all x87 registers empty */
     if (is_main) main_state = state;
     frame->own_state = state;
     frame->state = state;
+    /* the frame from the full context (L2966), then the entry: RCX = the
+     * CONTEXT, RDX = the PEB or a new thread's argument (the context's) */
+    signal_set_full_context( ctx );
+    GPR( state, RCX ) = (ULONG_PTR)ctx;
+    GPR( state, RSP ) = (ULONG_PTR)ctx - 8;
+    S64( state, TW_STATE_RIP ) = (ULONG_PTR)pLdrInitializeThunk;
+    S64( state, TW_STATE_GS_BASE ) = (ULONG_PTR)teb;
+
+    /* as init_syscall_frame ends (L2978): a signal sent before the start is
+     * handled here (delivery point 2), against this state block */
+    pthread_sigmask( SIG_UNBLOCK, &server_block_set, NULL );
 
     /* BOOT_STOP_AT_ENTRY; boot rejects every other nonzero value */
     if (is_main && tw_boot_flags) tw_boot_stopped();
@@ -378,7 +429,8 @@ int32_t tw_unix_call_dispatcher( uint64_t state_addr, int32_t entry, uint64_t re
     return dispatcher_return( state, frame, (ULONG)status, ret );
 }
 
-/* ---- contexts on the current thread (section 11) ---- */
+/* ---- contexts (section 11): the current thread's in its frame record,
+ * another thread's through the server ---- */
 
 static BYTE *context_state( const char *who )
 {
@@ -458,17 +510,27 @@ NTSTATUS signal_set_full_context( CONTEXT *context )
 }
 
 /***********************************************************************
- *           NtSetContextThread  (L1116-1208), for the current thread
+ *           NtSetContextThread  (L1116-1208)
  */
 NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 {
     DWORD flags = context->ContextFlags & ~CONTEXT_AMD64;
+    BOOL self = (handle == GetCurrentThread());
     BYTE *state;
 
-    if (handle != GetCurrentThread()) tw_unsupported( "NtSetContextThread: another thread's context (M4)" );
+    flags &= ~CONTEXT_XSTATE;  /* no extended features: the profile has no AVX */
+
+    /* M4: another thread's goes to the server, which keeps it for the
+     * thread's usr1_handler (L1145-1153); the server answers self for a
+     * real handle to this thread */
+    if (!self)
+    {
+        NTSTATUS ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+
+        if (ret || !self) return ret;
+    }
     state = context_state( "NtSetContextThread: outside a syscall" );
 
-    flags &= ~CONTEXT_XSTATE;  /* no extended features: the profile has no AVX */
     /* debug registers other than the cached ones, all 0, need the server */
     if ((flags & CONTEXT_DEBUG_REGISTERS) &&
         (context->Dr0 || context->Dr1 || context->Dr2 || context->Dr3 || context->Dr6 || context->Dr7))
@@ -505,14 +567,24 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 }
 
 /***********************************************************************
- *           NtGetContextThread  (L1215-1346), for the current thread
+ *           NtGetContextThread  (L1215-1346)
  */
 NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
 {
     DWORD needed_flags = context->ContextFlags & ~CONTEXT_AMD64;
+    BOOL self = (handle == GetCurrentThread());
     const BYTE *state;
 
-    if (handle != GetCurrentThread()) tw_unsupported( "NtGetContextThread: another thread's context (M4)" );
+    /* M4: another thread's comes from the server: the context the thread
+     * posted from usr1_handler's wait_suspend, after a wait for it when the
+     * thread hasn't stopped yet (get_thread_context, unix/thread.c); the
+     * server answers self for a real handle to this thread (L1224-1229) */
+    if (!self)
+    {
+        NTSTATUS ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+
+        if (ret || !self) return ret;
+    }
     state = context_state( "NtGetContextThread: outside a syscall" );
 
     if (needed_flags & CONTEXT_INTEGER)
@@ -599,10 +671,84 @@ void set_process_instrumentation_callback( void *callback )
 
 /* ---- calls into the guest's dispatchers (M4-M5) ---- */
 
-NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
+/* The machine frame and the stack KiUserApcDispatcher gets (L408-444). */
+struct machine_frame
+{
+    ULONG64 rip;
+    ULONG64 cs;
+    ULONG64 eflags;
+    ULONG64 rsp;
+    ULONG64 ss;
+};
+
+struct apc_stack_layout
+{
+    CONTEXT              context;        /* 000 */
+    CONTEXT_EX           context_ex;     /* 4d0 */
+    KCONTINUE_ARGUMENT   continue_arg;   /* 4f0 */
+    ULONG64              align1;         /* 508 */
+    APC_CALLBACK_DATA    callback_data;  /* 510 */
+    struct machine_frame machine_frame;  /* 530 */
+    ULONG64              align2;         /* 558 */
+};
+C_ASSERT( offsetof(struct apc_stack_layout, continue_arg) == 0x4f0 );
+C_ASSERT( offsetof(struct apc_stack_layout, machine_frame) == 0x530 );
+C_ASSERT( sizeof(struct apc_stack_layout) == 0x560 );
+
+/***********************************************************************
+ *           call_user_apc_dispatcher  (L1661-1705)
+ *
+ * M4 (section 11, "User APCs"): against the state block. The layout goes
+ * below the context's RSP (or the frame's), and the state block enters PE
+ * KiUserApcDispatcher with RSP = the layout and RBP = the context's;
+ * CONTEXT_CONTROL in restore_flags makes the dispatcher take its
+ * new-context return, with RAX = the status.
+ */
+NTSTATUS call_user_apc_dispatcher( CONTEXT *context, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
                                    ULONG_PTR arg3, PNTAPCFUNC func, NTSTATUS status )
 {
-    tw_unsupported( "call_user_apc_dispatcher" );
+    struct syscall_frame *frame = get_syscall_frame();
+    BYTE *state = context_state( "call_user_apc_dispatcher: outside a syscall" );
+    ULONG64 rsp = context ? context->Rsp : GPR( state, RSP );
+    struct apc_stack_layout *stack;
+
+    if (flags & ~SERVER_USER_APC_CALLBACK_DATA_CONTEXT) FIXME( "flags %#x are not supported.\n", flags );
+
+    rsp &= ~15;
+    stack = (struct apc_stack_layout *)rsp - 1;
+    if (context)
+    {
+        memmove( &stack->context, context, sizeof(stack->context) );
+        NtSetContextThread( GetCurrentThread(), &stack->context );
+    }
+    else
+    {
+        stack->context.ContextFlags = CONTEXT_FULL;
+        NtGetContextThread( GetCurrentThread(), &stack->context );
+        stack->context.Rax = status;
+    }
+    memset( &stack->continue_arg, 0, sizeof(stack->continue_arg) );
+    stack->continue_arg.ContinueType = KCONTINUE_RESUME;
+    stack->continue_arg.ContinueFlags = KCONTINUE_FLAG_TEST_ALERT | KCONTINUE_FLAG_DELIVER_APC;
+    stack->context.P1Home    = arg1;
+    if (flags & SERVER_USER_APC_CALLBACK_DATA_CONTEXT)
+    {
+        stack->callback_data.ContextRecord = &stack->context;
+        stack->callback_data.Parameter = arg2;
+        stack->callback_data.Reserved0 = 0;
+        stack->callback_data.Reserved1 = 0;
+        stack->context.P2Home = (ULONG_PTR)&stack->callback_data;
+    }
+    else stack->context.P2Home = arg2;
+    stack->context.P3Home    = arg3;
+    stack->context.P4Home    = (ULONG64)func;
+    stack->machine_frame.rip = stack->context.Rip;
+    stack->machine_frame.rsp = stack->context.Rsp;
+    GPR( state, RBP ) = stack->context.Rbp;
+    GPR( state, RSP ) = (ULONG64)stack;
+    S64( state, TW_STATE_RIP ) = (ULONG64)pKiUserApcDispatcher;
+    frame->restore_flags |= CONTEXT_CONTROL;
+    return status;
 }
 
 NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context )

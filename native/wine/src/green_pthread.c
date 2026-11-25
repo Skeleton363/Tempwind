@@ -6,8 +6,7 @@
  * functions at all, so these are the ones Wine calls:
  * - mutexes (normal, recursive, error-checking), condition variables,
  *   pthread_once, keys (per green thread), pthread_self and the attribute
- *   functions (libc's own pthread_sigmask serves until WP4: it is
- *   sigprocmask);
+ *   functions;
  * - a condition wait goes through green.c;
  * - a thread that suspends while holding a mutex is a bug: green.c asserts on
  *   mutexes_held;
@@ -17,6 +16,9 @@
  *   pthread_exit longjmps back there (on the main thread it parks);
  *   pthread_join waits for a thread's end and frees it. Process exit on a
  *   thread other than the main one longjmps there too.
+ * - from M4 (WP4), the signal mask per green thread: tw_pthread_sigmask,
+ *   which config.h makes Wine's pthread_sigmask; a new thread inherits its
+ *   creator's mask.
  * Our state lives inside libc's opaque types (checked by the static asserts).
  *
  * Copyright 2026 the Tempwind authors
@@ -29,6 +31,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -166,6 +169,11 @@ int pthread_create( pthread_t *thread, const pthread_attr_t *attr, void *(*start
         }
     }
     t->g.id = next_id++;
+    /* a pthread inherits its creator's mask: NtCreateThreadEx blocks
+     * server_block_set around this call (unix/thread.c L1419-1459), so the
+     * thread starts with SIGUSR1 blocked until signal_start_thread unblocks
+     * it (wine-unix.md, section 9, "The mask") */
+    t->g.sig_blocked = green_current->sig_blocked;
     t->state = GT_CREATED;
     t->start = start;
     t->arg = arg;
@@ -242,6 +250,42 @@ int pthread_kill( pthread_t thread, int sig )
 int pthread_cancel( pthread_t thread )
 {
     tw_unsupported( "pthread_cancel" );
+}
+
+/* ---- the signal mask (M4 WP4; wine-unix.md, section 9, "The mask") ---- */
+
+#define SIG_BIT(sig) ((uint64_t)1 << ((sig) - 1))
+
+/* pthread_sigmask on the running green thread's mask (bit sig - 1 of
+ * sig_blocked, signals 1-64), in place of libc's process-wide one. SIGKILL
+ * and SIGSTOP are never blocked, as on Linux. Unblocking a pending signal is
+ * delivery point 2: it is handled before this returns, as the kernel
+ * delivers it before sigprocmask returns. */
+int tw_pthread_sigmask( int how, const sigset_t *set, sigset_t *old )
+{
+    struct green_thread *self = green_current;
+    uint64_t prev = self->sig_blocked, mask = 0;
+    int sig;
+
+    if (set && how != SIG_BLOCK && how != SIG_UNBLOCK && how != SIG_SETMASK) return EINVAL;
+    if (old)
+    {
+        sigemptyset( old );
+        for (sig = 1; sig <= 64; sig++)
+            if (prev & SIG_BIT( sig )) sigaddset( old, sig );
+    }
+    if (!set) return 0;
+    for (sig = 1; sig <= 64; sig++)
+        if (sigismember( set, sig ) == 1) mask |= SIG_BIT( sig );
+    switch (how)
+    {
+    case SIG_BLOCK:   self->sig_blocked = prev | mask; break;
+    case SIG_UNBLOCK: self->sig_blocked = prev & ~mask; break;
+    default:          self->sig_blocked = mask; break;
+    }
+    self->sig_blocked &= ~(SIG_BIT( SIGKILL ) | SIG_BIT( SIGSTOP ));
+    if (prev & ~self->sig_blocked & self->sig_pending) green_deliver_signals();
+    return 0;
 }
 
 /* ---- mutexes ---- */

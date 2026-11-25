@@ -30,13 +30,15 @@ the signals and main_loop don't run.
   timeout skips the registry's periodic save.
 - Loud stops: main_loop, receive_fd (only main_loop reads msg_fd), a
   partial reply write (only main_loop would deliver POLLOUT), and
-  send_thread_signal of anything but SIGQUIT.
-- Threads (server/ptrace.c, M4): send_thread_signal sends SIGQUIT to the
-  green thread whose id is the thread's unix_tid (inproc_thread_signal:
-  pending, and a wake), which handles it with abort_thread(0) as
-  quit_handler does. Its callers (wine-unix.md, section 7): kill_thread
-  (SIGQUIT, server/thread.c L1608-1631), stop_thread and queue_apc
-  (SIGUSR1, which stops), propagate_console_signal_cb (unreachable: no
+  send_thread_signal of anything but SIGQUIT and SIGUSR1.
+- Threads (server/ptrace.c, M4): send_thread_signal sends SIGQUIT and
+  SIGUSR1 to the green thread whose id is the thread's unix_tid
+  (inproc_thread_signal: pending, and a wake unless its mask blocks the
+  signal), which handles SIGQUIT with abort_thread(0) as quit_handler
+  does, and SIGUSR1 as usr1_handler's in-syscall branch (wait_suspend).
+  Its callers (wine-unix.md, section 7): kill_thread (SIGQUIT,
+  server/thread.c L1608-1631), stop_thread and queue_apc (SIGUSR1,
+  L955-961, L1450, L1467), propagate_console_signal_cb (unreachable: no
   conhost). inproc_thread_hangup is the hang-up of a thread's
   request pipe that main_loop would see (thread_poll_event), called when
   a green thread ends.
@@ -283,7 +285,7 @@ diff --git a/server/mapping.c b/server/mapping.c
 diff --git a/server/ptrace.c b/server/ptrace.c
 --- a/server/ptrace.c
 +++ b/server/ptrace.c
-@@ -250,11 +250,46 @@
+@@ -250,11 +250,47 @@
  {
  }
  
@@ -315,13 +317,14 @@ diff --git a/server/ptrace.c b/server/ptrace.c
  
 +#ifdef __EMSCRIPTEN__
 +    /* Tempwind (wine-unix.md, sections 7 and 9): no Unix signals in-process.
-+     * SIGQUIT goes to the target's green thread, pending, and wakes it if it
-+     * waits; the thread handles it at its next delivery point with
-+     * abort_thread(0), as quit_handler does. 1 as a tkill that reached a live
-+     * thread; 0 when its green thread has ended or isn't known yet (unix_tid
-+     * -1), as below. Any other signal stops (M4 WP4 takes SIGUSR1). */
-+    if (sig != SIGQUIT)
-+        tw_unsupported( "send_thread_signal of a signal other than SIGQUIT (in-process server, M4)" );
++     * SIGQUIT and SIGUSR1 go to the target's green thread, pending, and wake
++     * it if it waits and its mask doesn't block the signal; the thread
++     * handles it at its next delivery point: SIGQUIT with abort_thread(0), as
++     * quit_handler does, SIGUSR1 as usr1_handler's in-syscall branch. 1 as a
++     * tkill that reached a live thread; 0 when its green thread has ended or
++     * isn't known yet (unix_tid -1), as below. Any other signal stops. */
++    if (sig != SIGQUIT && sig != SIGUSR1)
++        tw_unsupported( "send_thread_signal of a signal other than SIGQUIT and SIGUSR1 (in-process server, M4)" );
 +    ret = thread->unix_tid != -1 && inproc_thread_signal( thread->unix_tid, sig );
 +    if (debug_level && ret) fprintf( stderr, "%04x: *sent signal* %s\n", thread->id, get_signal_name( sig ));
 +    return ret;

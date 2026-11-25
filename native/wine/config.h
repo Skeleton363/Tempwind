@@ -110,4 +110,11 @@
 #define HAVE_PTHREAD_GETTHREADID_NP 1
 int pthread_getthreadid_np( void );
 
+/* M4 WP4 (wine-unix.md v3, section 9, "The mask"): ntdll's pthread_sigmask
+ * calls (unix/server.c, unix/thread.c) reach the per-green-thread mask in
+ * native/wine/src/green_pthread.c. libc's pthread_sigmask stays in the link
+ * (Emscripten's raise takes __sig_is_blocked from the same file), and
+ * libc's sigprocmask stays the in-process server's own mask. */
+#define pthread_sigmask tw_pthread_sigmask
+
 #endif /* __WINE_CONFIG_H */
