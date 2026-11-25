@@ -8,7 +8,7 @@
 //   node tests/bench/sevenzip.mjs [--exe target/targets/7zz.exe] [--runs 3] [--wine CMD] [--skip-native]
 //
 // The translated side runs on our Wine (runtime/src/wine/run-wine.mjs), so the JSON line carries "host": "wine"
-// (Phase 1's lines, from the shim, have no host). Needs target/wine and target/wine-unix (tests/wine/prepare.sh,
+// Needs target/wine and target/wine-unix (tests/wine/prepare.sh,
 // TW_WINE_DIR and TW_WINE_UNIX_DIR) with 7zz.exe in the catalog.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

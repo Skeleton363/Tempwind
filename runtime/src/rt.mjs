@@ -5,7 +5,15 @@ import {
   RT_REQUEST_SIZE, RT_REQ_CODE_BASE, RT_REQ_CODE_PTR, RT_REQ_CODE_LEN, RT_REQ_ENTRY,
   RT_REQ_KNOWN_PTR, RT_REQ_KNOWN_LEN, RT_REQ_FLAGS, RT_RES_STATUS, RT_RES_WASM_PTR,
   RT_RES_WASM_LEN, RT_RES_MSG_PTR, RT_RES_MSG_LEN, RT_RESULT_SIZE,
+  RT_FLAG_NULL_CHECK, RT_FLAG_STORE_CHECK, RT_FLAG_COUNTERS, RT_FLAG_SYNC_ALL, RT_FLAG_REFERENCE_LAYOUT,
+  RT_FLAG_SHARED_MEMORY,
 } from './abi.mjs';
+
+/** The run-time translator's request flags (abi.md, "Request") for a plan's `options` (runtime.md, "Load plan"). */
+export function requestFlags(o) {
+  return (o.nullCheck ? RT_FLAG_NULL_CHECK : 0) | (o.storeCheck ? RT_FLAG_STORE_CHECK : 0) | (o.counters ? RT_FLAG_COUNTERS : 0)
+    | (o.syncAll ? RT_FLAG_SYNC_ALL : 0) | (o.structured ? 0 : RT_FLAG_REFERENCE_LAYOUT) | (o.sharedMemory ? RT_FLAG_SHARED_MEMORY : 0);
+}
 
 const EXPORTS = ['memory', 'rt_alloc', 'rt_free', 'rt_translate'];
 // Buffers are never requested empty: a zero-length request still gets a valid pointer.

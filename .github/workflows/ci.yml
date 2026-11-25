@@ -122,24 +122,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run test:node
 
-      # The 7-Zip command matrix (tests/sevenzip/README.md): 7zz.exe translated, each step compared byte for
-      # byte with tests/sevenzip/expected/ (written from Wine, checked against real Windows in windows-x64).
-      # --mode shim is Phase 1's run (run-pe with the Win32 shim) until WP6 deletes it; the Wine host's own
-      # matrix (--mode translated) is a job of wine-unix.yml.
-      - name: 7-Zip command matrix, translated in Node (shim)
-        if: ${{ !cancelled() }}
-        run: |
-          cargo run -q -p x64wasm-cli --release -- translate-pe target/targets/7zz.exe --out-dir target/sevenzip
-          node tests/sevenzip/matrix.mjs --mode shim --out target/sevenzip-out --skip-translate --jobs "$(nproc)" --quiet
-          node tests/sevenzip/compare.mjs target/sevenzip-out tests/sevenzip/expected
-
-      - name: Upload the 7-Zip matrix results
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: sevenzip-translated
-          path: target/sevenzip-out/results
-          if-no-files-found: ignore
+      # The 7-Zip command matrix on our Wine is the sevenzip-matrix job of wine-unix.yml; on real Windows, windows-x64 below.
 
       # Tests use Playwright's pinned Chromium unless the CHROME_PATH repository
       # variable names another browser binary on the runner.

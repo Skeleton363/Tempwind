@@ -125,7 +125,7 @@ A caller that gets a status other than 0 from a call stores nothing further and 
    - `STATUS_EXIT`: the reason is in `state.exit`.
 3. Materialize RFLAGS: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a, cc_b, cc_r)`. Set `depth = d0`, store the exit reason in `state.exit` and return it.
 
-A `run` that ends by a trap or by an import that throws restores nothing: the exception leaves `depth` at the inner value. The host that catches it restores `depth` to its own entry value, as `runtime/src/process.mjs`'s `callNested` does in its `finally`. A host that keeps running after a top-level trap sets `depth` back to 0. The Unix side follows the same rule: `boot` sets `depth` to 0 after a `longjmp` out of guest code ("Wine boundary", "Process exit"). This was found by M2's code review: today a trap ends the process, so nothing reaches the stale value.
+A `run` that ends by a trap or by an import that throws restores nothing: the exception leaves `depth` at the inner value. The host that catches it restores `depth` to its own entry value, as Phase 1's `callNested` (deleted in M4) did in its `finally`. A host that keeps running after a top-level trap sets `depth` back to 0. The Unix side follows the same rule: `boot` sets `depth` to 0 after a `longjmp` out of guest code ("Wine boundary", "Process exit"). This was found by M2's code review: today a trap ends the process, so nothing reaches the stale value.
 
 **`depth` across nested runs (v5).** A host starts `depth` at 0, so a top-level `run` behaves as in v4. A `run` entered from a host function while guest frames are live (a nested guest call: "Wine boundary", "Who calls whom", item 5) counts on from the outer frames, so the depth guard bounds the wasm stack across all nested runs, and the outer guest code continues with its own count when the nested `run` returns.
 
@@ -207,7 +207,7 @@ Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
 | 1 | `EXIT_LEFT_CODE` | Control reached a guest address with no block in the lookup table: a fall-through past the code, a target nothing translated yet, or a `ret` to an unknown address. `rip` holds that address. Hosts translate more code (run-time translation) or stop. |
 | 2 | `EXIT_UNSUPPORTED` | The instruction at `rip` is not supported yet. Registers hold the state before it. From M4 also a floating-point instruction that raises an unmasked exception (#XM and #MF wait for Windows exceptions in Phase 4). |
 | 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. RIP is the faulting instruction, and every register holds its value from before it. Translated code emits it from M3 for #DE (`div`, `idiv`), #UD (`ud2` and bytes that don't decode) and #GP, with fault address 0. An instruction that decodes but is outside the CPUID profile stays `EXIT_UNSUPPORTED`. M2's runtime raises it for execution outside executable sections. NULL and store checks come with M6. |
-| 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API, a shim error. The host knows why. In a Wine process the Unix side keeps the reason in C (v5). |
+| 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API. The host knows why. In a Wine process the Unix side keeps the reason in C (v5). |
 
 A test function returns to the host by `ret`ing to a sentinel return address that the host pushed (`SENTINEL_RET = 0x0000_7FFF_FFFF_0000`). The host then expects exit 1 with `rip == SENTINEL_RET`.
 
@@ -350,7 +350,7 @@ Status:
      case EXIT_UNSUPPORTED: stop loudly;             // store-check hits included
    }
    ```
-   Phase 1's JS run loop (`process.mjs`) doesn't apply to Wine processes.
+   Phase 1's JS run loop (deleted in M4) never applied to Wine processes.
 3. **Translated code → Unix side.**
    - Host functions in `env.table` are **raw Unix-side exports** of the guest-function type `(state i64, entry i32, ret i64) -> i32`. They follow "Host functions" above: read the arguments, perform the guest's `ret`, return a status.
    - JS installs them with `table.set(i, instance.exports.f)`. An Emscripten JS wrapper (memory64 BigInt conversion) must never go there: it would be a JS frame.

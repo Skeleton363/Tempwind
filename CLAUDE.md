@@ -4,7 +4,7 @@ Runs unmodified 64-bit Windows programs in the browser: x86-64 to WebAssembly tr
 
 ## Layout
 - crates/: x64wasm (the translator), x64wasm-cli, x64wasm-rt (the translator for wasm32, run-time translation), x64wasm-fp (soft float), testkit (instruction oracle, fixtures, replay)
-- runtime/: JS runtime (Node and browser hosts, the Win32 shim); native/: Wine's Unix side with Emscripten (Phase 2+); web/: desktop shell (Phase 3+)
+- runtime/: JS runtime (the Wine host, the Linker, the spike hosts); native/: Wine's Unix side with Emscripten (Phase 2+); web/: desktop shell (Phase 3+)
 - tests/: program, Wine and browser tests; docs/: plan, status, design
 
 ## Commands
