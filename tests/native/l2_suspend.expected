@@ -1,0 +1,38 @@
+suspend: 0
+suspend: 1
+suspended thread finished: 258
+resume: 2
+still one left: 258
+resume: 1
+exit code: 21
+first resume that took a count down returned: 1
+exit code: 31
+worker ran: 1
+GetThreadContext: 1
+flags kept: 1
+rip and rsp set: 1
+SetThreadContext: 1
+GetThreadContext again: 1
+r14 round trip: 1
+rip and rsp unchanged: 1
+SetThreadContext, original: 1
+r14 restored: 1
+resume: 1
+exit code: 21
+queue 1: 1
+queue 2: 1
+queue 3: 1
+exit code: 41
+SleepEx returned: 192 (WAIT_IO_COMPLETION is 192)
+APCs run: 3 in order 123
+queue 4: 1
+exit code: 42
+WaitForSingleObjectEx returned: 192
+APCs run: 1 in order 4
+the event was not taken: 258
+queue 5: 1
+exit code: 43
+APCs run before the alertable call: 0
+wait * 1000 + SleepEx: 192
+APCs run: 1 in order 5
+done
