@@ -1,5 +1,5 @@
 // The programs (docs/design/wine-unix.md, section 10, "Programs (M3)"):
-// hello.exe, l2_int, l2_crt and l2_float, from M4 basic.exe and l2_threads, each in a fresh Unix-side instance
+// hello.exe, l2_int, l2_crt and l2_float, from M4 basic.exe, l2_threads and l2_suspend, each in a fresh Unix-side instance
 // in run mode, with both memory checks on: the catalog's modules are built
 // with --shared --null-check --store-check (parseCatalog refuses others) and
 // run-time translations use the NULL, store and shared-memory flags
@@ -37,6 +37,7 @@ const PROGRAMS = [
   { name: 'l2_crt', dlls: CRT_DLLS },
   { name: 'l2_float', dlls: CRT_DLLS },
   { name: 'l2_threads', dlls: CRT_DLLS }, // M4: green threads (wine-unix.md v3, section 9)
+  { name: 'l2_suspend', dlls: CRT_DLLS }, // M4: suspension, contexts and user APCs (sections 9 and 11)
   { name: 'basic', dlls: BASIC_DLLS, expectedDir: new URL('../pe/', import.meta.url), crlf: false },
 ];
 
