@@ -54,18 +54,17 @@ u64 values are `"0x…"` hex strings, as in the spike manifest; addresses are vi
 - `sha256` is the SHA-256 of the PE file. The runtime refuses a plan whose `sha256` doesn't match the file it was given.
 - `options` (M6): the translator options the AOT module was built with that change what the code does at run time, or that a reference run must keep (`syncAll`, `structured`), and whether its memory import is shared (`sharedMemory`, Phase 2 M3: `translate-pe --shared`), so code translated at run time imports the same memory. The runtime passes them as the run-time translator's request flags (`abi.md`), and supplies `env.page_flags` and `env.counters` to every module that imports them. A plan without `options`, or without one of its fields, means the defaults: `structured` true, the others false.
 
-## Benchmarks (M4)
+## Benchmarks
 
-**On Wine from Phase 2 M4:** both benchmarks run their translated side through the Wine host (`run-wine.mjs`, with the catalog's AOT modules and both memory checks, `wine-unix.md` v3), with Phase 1's arguments: CoreMark `0x0 0x0 0x66 0`, and `7zz.exe b 2 -mmt1 -md18`. Each JSON line gains `"host": "wine"`; Phase 1's lines have no `host` and were the shim's. `bench.yml` fetches the `wine.lock` and `wine-unix.lock` releases and prepares `target/wine` before it runs them, and on pull requests it compares the ratio only with the last line of the same host. The rest of this section is Phase 1's, and holds for the native sides and the records.
-
-`tests/bench/coremark.mjs` translates `coremark.exe` (all entries), runs it translated in Node with `0x0 0x0 0x66 0`, and natively under wine64 with the same arguments. Iteration count 0 makes CoreMark calibrate itself to a run of at least 10 seconds, so a valid run prints "Correct operation validated". The script prints one JSON line with:
+Both benchmarks run their translated side on our Wine, through the Wine host (`run-wine.mjs`, with the catalog's AOT modules and both memory checks, `wine-unix.md` v3), and their native side under `wine64` (`--wine CMD` names another). They keep Phase 1's arguments: CoreMark `0x0 0x0 0x66 0`, and `7zz.exe b 2 -mmt1 -md18`. Each script prints one JSON line with:
 - the commit and the date;
 - Node's version and the CPU model;
-- iterations per second, translated and native, each the median of 3 runs;
+- `"host": "wine"` (Phase 1's lines, from the shim, have no `host`);
+- CoreMark's iterations per second, or `7z b`'s "Tot:" rating, translated and native, each the median of 3 runs (`--runs N`);
 - their ratio.
 
-A run that isn't validated fails the script.
+CoreMark's iteration count 0 makes it calibrate itself to a run of at least 10 seconds, so a valid run prints "Correct operation validated". A CoreMark run that isn't validated fails its script, and so does a `7z b` run without a "Tot:" line or one that reports an error.
 
-`.github/workflows/bench.yml` runs it on every push to `main` and on pull requests, and also runs `coremark.exe` natively on windows-2025 for the record.
-- **On main,** it appends the JSON line to `coremark.jsonl` on the orphan branch `bench-data`, which the workflow creates on its first run. The commit comes from the workflow's bot, with `contents: write` for this job only. Each benchmark records on its own: if one job fails, the other's result is still appended.
-- **On pull requests,** it compares the ratio with the last line on `bench-data` and emits a warning annotation, never a failure, when it is more than 10 % worse.
+`.github/workflows/bench.yml` runs both on every push to `main` and on pull requests. It fetches the `wine.lock` and `wine-unix.lock` releases and prepares `target/wine` first, and it also runs `coremark.exe` natively on windows-2025 for the record.
+- **On main,** it appends each JSON line to its file (`coremark.jsonl`, `sevenzip.jsonl`) on the orphan branch `bench-data`, which the workflow creates on its first run. The commit comes from the workflow's bot, with `contents: write` for that job only. Each benchmark records on its own: if one job fails, the other's result is still appended.
+- **On pull requests,** it compares the ratio with the last line of the same host on `bench-data` and emits a warning annotation, never a failure, when it is more than 10 % worse.

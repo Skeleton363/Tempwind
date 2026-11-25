@@ -1,7 +1,7 @@
 name: bench
 
 # CoreMark, translated on our Wine in Node (run-wine.mjs; the JSON line says "host": "wine") and natively under
-# wine64 on the same runner (docs/design/runtime.md, "Benchmarks (M4)"). The inputs are the published
+# wine64 on the same runner (docs/design/runtime.md, "Benchmarks"). The inputs are the published
 # wine.lock and wine-unix.lock releases, prepared by tests/wine/prepare.sh --fetch. On main the result line is appended to coremark.jsonl on the orphan branch
 # bench-data; on pull requests a ratio more than 10 % below the last recorded one of the same host (Phase 1's lines have no host) is a warning
 # annotation, never a failure. coremark.exe also runs natively on windows-2025, for the record.

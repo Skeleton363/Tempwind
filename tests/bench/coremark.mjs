@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CoreMark benchmark (docs/design/runtime.md, "Benchmarks (M4)"): coremark.exe translated and run on our
+// CoreMark benchmark (docs/design/runtime.md, "Benchmarks"): coremark.exe translated and run on our
 // Wine in Node, and natively under wine64, both with `0x0 0x0 0x66 0` (iterations 0: CoreMark calibrates itself
 // to a run of at least 10 s, so a valid run prints "Correct operation validated"). Prints one JSON line:
 // commit, date, Node version, CPU model, iterations per second translated and native (medians of
@@ -7,9 +7,9 @@
 //
 //   node tests/bench/coremark.mjs [--exe target/targets/coremark.exe] [--runs 3] [--wine CMD] [--skip-native]
 //
-// The translated side runs on our Wine (runtime/src/wine/run-wine.mjs), so the JSON line carries "host": "wine"
-// Needs target/wine and target/wine-unix (tests/wine/prepare.sh,
-// TW_WINE_DIR and TW_WINE_UNIX_DIR) with coremark.exe in the catalog.
+// The translated side runs on our Wine (runtime/src/wine/run-wine.mjs), so the JSON line carries "host": "wine".
+// Needs target/wine and target/wine-unix (tests/wine/prepare.sh, TW_WINE_DIR and TW_WINE_UNIX_DIR) with
+// coremark.exe in the catalog.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { cpus } from 'node:os';
@@ -47,7 +47,7 @@ function parse(out, what) {
 // (target/wine, tests/wine/prepare.sh): the catalog matches an image by its sha256, so --exe must be those bytes.
 const translated = [];
 for (let i = 0; i < runs; i++) {
-  const r = sh(process.execPath, [`${root}runtime/src/wine/run-wine.mjs`, exe, ...ARGS], { env: { ...process.env, TEMPWIND_TRACE: '' } });
+  const r = sh(process.execPath, [`${root}runtime/src/wine/run-wine.mjs`, exe, ...ARGS]);
   translated.push(parse(r.stdout, `translated run ${i + 1}`));
   process.stderr.write(`translated ${i + 1}/${runs}: ${translated[i]} iterations/s\n`);
 }

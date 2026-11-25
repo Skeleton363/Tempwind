@@ -7,9 +7,9 @@
 //
 //   node tests/bench/sevenzip.mjs [--exe target/targets/7zz.exe] [--runs 3] [--wine CMD] [--skip-native]
 //
-// The translated side runs on our Wine (runtime/src/wine/run-wine.mjs), so the JSON line carries "host": "wine"
-// Needs target/wine and target/wine-unix (tests/wine/prepare.sh,
-// TW_WINE_DIR and TW_WINE_UNIX_DIR) with 7zz.exe in the catalog.
+// The translated side runs on our Wine (runtime/src/wine/run-wine.mjs), so the JSON line carries "host": "wine".
+// Needs target/wine and target/wine-unix (tests/wine/prepare.sh, TW_WINE_DIR and TW_WINE_UNIX_DIR) with
+// 7zz.exe in the catalog.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { cpus } from 'node:os';
@@ -48,7 +48,7 @@ function parse(r, what) {
 // (target/wine, tests/wine/prepare.sh): the catalog matches an image by its sha256, so --exe must be those bytes.
 const translated = [];
 for (let i = 0; i < runs; i++) {
-  const r = sh(process.execPath, [`${root}runtime/src/wine/run-wine.mjs`, exe, ...ARGS], { encoding: 'utf8', env: { ...process.env, TEMPWIND_TRACE: '' } });
+  const r = sh(process.execPath, [`${root}runtime/src/wine/run-wine.mjs`, exe, ...ARGS], { encoding: 'utf8' });
   translated.push(parse(r, `translated run ${i + 1}`));
   process.stderr.write(`translated ${i + 1}/${runs}: Tot rating ${translated[i]} MIPS\n`);
 }

@@ -59,7 +59,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/pe/build.sh
 
-      - name: Translate basic.exe (AOT, run-time translator)
+      - name: Build the run-time translator (x64wasm_rt.wasm)
         if: ${{ !cancelled() }}
         run: tests/pe/prepare.sh
 
@@ -98,7 +98,7 @@ jobs:
           target/wine/pe/tests/kernel32_test.exe target/wine/pe/tests/ntdll_test.exe
           --json target/wine/census.json --md target/wine/census.md --check
 
-      - name: Translate the L2 programs and CoreMark (AOT), build x64wasm_fp.wasm, write its vectors
+      - name: Build x64wasm_fp.wasm and write its vectors
         if: ${{ !cancelled() }}
         run: tests/native/prepare.sh
 
