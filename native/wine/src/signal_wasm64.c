@@ -5,7 +5,12 @@
  *
  * - The process and thread setup of section 8, and the start state of the
  *   main thread: BOOT_STOP_AT_ENTRY returns to boot, run mode enters the run
- *   loop (run.c).
+ *   loop (run.c). From M4 every thread's: its frame record
+ *   (signal_alloc_thread), its state block and run loop
+ *   (signal_start_thread), both freed by signal_free_thread (section 9).
+ * - Signal handlers (M4, section 9): SIGQUIT's, as quit_handler's in-syscall
+ *   path; pending signals are delivered before a dispatcher returns to guest
+ *   code (delivery point 3).
  * - The syscall and unix-call dispatchers (section 11; abi.md v5, "Syscalls
  *   and unix calls"): host functions, raw exports of the guest-function type
  *   (state i64, entry i32, ret i64) -> i32. The frame record is the state
@@ -13,7 +18,7 @@
  * - The context functions for the current thread, with the FP conversion
  *   that agrees with the translator's fxsave (translator.md, "fxsave m512").
  *
- * The rest stops loudly until M4-M5 own it (other threads, APCs, exceptions,
+ * The rest stops loudly until M4-M5 own it (other threads' contexts, APCs, exceptions,
  * user callbacks). NtCurrentTeb() needs no entry here: thread.c's reads
  * teb_key on every machine. Line numbers are wine-11.0's
  * dlls/ntdll/unix/signal_x86_64.c unless another file is named.
@@ -28,6 +33,7 @@
 #include "config.h"
 
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +83,7 @@ extern const unsigned int tw_unix_call_count;
 struct syscall_frame
 {
     BYTE   *state;          /* the thread's state block, set at each entry */
+    BYTE   *own_state;      /* M4: the one signal_start_thread allocated, freed with the frame */
     UINT64  ret_addr;       /* the return address the dispatcher popped */
     DWORD   syscall_id;     /* L3060 */
     DWORD   restore_flags;  /* L3036, L3359 */
@@ -115,16 +122,52 @@ void signal_init_process( void )
     *(UINT64 *)ptr = TW_SYSCALL_DISPATCHER;
 }
 
-/* No LDT entry to allocate: no WoW64 (section 3). */
+/* A new thread's frame record (M4, section 9), from virtual_alloc_teb
+ * (unix/virtual.c L4107), in the TEB's thread data; the main thread's TEB
+ * comes from virtual_alloc_first_teb, which doesn't call this, so
+ * signal_init_process allocates its frame record. No LDT entry to allocate:
+ * no WoW64 (section 3). */
 NTSTATUS signal_alloc_thread( TEB *teb )
 {
+    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+
     if (teb->WowTebOffset) tw_unsupported( "signal_alloc_thread: a WoW64 thread" );
+    if (!(thread_data->syscall_frame = calloc( 1, sizeof(struct syscall_frame) ))) return STATUS_NO_MEMORY;
     return STATUS_SUCCESS;
 }
 
+/* From virtual_free_teb (unix/virtual.c L4152): the frame record and the
+ * state block. Wine frees a thread's TEB only after it has ended: the next
+ * exiting thread joins it first (unix/thread.c L1503-1510). */
 void signal_free_thread( TEB *teb )
 {
+    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+    struct syscall_frame *frame = thread_data->syscall_frame;
+
+    if (!frame) return;
+    free( frame->own_state );
+    free( frame );
+    thread_data->syscall_frame = NULL;
 }
+
+/* SIGQUIT's handler, quit_handler's path inside a syscall (L2608-2614): our
+ * threads are always inside one when a signal is delivered (section 9). The
+ * other signals' handlers are WP4's; until then nothing sends them (patch
+ * 0201's send_thread_signal stops loudly first). */
+void tw_handle_signal( int sig )
+{
+    switch (sig)
+    {
+    case SIGQUIT:
+        abort_thread( 0 );
+    default:
+        tw_unsupported( "a pending signal with no handler (M4: SIGQUIT only)" );
+    }
+}
+
+/* The harness's routine in place of a thread's guest entry; NULL in the
+ * real module (tempwind_private.h). */
+void (*tw_thread_start_hook)( void *entry, void *arg, void *state );
 
 /* The main thread's state block, once boot has stopped at the entry. */
 void *tw_main_state( void )
@@ -136,16 +179,20 @@ void *tw_main_state( void )
 /* The thread's start as signal_x86_64.c's init_syscall_frame builds it
  * (section 8): the CONTEXT that LdrInitializeThunk gets, below the stack's
  * top, and the state block that enters LdrInitializeThunk with RCX = that
- * CONTEXT. Then BOOT_STOP_AT_ENTRY returns to boot, and run mode runs it. */
+ * CONTEXT. Then BOOT_STOP_AT_ENTRY returns to boot, and run mode runs it.
+ * From M4 the same for every thread, from start_thread (unix/thread.c
+ * L1119-1132) on its own green thread; RDX is then the thread's argument. */
 void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
 {
     struct syscall_frame *frame = get_syscall_frame();
     CONTEXT *ctx, context = { 0 };
     BYTE *state;
+    int is_main = green_is_main();
 
-    if (suspend) tw_unsupported( "signal_start_thread: a suspended start (M4)" );
-    if (teb != NtCurrentTeb()) tw_unsupported( "signal_start_thread: a thread other than the running one (M4)" );
-    if (!frame) tw_unsupported( "signal_start_thread: no frame record (signal_init_process)" );
+    if (suspend) tw_unsupported( "signal_start_thread: a suspended start (M4 WP4)" );
+    if (teb != NtCurrentTeb()) tw_unsupported( "signal_start_thread: a TEB other than the running thread's" );
+    if (!frame) tw_unsupported( "signal_start_thread: no frame record (signal_init_process, signal_alloc_thread)" );
+    if (frame->own_state) tw_unsupported( "signal_start_thread: a thread started twice" );
 
     context.ContextFlags = CONTEXT_ALL | CONTEXT_EXCEPTION_REPORTING | CONTEXT_EXCEPTION_ACTIVE;
     context.Rcx    = (ULONG_PTR)entry;
@@ -170,7 +217,7 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
         tw_unsupported( "signal_start_thread: no host memory for the state block" );
     memset( state, 0, TW_STATE_SIZE );
     GPR( state, RCX ) = (ULONG_PTR)ctx;
-    GPR( state, RDX ) = (ULONG_PTR)arg;      /* the PEB */
+    GPR( state, RDX ) = (ULONG_PTR)arg;      /* the PEB, or a new thread's argument */
     GPR( state, RSP ) = (ULONG_PTR)ctx - 8;
     S64( state, TW_STATE_RIP ) = (ULONG_PTR)pLdrInitializeThunk;
     S64( state, TW_STATE_RFLAGS ) = 0x200;
@@ -178,16 +225,18 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     S32( state, TW_STATE_MXCSR ) = TW_INIT_MXCSR;
     S16( state, TW_STATE_FCW ) = TW_INIT_FCW;
     S16( state, TW_STATE_FTW ) = TW_INIT_FTW;  /* all x87 registers empty */
-    main_state = state;
+    if (is_main) main_state = state;
+    frame->own_state = state;
     frame->state = state;
 
     /* BOOT_STOP_AT_ENTRY; boot rejects every other nonzero value */
-    if (tw_boot_flags) tw_boot_stopped();
-    tw_run_loop( (uint64_t)(ULONG_PTR)state );
-    /* EXIT_HOST: nothing ends the main thread that way in M3 (section 12);
-     * process exit longjmps to boot instead */
-    fprintf( stderr, "tempwind: unsupported: signal_start_thread: the main thread's run loop returned: %s\n",
-             tw_host_stop_reason );
+    if (is_main && tw_boot_flags) tw_boot_stopped();
+    if (tw_thread_start_hook) tw_thread_start_hook( (void *)entry, arg, state );
+    else tw_run_loop( (uint64_t)(ULONG_PTR)state );
+    /* EXIT_HOST: nothing ends a thread that way in M3 and M4 (section 12): a
+     * thread ends in pthread_exit, and process exit longjmps out */
+    fprintf( stderr, "tempwind: unsupported: signal_start_thread: thread %d's run loop returned: %s\n",
+             green_current->id, tw_thread_start_hook ? "the harness's routine returned" : tw_host_stop_reason );
     abort();
 }
 
@@ -207,6 +256,9 @@ static struct syscall_frame *entry_frame( BYTE *state, const char *who )
  * MXCSR and XMM6-15, or the full FP state with restore flag 0x48. */
 static int32_t dispatcher_return( BYTE *state, struct syscall_frame *frame, ULONG_PTR status, UINT64 ret )
 {
+    /* M4, delivery point 3 (section 9): a signal the thread sent itself, or
+     * one that arrived while it ran, before it returns to guest code */
+    green_deliver_signals();
     if (frame->restore_flags & 0x3)  /* CONTEXT_CONTROL | CONTEXT_INTEGER: iretq to the context */
     {
         /* the new-context return (abi.md v5, "Host functions"): with INTEGER

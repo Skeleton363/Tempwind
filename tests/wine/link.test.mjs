@@ -100,7 +100,7 @@ test('link: the harness checks pass', async () => {
 
 // Each loud stop alone, in a fresh instance (section 10).
 for (const [check, line] of [
-  ['pthread_create_stops', 'tempwind: unsupported: pthread_create'],
+  ['pthread_join_main_stops', 'tempwind: unsupported: pthread_join of the main thread'],
   ['suspend_holding_mutex', 'tempwind: green: thread 1 suspends while holding 1 mutexes'],
 ]) {
   test(`link: ${check} stops loudly`, async () => {
