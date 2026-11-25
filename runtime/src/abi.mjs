@@ -135,7 +135,7 @@ export const RT_RES_WASM_LEN = 8;
 export const RT_RES_MSG_PTR = 12;
 export const RT_RES_MSG_LEN = 16;
 
-// Phase 1 process address map (docs/design/runtime.md).
+// Phase 1 process address map (deleted in M4; docs/status/phase-1.md).
 export const GUEST_HEAP_BASE = 0x1000_0000n;
 export const STACK_TOP = 0x7ff0_0000n;
 export const PEB_ADDR = 0x7ffd_0000n;
@@ -152,7 +152,7 @@ export const HOST_FUNC_INDEX = 0;
 export const PROCESS_ID = 0x1000;
 export const THREAD_ID = 0x1004;
 
-// Phase 1 process details (docs/design/runtime.md), checked against Wine 11
+// Phase 1 process details (deleted in M4; docs/status/phase-1.md), checked against Wine 11
 // include/winternl.h (TEB64, PEB64, NT_TIB64).
 export const NULL_REGION_SIZE = 0x1_0000n;
 /** The host region ends at 4 GiB; images may not overlap [HOST_BASE, HOST_END). */
@@ -198,7 +198,7 @@ export const DLL_PROCESS_ATTACH = 1;
 export const DLL_THREAD_ATTACH = 2;
 export const DLL_THREAD_DETACH = 3;
 
-// Win32 values used by the shim.
+// Win32 values the runtime uses.
 export const STD_INPUT_HANDLE = -10;
 export const STD_OUTPUT_HANDLE = -11;
 export const STD_ERROR_HANDLE = -12;

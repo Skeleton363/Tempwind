@@ -1,7 +1,7 @@
 //! The run-time translator: x64wasm built for `wasm32-unknown-unknown`
 //! (`x64wasm_rt.wasm`), which the JS runtime calls when execution reaches
 //! code no module has translated (`docs/design/abi.md`, "Run-time
-//! translator"; `docs/design/runtime.md`, "Run loop").
+//! translator"; `docs/design/runtime.md`, "Pieces").
 //!
 //! Exports (wasm32 only): `memory`, `rt_alloc(size) -> ptr`,
 //! `rt_free(ptr, size)` and `rt_translate(request) -> result`. Request

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan, checkPlan, addressMap, sha256 } from '../../runtime/src/plan.mjs';
-import { requestFlags } from '../../runtime/src/process.mjs';
+import { requestFlags } from '../../runtime/src/rt.mjs';
 import * as abi from '../../runtime/src/abi.mjs';
 import { fakeExe, fakePlan, BASE, TLS_PLAN } from './pe-fixture.mjs';
 

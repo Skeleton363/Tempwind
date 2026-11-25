@@ -15,7 +15,7 @@ Phase 1's goal: the 64-bit 7-Zip CLI (`7zz.exe`, the pinned targets release) com
 **Modes:**
 - **native:** runs `7zz.exe` directly (Windows).
 - **wine:** runs it through `wine64`.
-- **translated:** from Phase 2 M4, runs `7zz.exe` on our Wine: `runtime/src/wine/run-wine.mjs --dir` on the work directory (`wine-unix.md` v3, section 8, "Host files"), with `target/wine`'s catalog (`TW_WINE_DIR`) and both memory checks on. Our Wine reads only the environment its host is given (section 8), so the step also passes `--env WINEDEBUG=-all`, the value every mode runs with. Without it, Wine's `fixme:` lines reach stderr, which `expected/` records empty. Each step is one process, so one fresh instance. In Phase 1 it used `run-pe` with `--dir`, the AOT module and plan from `translate-pe`, `--rt` and `--fp`; that path goes with the shim.
+- **translated:** from Phase 2 M4, runs `7zz.exe` on our Wine: `runtime/src/wine/run-wine.mjs --dir` on the work directory (`wine-unix.md` v3, section 8, "Host files"), with `target/wine`'s catalog (`TW_WINE_DIR`) and both memory checks on. Our Wine reads only the environment its host is given (section 8), so the step also passes `--env WINEDEBUG=-all`, the value every mode runs with. Without it, Wine's `fixme:` lines reach stderr, which `expected/` records empty. Each step is one process, so one fresh instance.
 
 All modes use relative paths inside the work directory, so no host path shows in an output.
 
