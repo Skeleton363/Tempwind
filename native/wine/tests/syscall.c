@@ -1,7 +1,8 @@
 /*
  * The `syscall` checks (docs/design/wine-unix.md, section 10, "The M3
  * checks"): the syscall and unix-call dispatchers and the context functions
- * of section 11, on synthetic state blocks, with no guest code.
+ * of section 11, on synthetic state blocks, with no guest code. From M4
+ * (WP2's checks): table 1, win32u's, and win32u's unix calls.
  *
  * A check builds a state block in the host heap, sets RSP into a committed
  * guest stack where [RSP] is the return address the thunk's
