@@ -18,7 +18,7 @@
  * - The context functions for the current thread, with the FP conversion
  *   that agrees with the translator's fxsave (translator.md, "fxsave m512").
  *
- * The rest stops loudly until M4-M5 own it (other threads, APCs, exceptions,
+ * The rest stops loudly until M4-M5 own it (other threads' contexts, APCs, exceptions,
  * user callbacks). NtCurrentTeb() needs no entry here: thread.c's reads
  * teb_key on every machine. Line numbers are wine-11.0's
  * dlls/ntdll/unix/signal_x86_64.c unless another file is named.
