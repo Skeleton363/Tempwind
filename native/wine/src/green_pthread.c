@@ -195,7 +195,14 @@ int32_t tw_thread_main( int32_t id )
     switch (setjmp( exit_jmp ))
     {
     case 0:
-        pthread_exit( t->start( t->arg ) );  /* a start routine's return is its pthread_exit */
+        /* Wine's only routine is start_thread, a void (TEB *) cast to the
+         * pthread type (unix/thread.c L1119, L1450). A call through a
+         * pointer of another signature traps in wasm (as section 11's
+         * syscall wrappers note), so it is called as what it is; it never
+         * returns (signal_start_thread doesn't), and a return would be a
+         * pthread_exit( NULL ). */
+        ((void (*)( void * ))t->start)( t->arg );
+        pthread_exit( NULL );
     case JMP_ENDED:
         tw_depth_set( 0 );  /* the frames the longjmp dropped leave nothing behind */
         return 0;

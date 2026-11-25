@@ -351,10 +351,9 @@ static const char *join_and_exit_order( void )
     TW_EXPECT( (a2.event_a = new_event()) );
     TW_EXPECT( (t2 = spawn( waits_then_ends, &a2 )) );
     TW_EXPECT( (t3 = spawn( ends_at_once, &a3 )) );
-    teb3 = thread_info( t3 ).TebBaseAddress;
-    TW_EXPECT( teb3 );
-
     if (wait_ms( t3, 10000 )) return tw_fail( "thread 3's handle wasn't signaled" );
+    teb3 = thread_info( t3 ).TebBaseAddress;  /* the server learns it at the thread's init_thread */
+    TW_EXPECT( teb3 );
     TW_EXPECT( a2.flag && order_count == 1 && order[0] == 3 );
     info = thread_info( t3 );
     if (info.ExitStatus != 0x33) return tw_fail( "thread 3's exit status %#x", (unsigned)info.ExitStatus );

@@ -195,9 +195,14 @@ export async function createUnixHost(opts) {
 // queued changes nothing). Only when no thread runs and none is queued does
 // it ask C for the next timeout. Its direct raw calls (tw_next_timeout,
 // tw_run_timeouts, tw_exit_status) run on its own 64 KiB stack, never on the
-// stack of a thread that has ended, whose region Wine frees.
+// stack of a thread that has ended, whose region Wine frees. Before it
+// starts or resumes a thread, and before a direct call, it sets the stack
+// overflow check's own limits (__set_stack_limits) to that stack's region:
+// C's restore in green_switch is checked against them (abi.md v5, "Green
+// threads").
 function createScheduler(getRaw, stderr, encoder) {
   const blocked = new Map(); // thread -> { resolve, reject }
+  const regions = new Map(); // thread -> { top, bottom }: its stack, for the overflow check
   const queue = [];          // FIFO of { thread, spawn: { top, bottom } | null }
   const queuedWakes = new Set();
   let running = null;        // the thread that runs (or is being resumed)
@@ -215,9 +220,15 @@ function createScheduler(getRaw, stderr, encoder) {
     queueMicrotask(dispatch); // after the suspension or the return completes
   };
 
+  // The overflow check's limits (-sSTACK_OVERFLOW_CHECK=2's export).
+  function checkLimits({ top, bottom }) {
+    getRaw().__set_stack_limits?.(top, bottom);
+  }
+
   // A direct raw call while no thread runs, on the scheduler's own stack.
   function direct(name) {
     const raw = getRaw();
+    checkLimits(stack);
     raw.emscripten_stack_set_limits(stack.top, stack.bottom);
     raw._emscripten_stack_restore(stack.top);
     return raw[name]();
@@ -243,9 +254,11 @@ function createScheduler(getRaw, stderr, encoder) {
   function start(thread, { top, bottom }) {
     const raw = getRaw();
     running = thread;
+    regions.set(thread, { top, bottom });
     threadMain ??= WebAssembly.promising(raw.tw_thread_main);
     let p;
     try {
+      checkLimits({ top, bottom });
       raw.emscripten_stack_set_limits(top, bottom);
       raw._emscripten_stack_restore(top);
       p = threadMain(thread);
@@ -254,6 +267,7 @@ function createScheduler(getRaw, stderr, encoder) {
       return settle(false, e);
     }
     p.then((ret) => {
+      regions.delete(thread);
       ended(thread);
       if (ret === TW_THREAD_PROCESS_EXIT) {
         let status;
@@ -284,6 +298,7 @@ function createScheduler(getRaw, stderr, encoder) {
       if (!b) continue; // it ended, or never blocked: nothing to resume
       blocked.delete(thread);
       running = thread;
+      checkLimits(regions.get(thread));
       b.resolve(0n);
       return;
     }
@@ -334,6 +349,8 @@ function createScheduler(getRaw, stderr, encoder) {
       if (p === 0n) throw new Error('tempwind: green: no host memory for the scheduler\'s stack');
       const bottom = (p + 15n) & ~15n;
       stack = { top: bottom + BigInt(SCHEDULER_STACK_SIZE), bottom };
+      // the main thread runs on Emscripten's own stack
+      regions.set(MAIN_THREAD, { top: raw.emscripten_stack_get_base(), bottom: raw.emscripten_stack_get_end() });
     },
     block(thread) {
       if (stopped) return Promise.reject(stopped);
