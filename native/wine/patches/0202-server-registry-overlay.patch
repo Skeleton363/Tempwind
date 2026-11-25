@@ -9,7 +9,7 @@ JS host's boot set puts at /wine/share/tempwind/overlay.reg.
   keys relative to \Registry, and registers no save branch for it.
 - Without the file (the C harnesses other than boot), nothing is loaded.
 
-The diff is WP4's (M2), added by the coordinator: server/* is 02xx's.
+server/ patches are the 02xx range.
 
 diff --git a/server/registry.c b/server/registry.c
 --- a/server/registry.c

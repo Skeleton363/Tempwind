@@ -5,7 +5,7 @@
  * green_switch is the only switch point. Above it: waits on wake queues with
  * an optional deadline, sleeping, yielding, the scheduler's entries, and the
  * libc calls Wine blocks in (select, poll, usleep, nanosleep, sched_yield),
- * which this file defines in place of libc's. From M4, signals: a signal
+ * which this file defines in place of libc's. Signals: a signal
  * sent to a green thread is pending until a delivery point (section 9,
  * "Signals"); a wait it ends returns as an interrupted call.
  *
@@ -40,7 +40,7 @@ void set_current_time( void );
 int64_t inproc_server_next_timeout( void );
 void inproc_server_run_timeouts( void );
 
-/* SIGNALED (M4): a signal ended the wait (section 9, delivery point 1). */
+/* SIGNALED: a signal ended the wait (section 9, delivery point 1). */
 enum waiter_state { WAITING, WOKEN, TIMED_OUT, SIGNALED };
 
 /* A green thread waiting: on a queue, until a deadline, or both. */
@@ -74,7 +74,7 @@ static int64_t monotonic_ns( void )
 /* Blocks the current green thread in green_block and returns the value JS
  * resumes it with. Around the call it saves and restores the spike's save
  * set: the stack pointer and limits, errno and the current thread, since
- * other green threads run on their own stacks meanwhile; and from M3
+ * other green threads run on their own stacks meanwhile; and
  * env.depth, the running thread's count of guest frames, through the
  * bridge (abi.md v5, "Green threads"), restored here in C on the resumed
  * stack, never in green_block's JS continuation. */

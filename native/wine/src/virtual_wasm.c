@@ -7,7 +7,7 @@
  * one wasm memory. The backend keeps its own record of what is mapped, one
  * byte per 4 KiB page up to 16 GiB; Wine keeps the protections itself, and
  * nothing faults. Before it unmaps or maps over pages with translated code,
- * it calls tw_invalidate (section 6, M3).
+ * it calls tw_invalidate (section 6).
  *
  * Copyright 2026 the Tempwind authors
  *

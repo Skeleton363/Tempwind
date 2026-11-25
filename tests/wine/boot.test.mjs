@@ -2,7 +2,7 @@
 // boots to LdrInitializeThunk without running guest code. The harness is
 // native/wine/tests/boot.c; the boot set comes from
 // runtime/src/wine/boot-set.mjs.
-// From M3 the boot set is section 8's: the prefix, the overlay and the
+// The boot set is section 8's: the prefix, the overlay and the
 // program up front, and every file of boot-set.json's manifest marked lazy
 // as a lazy node (the closure's PE files, rebased, and its data files).
 // Needs native/wine/build.sh's output in target/wine-unix (or TW_WINE_UNIX_DIR)

@@ -4,7 +4,7 @@
  * and NtMapViewOfSection (section 4): at the preferred base, in a ranges64
  * slot when the base is taken, then a search in the image range, all against
  * TW_IMAGE_RANGE_END. A writable shared file view written back (section 6).
- * M3: the top-down ceiling (section 4) and tw_image_mapped (section 6).
+ * The top-down ceiling (section 4) and tw_image_mapped (section 6).
  *
  * The setup runs before the checks, as start_main_thread does it (loader.c):
  * virtual_init, the first TEB, dbg_init, the configuration directory (the

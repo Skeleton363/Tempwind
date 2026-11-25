@@ -93,7 +93,7 @@ _Noreturn void tw_boot_stopped( void )
  * longjmp unwinds the translated frames on the wasm stack as a wasm
  * exception. The instance is finished after it. abort_thread's error ends
  * keep abort_process's _exit, which rejects boot's promise.
- * M4: on a thread other than the main one it records the status and
+ * On a thread other than the main one it records the status and
  * longjmps to that thread's tw_thread_main, which returns
  * TW_THREAD_PROCESS_EXIT (green_pthread.c; section 8, "Process exit from
  * another thread"); boot's promise then never settles. */

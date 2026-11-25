@@ -5,10 +5,10 @@
  *
  * - The process and thread setup of section 8, and the start state of the
  *   main thread: BOOT_STOP_AT_ENTRY returns to boot, run mode enters the run
- *   loop (run.c). From M4 every thread's: its frame record
+ *   loop (run.c). Every thread's: its frame record
  *   (signal_alloc_thread), its state block and run loop
  *   (signal_start_thread), both freed by signal_free_thread (section 9).
- * - Signal handlers (M4, section 9): SIGQUIT's, as quit_handler's in-syscall
+ * - Signal handlers (section 9): SIGQUIT's, as quit_handler's in-syscall
  *   path, and SIGUSR1's, usr1_handler's (suspension, another thread's
  *   context); pending signals are delivered before a dispatcher returns to
  *   guest code (delivery point 3).
@@ -17,10 +17,10 @@
  *   (state i64, entry i32, ret i64) -> i32. The frame record is the state
  *   block; the thread data keeps the rest of Wine's struct syscall_frame.
  * - The context functions, with the FP conversion that agrees with the
- *   translator's fxsave (translator.md, "fxsave m512"); from M4 another
+ *   translator's fxsave (translator.md, "fxsave m512"); another
  *   thread's through the server, and the user APC's dispatch.
  *
- * The rest stops loudly until M5 or later owns it (exceptions, user
+ * The rest stops loudly (wine-unix.md section 13: exceptions, user
  * callbacks). NtCurrentTeb() needs no entry here: thread.c's reads
  * teb_key on every machine. Line numbers are wine-11.0's
  * dlls/ntdll/unix/signal_x86_64.c unless another file is named.
@@ -78,7 +78,7 @@ typedef ULONG_PTR (*tw_syscall_fn)( const ULONG_PTR *args );
 extern const tw_syscall_fn tw_syscall_table[];
 extern const BYTE tw_syscall_args[];
 extern const unsigned int tw_syscall_count;
-/* M4: table 1, win32u's (section 11), in the same file. */
+/* Table 1, win32u's (section 11), in the same file. */
 extern const tw_syscall_fn tw_win32_syscall_table[];
 extern const BYTE tw_win32_syscall_args[];
 extern const unsigned int tw_win32_syscall_count;
@@ -94,7 +94,7 @@ extern const unsigned int tw_unix_call_count;
 struct syscall_frame
 {
     BYTE   *state;          /* the thread's state block, set at each entry */
-    BYTE   *own_state;      /* M4: the one signal_start_thread allocated, freed with the frame */
+    BYTE   *own_state;      /* the one signal_start_thread allocated, freed with the frame */
     UINT64  ret_addr;       /* the return address the dispatcher popped */
     DWORD   syscall_id;     /* L3060 */
     DWORD   restore_flags;  /* L3036, L3359 */
@@ -133,7 +133,7 @@ void signal_init_process( void )
     *(UINT64 *)ptr = TW_SYSCALL_DISPATCHER;
 }
 
-/* A new thread's frame record (M4, section 9), from virtual_alloc_teb
+/* A new thread's frame record (section 9), from virtual_alloc_teb
  * (unix/virtual.c L4107), in the TEB's thread data; the main thread's TEB
  * comes from virtual_alloc_first_teb, which doesn't call this, so
  * signal_init_process allocates its frame record. No LDT entry to allocate:
@@ -230,7 +230,7 @@ void *tw_main_state( void )
  * (section 8): the CONTEXT that LdrInitializeThunk gets, below the stack's
  * top, and the state block that enters LdrInitializeThunk with RCX = that
  * CONTEXT. Then BOOT_STOP_AT_ENTRY returns to boot, and run mode runs it.
- * From M4 the same for every thread, from start_thread (unix/thread.c
+ * The same for every thread, from start_thread (unix/thread.c
  * L1119-1132) on its own green thread; RDX is then the thread's argument. */
 void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
 {
@@ -258,7 +258,7 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     context.FltSave.ControlWord = 0x27f;
     context.FltSave.MxCsr = context.MxCsr = 0x1f80;
 
-    /* M4: a thread created suspended waits until it is resumed (L2957),
+    /* A thread created suspended waits until it is resumed (L2957),
      * with SIGUSR1 still blocked; another thread may change its context */
     if (suspend) wait_suspend( &context );
 
@@ -288,7 +288,7 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     if (is_main && tw_boot_flags) tw_boot_stopped();
     if (tw_thread_start_hook) tw_thread_start_hook( (void *)entry, arg, state );
     else tw_run_loop( (uint64_t)(ULONG_PTR)state );
-    /* EXIT_HOST: nothing ends a thread that way in M3 and M4 (section 12): a
+    /* EXIT_HOST: nothing ends a thread that way today (section 12): a
      * thread ends in pthread_exit, and process exit longjmps out */
     fprintf( stderr, "tempwind: unsupported: signal_start_thread: thread %d's run loop returned: %s\n",
              green_current->id, tw_thread_start_hook ? "the harness's routine returned" : tw_host_stop_reason );
@@ -311,7 +311,7 @@ static struct syscall_frame *entry_frame( BYTE *state, const char *who )
  * MXCSR and XMM6-15, or the full FP state with restore flag 0x48. */
 static int32_t dispatcher_return( BYTE *state, struct syscall_frame *frame, ULONG_PTR status, UINT64 ret )
 {
-    /* M4, delivery point 3 (section 9): a signal the thread sent itself, or
+    /* Delivery point 3 (section 9): a signal the thread sent itself, or
      * one that arrived while it ran, before it returns to guest code */
     green_deliver_signals();
     if (frame->restore_flags & 0x3)  /* CONTEXT_CONTROL | CONTEXT_INTEGER: iretq to the context */
@@ -415,7 +415,7 @@ int32_t tw_unix_call_dispatcher( uint64_t state_addr, int32_t entry, uint64_t re
     frame->restore_flags = RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
 
     /* the handle: ntdll's unix_call_funcs, or a table tw_unixlib_funcs
-     * returned (win32u's, M4), each with its count; Wine checks neither */
+     * returned (win32u's), each with its count; Wine checks neither */
     if (funcs == tw_unix_call_funcs)
     {
         if (code >= tw_unix_call_count)
@@ -520,7 +520,7 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 
     flags &= ~CONTEXT_XSTATE;  /* no extended features: the profile has no AVX */
 
-    /* M4: another thread's goes to the server, which keeps it for the
+    /* Another thread's goes to the server, which keeps it for the
      * thread's usr1_handler (L1145-1153); the server answers self for a
      * real handle to this thread */
     if (!self)
@@ -575,7 +575,7 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
     BOOL self = (handle == GetCurrentThread());
     const BYTE *state;
 
-    /* M4: another thread's comes from the server: the context the thread
+    /* Another thread's comes from the server: the context the thread
      * posted from usr1_handler's wait_suspend, after a wait for it when the
      * thread hasn't stopped yet (get_thread_context, unix/thread.c); the
      * server answers self for a real handle to this thread (L1224-1229) */
@@ -644,7 +644,7 @@ void *get_native_context( CONTEXT *context )
     return context;
 }
 
-/* L1105-1109. M4: contexts_to_server and contexts_from_server
+/* L1105-1109. contexts_to_server and contexts_from_server
  * (unix/thread.c L1062-1063, L1087-1088) call it from wait_suspend and the
  * context requests; with no WoW64 get_cpu_area returns NULL. */
 void *get_wow_context( CONTEXT *context )
@@ -673,7 +673,7 @@ void set_process_instrumentation_callback( void *callback )
     tw_unsupported( "set_process_instrumentation_callback" );
 }
 
-/* ---- calls into the guest's dispatchers (M4-M5) ---- */
+/* ---- calls into the guest's dispatchers ---- */
 
 /* The machine frame and the stack KiUserApcDispatcher gets (L408-444). */
 struct machine_frame
@@ -702,7 +702,7 @@ C_ASSERT( sizeof(struct apc_stack_layout) == 0x560 );
 /***********************************************************************
  *           call_user_apc_dispatcher  (L1661-1705)
  *
- * M4 (section 11, "User APCs"): against the state block. The layout goes
+ * Section 11, "User APCs": against the state block. The layout goes
  * below the context's RSP (or the frame's), and the state block enters PE
  * KiUserApcDispatcher with RSP = the layout and RBP = the context's;
  * CONTEXT_CONTROL in restore_flags makes the dispatcher take its
@@ -770,7 +770,7 @@ NTSTATUS WINAPI NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status 
     tw_unsupported( "NtCallbackReturn" );
 }
 
-/* M4 (WP2): win32u's calls into user32 (signal_x86_64.c L1903-1931),
+/* win32u's calls into user32 (signal_x86_64.c L1903-1931),
  * deferred to Phase 3's desktop (section 13). A console program's user32
  * attach doesn't reach one (section 11); one that does stops here. */
 NTSTATUS KeUserModeCallback( ULONG id, const void *args, ULONG len, void **ret_ptr, ULONG *ret_len )

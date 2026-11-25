@@ -3,7 +3,7 @@
 // in Node, from the static assets in the browser) and passes their bytes.
 //
 // - the prefix at its recorded path: its .reg files, the dosdevices
-//   symlinks and drive_c's directories (not drive_c's files), and from M3
+//   symlinks and drive_c's directories (not drive_c's files), and
 //   the install copies: each drive_c file named like a closure PE file is a
 //   symlink to it in PE_DIR;
 // - Wine's install tree at the constant paths of section 8: the PE files the
@@ -12,7 +12,7 @@
 // - the programs, by DOS path on C: (C:\tempwind\hello.exe), in drive_c;
 // - overlay.reg, wineboot's per-boot keys (native/wine/prefix/overlay.reg),
 //   at OVERLAY_PATH, which the server loads right after user.reg;
-// - from M3, lazy nodes (lazy-node.mjs) for the boot-set manifest's lazy
+// - lazy nodes (lazy-node.mjs) for the boot-set manifest's lazy
 //   files (boot-set.json: every closure PE file, rebased, and closure.json's
 //   data_files), sized from the manifest and read whole on their first read.
 
@@ -38,8 +38,8 @@ export const BOOT_DLLS = Object.freeze(['ntdll.dll', 'apisetschema.dll']);
  * @param {string[]} [set.installFiles]  the paths of drive_c's files, relative to the prefix
  *   (drive_c/windows/system32/kernel32.dll, ...): each whose name is a lazy file's in PE_DIR
  *   becomes a symlink to it (the install copies); the others are not written
- * @param {Record<string, Uint8Array>} [set.dlls]  PE files by name, for PE_DIR, written up front (M2)
- * @param {Record<string, Uint8Array>} [set.data]  data files by path relative to DATA_DIR (nls/locale.nls, wine.inf), up front (M2)
+ * @param {Record<string, Uint8Array>} [set.dlls]  PE files by name, for PE_DIR, written up front
+ * @param {Record<string, Uint8Array>} [set.data]  data files by path relative to DATA_DIR (nls/locale.nls, wine.inf), up front
  * @param {{path: string, size: number, source: string}[]} [set.lazy]  lazy files (the manifest's entries with `lazy`)
  * @param {(source: string) => Uint8Array} [set.read]  loads a lazy file's `source` (relative to target/wine), whole
  * @param {Record<string, Uint8Array>} set.programs  programs by DOS path on C: (C:\tempwind\hello.exe)
@@ -114,7 +114,7 @@ export function parseBootSetManifest(json) {
 
 /** boot's flags (abi.md v5, "Host entries of the Unix side"). */
 export const BOOT_STOP_AT_ENTRY = 1;
-/** Runs the process to its exit (M3). */
+/** Runs the process to its exit. */
 export const BOOT_RUN = 0;
 
 /**
@@ -123,7 +123,7 @@ export const BOOT_RUN = 0;
  * its arguments) and calls boot through `promising`.
  * @param {object} host  a createUnixHost of wine-unix
  * @param {string[]} args  the program's DOS path, then its arguments
- * @param {number} [flags]  BOOT_STOP_AT_ENTRY (M2), or BOOT_RUN (M3)
+ * @param {number} [flags]  BOOT_STOP_AT_ENTRY, or BOOT_RUN
  * @returns {Promise<number>} boot's result: 0 once stopped at the entry; in
  *   run mode the process's exit status, the full Windows status as an i32
  */

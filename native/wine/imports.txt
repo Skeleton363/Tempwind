@@ -12,14 +12,14 @@ env.memory                     the per-process shared memory64 that JS creates (
 env.green_block                the only switch point, a WebAssembly.Suspending (section 9)
 env.green_wake                 C made a green thread runnable; JS resumes it (section 9)
 env.memory_grown               after grow_to's memory.grow: JS refreshes its views (section 5)
-env.tw_run                     the bridge's raw run (M3; abi.md v5, "The bridge")
-env.tw_depth_get               the bridge's depth_get: depth in the green save set and after the exit longjmp (M3)
-env.tw_depth_set               the bridge's depth_set (M3)
-env.tw_flags_materialize       the bridge's flags_materialize: the syscall frame's exact EFLAGS (M3, section 11)
-env.tw_translate               translate at run time and link (M3, section 12)
-env.tw_image_mapped            an image was mapped, so JS links its AOT module (M3, section 6)
-env.tw_invalidate              remove translations before an unmap or remap of code pages (M3, section 6)
-env.green_spawn                C made a green thread; JS starts it with tw_thread_main (M4, section 9)
+env.tw_run                     the bridge's raw run (abi.md v5, "The bridge")
+env.tw_depth_get               the bridge's depth_get: depth in the green save set and after the exit longjmp
+env.tw_depth_set               the bridge's depth_set
+env.tw_flags_materialize       the bridge's flags_materialize: the syscall frame's exact EFLAGS (section 11)
+env.tw_translate               translate at run time and link (section 12)
+env.tw_image_mapped            an image was mapped, so JS links its AOT module (section 6)
+env.tw_invalidate              remove translations before an unmap or remap of code pages (section 6)
+env.green_spawn                C made a green thread; JS starts it with tw_thread_main (section 9)
 
 # ---- Files, directories, pipes: Emscripten's FS (MEMFS and the host's stdio devices) ----
 env.__syscall_chdir            server and loader change the cwd (section 8)
@@ -109,6 +109,6 @@ env.emscripten_num_logical_cores  sysconf(_SC_NPROCESSORS_ONLN) (system.c; the p
 # ---- -sSTACK_OVERFLOW_CHECK=2 ----
 env.__handle_stack_overflow    the shadow stack's overflow check reports here (section 2)
 
-# ---- The boot (WP4, section 8): libc calls the boot path reaches ----
+# ---- The boot (section 8): libc calls the boot path reaches ----
 env.__syscall_faccessat        access(): check_command_line looks for a builtin exe named like argv[0] (loader.c; boot passes WINELOADERNOEXEC, section 8)
 env.__syscall_umask            umask: init_files reads the start umask for new files' modes (file.c)

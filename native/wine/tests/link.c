@@ -159,7 +159,7 @@ static const char *once_keys_self( void )
 }
 
 /* Signalling a condition nobody waits on is a no-op; a wait goes through
- * green.c (WP3). */
+ * green.c. */
 static const char *cond_without_waiters( void )
 {
     pthread_condattr_t attr;
@@ -191,8 +191,7 @@ static const char *green_switch_resumes( void )
     return NULL;
 }
 
-/* Alone: M2's "pthread_create stops loudly until M4" became M4's threads
- * (wine-unix.md v3, section 9); the green layer's loud stop that remains is
+/* Alone: pthread_create makes a green thread (wine-unix.md v3, section 9); the green layer's loud stop that remains is
  * pthread_join of the main thread, which Wine never does (pthread_id 0,
  * unix/thread.c L1128, L1507). */
 static const char *pthread_join_main_stops( void )

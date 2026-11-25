@@ -31,7 +31,7 @@ the signals and main_loop don't run.
 - Loud stops: main_loop, receive_fd (only main_loop reads msg_fd), a
   partial reply write (only main_loop would deliver POLLOUT), and
   send_thread_signal of anything but SIGQUIT and SIGUSR1.
-- Threads (server/ptrace.c, M4): send_thread_signal sends SIGQUIT and
+- Threads (server/ptrace.c): send_thread_signal sends SIGQUIT and
   SIGUSR1 to the green thread whose id is the thread's unix_tid
   (inproc_thread_signal: pending, and a wake unless its mask blocks the
   signal), which handles SIGQUIT with abort_thread(0) as quit_handler
@@ -393,7 +393,7 @@ diff --git a/server/request.c b/server/request.c
  
 +#ifdef __EMSCRIPTEN__
 +    /* Tempwind (wine-unix.md, section 7): the client takes a dup of the fd
-+     * from a queue in wine_server_receive_fd. M2 has one process. */
++     * from a queue in wine_server_receive_fd. There is one process. */
 +    if (debug_level)
 +        fprintf( stderr, "%04x: *fd* %04x -> %d\n", current ? current->id : process->id, handle, fd );
 +    if ((ret = dup( fd )) == -1)

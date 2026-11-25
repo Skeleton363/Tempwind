@@ -10,13 +10,13 @@
  * - a condition wait goes through green.c;
  * - a thread that suspends while holding a mutex is a bug: green.c asserts on
  *   mutexes_held;
- * - from M4, threads: pthread_create makes a green thread on the stack
+ * - threads: pthread_create makes a green thread on the stack
  *   pthread_attr_setstack gave (Wine's kernel stack) and calls the import
  *   green_spawn; JS starts it with the raw export tw_thread_main.
  *   pthread_exit longjmps back there (on the main thread it parks);
  *   pthread_join waits for a thread's end and frees it. Process exit on a
  *   thread other than the main one longjmps there too.
- * - from M4 (WP4), the signal mask per green thread: tw_pthread_sigmask,
+ * - the signal mask per green thread: tw_pthread_sigmask,
  *   which config.h makes Wine's pthread_sigmask; a new thread inherits its
  *   creator's mask.
  * Our state lives inside libc's opaque types (checked by the static asserts).
@@ -39,7 +39,7 @@
 
 #include "tempwind_private.h"
 
-/* A green thread's life (M4); green_thread is what green.c sees. */
+/* A green thread's life; green_thread is what green.c sees. */
 enum gthread_state { GT_CREATED, GT_RUNNING, GT_ENDED };
 struct gthread
 {
@@ -252,7 +252,7 @@ int pthread_cancel( pthread_t thread )
     tw_unsupported( "pthread_cancel" );
 }
 
-/* ---- the signal mask (M4 WP4; wine-unix.md, section 9, "The mask") ---- */
+/* ---- the signal mask (wine-unix.md, section 9, "The mask") ---- */
 
 #define SIG_BIT(sig) ((uint64_t)1 << ((sig) - 1))
 
@@ -356,7 +356,7 @@ int pthread_mutex_lock( pthread_mutex_t *mutex )
         if (m->type == PTHREAD_MUTEX_ERRORCHECK) return EDEADLK;
         green_bug( "deadlock: a normal mutex locked again by its owner" );
     }
-    /* Held by another green thread: waiting for it needs the scheduler (M4). */
+    /* Held by another green thread: waiting for it needs the scheduler. */
     tw_unsupported( "pthread_mutex_lock of a mutex another green thread holds" );
 }
 
@@ -564,7 +564,7 @@ int pthread_attr_setscope( pthread_attr_t *attr, int scope )
     return scope == PTHREAD_SCOPE_SYSTEM ? 0 : ENOTSUP;
 }
 
-/* ---- a thread's end (M4) ---- */
+/* ---- a thread's end ---- */
 
 /* Wine's only caller is pthread_exit_wrapper (unix/thread.c L1103-1111),
  * after it closed the thread's fds. Runs the key destructors, makes the

@@ -15,12 +15,11 @@
 // - exposes MEMFS (`FS`) and the glue's Module;
 // - enters a raw export through WebAssembly.promising (`call`);
 // - schedules the green threads (wine-unix.md, section 9): it resumes the
-//   threads C woke and starts the ones C spawned (M4), one at a time in the
+//   threads C woke and starts the ones C spawned, one at a time in the
 //   order of the wakes and spawns; when none is runnable it waits
 //   tw_next_timeout() milliseconds, runs tw_run_timeouts() and looks again;
 //   with nothing runnable and no timeout it stops the waiting threads with a
-//   deadlock error. Its direct raw calls run on a 64 KiB stack of its own
-//   (M4);
+//   deadlock error. Its direct raw calls run on a 64 KiB stack of its own;
 // - settles the process once (wine-unix.md, section 8, "Process exit from
 //   another thread"): `call`'s promise settles with the first of the entry's
 //   return, a thread's TW_THREAD_PROCESS_EXIT (with tw_exit_status()), or the
@@ -72,9 +71,9 @@ export const S_IFIFO = 0o010000;
  * @param {(thread: number) => Promise<bigint>|bigint} [opts.greenBlock]  green_block in place of the scheduler (tests)
  * @param {(thread: number) => void} [opts.onGreenWake]  green_wake with opts.greenBlock
  * @param {(thread: number, top: bigint, bottom: bigint) => void} [opts.onGreenSpawn]  green_spawn with opts.greenBlock
- * @param {(state: bigint) => number} [opts.run]  tw_run: the bridge's raw `run` (M3)
+ * @param {(state: bigint) => number} [opts.run]  tw_run: the bridge's raw `run`
  * @param {Record<string, Function>} [opts.imports]  more `env` imports, replacing the defaults of
- *   M3's imports (abi.md v5, "Host entries of the Unix side"): the bridge's raw exports for
+ *   the bridge's and the host's imports (abi.md v5, "Host entries of the Unix side"): the bridge's raw exports for
  *   tw_depth_get, tw_depth_set and tw_flags_materialize, and the host's tw_translate,
  *   tw_image_mapped and tw_invalidate. Without them tw_flags_materialize and tw_translate stop
  *   loudly, tw_depth_get and tw_depth_set keep a cell of the host's (0 unless set), and

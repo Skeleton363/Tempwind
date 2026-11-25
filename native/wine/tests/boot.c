@@ -123,7 +123,7 @@ static NTSTATUS query( const void *addr, MEMORY_BASIC_INFORMATION *info )
 
 /* The state block's RIP is LdrInitializeThunk, as the test reads it from
  * ntdll's export table; the host-pointer slots hold the dispatcher
- * addresses and the unix-call handle (section 8, M3). */
+ * addresses and the unix-call handle (section 8). */
 static const char *rip_ldr_initialize_thunk( void )
 {
     const BYTE *ntdll = find_image( "ntdll.dll" );

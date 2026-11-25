@@ -1,8 +1,8 @@
 /*
  * The `syscall` checks (docs/design/wine-unix.md, section 10, "The M3
  * checks"): the syscall and unix-call dispatchers and the context functions
- * of section 11, on synthetic state blocks, with no guest code. From M4
- * (WP2's checks): table 1, win32u's, and win32u's unix calls.
+ * of section 11, on synthetic state blocks, with no guest code. Also
+ * table 1, win32u's, and win32u's unix calls.
  *
  * A check builds a state block in the host heap, sets RSP into a committed
  * guest stack where [RSP] is the return address the thunk's
@@ -56,7 +56,7 @@ extern const char *const tw_syscall_names[];
 extern const unsigned int tw_syscall_count;
 extern const unixlib_entry_t *const tw_unix_call_funcs;
 extern const unsigned int tw_unix_call_count;
-extern const unsigned int tw_win32_syscall_count;  /* M4: table 1 */
+extern const unsigned int tw_win32_syscall_count;  /* table 1 */
 
 #define THUNK_RET   0x180001234ull  /* [RSP]: the thunk's return address */
 #define CALLER_RET  0x180005678ull  /* [RSP + 8]: its caller's */
@@ -444,7 +444,7 @@ static const char *unix_call_bad_code( void )
     return tw_fail( "the call returned" );
 }
 
-/* ---- M4 (WP2): table 1 and win32u's unix calls (section 11) ---- */
+/* ---- table 1 and win32u's unix calls (section 11) ---- */
 
 /* win32u's unix library, as find_builtin_dll records its path. */
 #define WIN32U_SO "/wine/lib/wine/x86_64-unix/win32u.so"

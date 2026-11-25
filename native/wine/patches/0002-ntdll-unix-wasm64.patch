@@ -5,7 +5,7 @@ current_machine (unix_private.h), the x86 CPU-information block and
 PROCESSOR_ARCHITECTURE_AMD64 (system.c), the stub syscall's Rip
 (loader.c), address_space_start 0x110000 (virtual.c, section 4).
 Host-CPU instructions get a wasm64 path: do_cpuid and do_xgetbv stop
-loudly until the CPU profile replaces them (section 3, WP4). The LDT and
+loudly until the CPU profile replaces them (section 3). The LDT and
 .so-DLL branches stay x86-only (no WoW64, no dlopen).
 
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c

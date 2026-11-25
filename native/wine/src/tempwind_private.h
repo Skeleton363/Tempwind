@@ -29,7 +29,7 @@ _Noreturn void tw_boot_stopped( void );
 int64_t green_block( int32_t thread );  /* WebAssembly.Suspending */
 void green_wake( int32_t thread );
 void memory_grown( void );
-/* M3: the bridge's exports (wasm to wasm), then the JS host's. */
+/* The bridge's exports (wasm to wasm), then the JS host's. */
 int32_t tw_run( uint64_t state );
 int32_t tw_depth_get( void );
 void tw_depth_set( int32_t depth );
@@ -44,7 +44,7 @@ void tw_invalidate( uint64_t base, uint64_t size );
 void tw_run_loop( uint64_t state );
 
 /* green_pthread.c: a green thread as the pthread layer sees it (section 9).
- * M2 has one, the main thread; M4 adds the spawned ones, with their signal
+ * The main thread is one; the spawned ones add their signal
  * state (green.c delivers it). */
 #define GREEN_KEYS_MAX 128
 struct green_waiter;
@@ -53,9 +53,9 @@ struct green_thread
     int32_t id;               /* the id green_block and green_wake carry */
     int mutexes_held;         /* suspending while > 0 is a bug */
     void *keys[GREEN_KEYS_MAX];
-    /* M4 (section 9, "Signals"): bit sig - 1 of each */
+    /* (section 9, "Signals"): bit sig - 1 of each */
     uint64_t sig_pending;
-    uint64_t sig_blocked;     /* the thread's mask (WP4); SIGQUIT is never blocked */
+    uint64_t sig_blocked;     /* the thread's mask; SIGQUIT is never blocked */
     struct green_waiter *waiter;  /* the wait it is in, which a signal ends */
 };
 extern struct green_thread *green_current;
@@ -95,23 +95,22 @@ void tw_page_watch( const void *addr, size_t size, int on );
 /* boot.c (section 8): boot's flags, 0 (run) or BOOT_STOP_AT_ENTRY (1). */
 extern int tw_boot_flags;
 
-/* M3 WP5. boot.c (section 8): process exit, from exit_process and from
+/* boot.c (section 8): process exit, from exit_process and from
  * NtTerminateProcess's abort_process call (patch 0302); back to boot with
  * the full Windows status. */
 _Noreturn void tw_process_exit( int status );
 
-/* M3 WP5. run.c (section 12): set by a host function that stops with
+/* run.c (section 12): set by a host function that stops with
  * EXIT_HOST, before it returns STATUS_EXIT; the run loop needs a reason. */
 extern const char *tw_host_stop_reason;
 
-/* M3 WP5. virtual.c (patch 0106): the protection byte of addr's page, and in
+/* virtual.c (patch 0106): the protection byte of addr's page, and in
  * *base, *size the run of committed executable pages around it inside its
  * view (size 0: none), which the run loop passes to tw_translate. */
 unsigned int tw_exec_range( uint64_t addr, uint64_t *base, uint64_t *size );
 
-/* ---- M4 (wine-unix.md v3; abi.md v5, "Green threads" and "Host entries of
- * the Unix side"). Declared before the work packages start; a package that
- * needs more appends below, each with its reason. ---- */
+/* ---- Green threads and the host entries (wine-unix.md v3; abi.md v5,
+ * "Green threads" and "Host entries of the Unix side") ---- */
 
 /* Import (library.js): C made the green thread `thread`, whose shadow stack
  * is [bottom, top); JS starts it after the current call into the module
@@ -144,7 +143,7 @@ unsigned int tw_unixlib_count( const void *funcs );
 #define TW_SESSION_CAP ((size_t)16 << 20)
 void *tw_session_view( size_t offset, size_t *size );
 
-/* M4 WP1 (wine-unix.md v3, sections 7 and 9), appended: what green.c,
+/* (wine-unix.md v3, sections 7 and 9): what green.c,
  * green_pthread.c, boot.c, signal_wasm64.c and patch 0201's ptrace.c hunk
  * call across files. */
 
@@ -170,7 +169,7 @@ int green_is_main( void );
 _Noreturn void green_thread_process_exit( int status );
 
 /* signal_wasm64.c: the handler of a delivered signal (SIGQUIT: abort_thread,
- * as quit_handler); it returns only for a handler that returns (WP4). */
+ * as quit_handler); it returns only for a handler that returns. */
 void tw_handle_signal( int sig );
 
 /* signal_wasm64.c: NULL in the real module. A test harness sets it to run a
@@ -183,7 +182,7 @@ extern void (*tw_thread_start_hook)( void *entry, void *arg, void *state );
  * hang-up thread_poll_event sees natively (section 7, "A thread's end"). */
 void inproc_thread_hangup( int tid );
 
-/* M4 WP4 (wine-unix.md v3, section 9, "Signals"), appended. */
+/* (wine-unix.md v3, section 9, "Signals"). */
 
 /* green_pthread.c: the running green thread's mask, pthread_sigmask's
  * contract; config.h renames Wine's calls to it. An unblock of a pending
