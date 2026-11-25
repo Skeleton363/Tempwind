@@ -864,7 +864,7 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 | WP3: tests and CI (merged, `23b8688`; the coordinator's fixes `e26abb1`) | builder | after the contracts, in parallel | decisions 8, 9 and 10: host files (`wine-process.mjs`, `run-wine.mjs --dir`), the matrix's and the benches' Wine mode, `catalog.mjs` and `prepare.sh`, `programs.test.mjs`, `tests/native/l2_threads.c` and `l2_suspend.c` with `.expected` (deterministic, checked under native Wine 11 here and on Windows in CI), `wine-unix.yml` (a separate matrix job), `bench.yml`, `commands.md` | unit tests for copy-in, collect and mtimes; the runner and the benches run end to end on today's programs; CI wired (red until WP5) |
 | WP4: signals and APCs (merged, `1b5049d`) | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
 | WP5: first light and the matrix (merged, `f28b6b0`; the coordinator's doc commit `8a9c75e`) | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
-| WP6: delete the shim | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
+| WP6: delete the shim (running, briefed 2026-11-25 from `b7a750a`) | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
 
 - **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
 - **The coordinator** reviews each diff, checks each report against its contract sections, merges each track into the PR branch and reads the context after each merge. After WP2 and WP4 merge it pushes so `wine-unix.yml` publishes a release, then bumps `tests/targets/wine-unix.lock`.
@@ -1075,6 +1075,10 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
   - **The sysparams boot cost** (section 13): 0.0-0.5 ms of a boot of about 850 ms, from Node's CPU profiler on a throwaway build with `--profiling-funcs`. All of `NtUserInitializeClientPfnArrays` takes 0.2-0.8 ms.
 - **The `GetTickCount` check** (decision 7): no spin. `7z b` made 1,520 `NtQueryPerformanceCounter` and 1,511 `NtQueryInformationProcess` calls, in pairs, so every time read includes a syscall. A loop that only read KUSER's tick count would hang, and every run ended. No ticker is needed.
 - **user32's thread detach** on 7zz.exe's second thread calls the wrapped `NtUserCallNoParam` with `NtUserExitingThread` and `NtUserThreadDetach`. Both return 0, and no stub is reached (`user_main.c` L217-226, `sysparams.c` L7474-7480).
+- **WP6** (builder) was briefed from `b7a750a`, on track `m4-wp6-wip`. The brief is decision 11 and `runtime.md`'s top section. It adds:
+  - a reasoned keep-or-remove for each file decision 11 doesn't name (`trace.mjs`, `wasm-mini.mjs`, `ntdll.test.mjs`, `pe-fixture.mjs`, `v3-mini.mjs`, `conformance-parse.test.mjs`);
+  - the matrix at 138 of 138 after the deletion;
+  - an accounting table of the removed tests in its final commit message.
 
 ## What works
 
@@ -1207,7 +1211,7 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
 
 ## Next step: M4, "Console programs on Wine", in a new session
 
-**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 (the shim's deletion) runs next, then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
+**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 (the shim's deletion) runs on `m4-wp6-wip`; `/milestone-close` follows it.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
 
 **M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
 
