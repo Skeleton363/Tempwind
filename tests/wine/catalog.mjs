@@ -29,7 +29,7 @@ import { join, resolve } from 'node:path';
 import { readPrefix } from '../../runtime/src/wine/node-files.mjs';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
-export const PROGRAMS = ['hello.exe', 'l2_int.exe', 'l2_crt.exe', 'l2_float.exe', '7zz.exe', 'coremark.exe'];
+export const PROGRAMS = ['hello.exe', 'l2_int.exe', 'l2_crt.exe', 'l2_float.exe', 'basic.exe', 'l2_threads.exe', 'l2_suspend.exe', '7zz.exe', 'coremark.exe'];
 export const OPTIONS = ['--shared', '--null-check', '--store-check'];
 const MEMFS_LIB = '/wine/lib/wine/x86_64-windows';
 const MEMFS_DATA = '/wine/share/wine';
