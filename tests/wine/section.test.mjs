@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createUnixHost, DEFAULT_ENV } from '../../runtime/src/wine/unix-host.mjs';
-import { m3Imports } from './m3-imports.mjs';
+import { m3Imports } from './harness-imports.mjs';
 
 const root = new URL('../../', import.meta.url);
 const dirUrl = (env, fallback) => (process.env[env]

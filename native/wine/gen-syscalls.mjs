@@ -13,7 +13,7 @@
 // table through a pointer with raw register arguments; in wasm a call
 // through a pointer with another signature traps, hence the wrappers.
 //
-// Table 1, win32u's (M4): the same from dlls/win32u/win32syscalls.h with the
+// Table 1, win32u's: the same from dlls/win32u/win32syscalls.h with the
 // prototypes of include/ntuser.h and include/ntgdi.h, into the same file:
 // wrappers tw_win32_sys_<name> and the tables tw_win32_syscall_table,
 // tw_win32_syscall_args, tw_win32_syscall_names and tw_win32_syscall_count.
@@ -31,7 +31,7 @@
 // - table 1: every return type is void, a scalar or a pointer of at most
 //   8 bytes; one narrower than 64 bits is zero-extended, and void returns 0.
 // The stubs' wrappers stop loudly (tempwind: unsupported: syscall NAME, or
-// win32u syscall NAME) until M5. The generator prints each table's split.
+// win32u syscall NAME); wine-unix.md section 13 records the deferral. The generator prints each table's split.
 // The output is written only when it changes, so make doesn't rebuild it.
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';

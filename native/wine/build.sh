@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Wine 11's ntdll Unix part, wineserver and win32u's Unix part (M4) with
+# Build Wine 11's ntdll Unix part, wineserver and win32u's Unix part with
 # Emscripten as one wasm64 module (docs/design/wine-unix.md, section 2).
 #
 #   native/wine/build.sh [--out DIR] [--jobs N] [--census]
@@ -120,7 +120,7 @@ mk_sources() { # FILE PREFIX: the .c entries of SOURCES that start with PREFIX
 }
 ntdll_srcs=$(mk_sources "$tree/dlls/ntdll/Makefile.in" unix/ | grep -v '^unix/signal_' | sed 's|^unix/||')
 server_srcs=$(mk_sources "$tree/server/Makefile.in" "")
-# win32u's Unix part (M4): the SOURCES whose file has `#pragma makedep unix`
+# win32u's Unix part: the SOURCES whose file has `#pragma makedep unix`
 # (all but main.c, the PE side; dibdrv/ included).
 win32u_srcs=$(for f in $(mk_sources "$tree/dlls/win32u/Makefile.in" ""); do
   if grep -q '^#pragma makedep unix' "$tree/dlls/win32u/$f"; then echo "$f"; fi; done)

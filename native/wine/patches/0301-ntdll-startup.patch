@@ -9,8 +9,8 @@ would; these are the changes the startup path needs.
   and the loader in /wine/bin, in MEMFS.
 - The host-pointer slots in ntdll.dll (loader.c, load_ntdll_functions):
   __wine_syscall_dispatcher and __wine_unix_call_dispatcher get the
-  dispatcher addresses TW_SYSCALL_DISPATCHER and TW_UNIX_CALL_DISPATCHER
-  (M3); __wine_unixlib_handle gets the host address of unix_call_funcs, an
+  dispatcher addresses TW_SYSCALL_DISPATCHER and TW_UNIX_CALL_DISPATCHER;
+  __wine_unixlib_handle gets the host address of unix_call_funcs, an
   opaque handle. tw_unix_call_funcs and tw_unix_call_count give the
   unix-call dispatcher that table (section 11).
 - The initial directory (env.c, get_initial_directory): the launch

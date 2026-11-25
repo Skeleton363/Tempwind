@@ -72,7 +72,7 @@ test('link: wine-unix instantiates with 4 GiB, imports listed, raw malloc/free',
   host.raw.free(p);
   assert.equal(host.raw.malloc(4096n), p, 'free gave the block back');
 
-  // wine-unix.md, section 8: ENV and the stdio devices, FIFOs from M3.
+  // wine-unix.md, section 8: ENV and the stdio devices, FIFOs.
   assert.equal(host.Module.ENV.WINEPREFIX, '/home/runner/wine-prefix');
   assert.equal(host.Module.ENV.TZ, 'UTC');
   for (const fd of [0, 1, 2]) {

@@ -5,7 +5,7 @@
  * NtAllocateVirtualMemory and NtFreeVirtualMemory, and the backend under
  * them (sections 4-6): zero on recommit, protect and query, write-watch and
  * PAGE_WATCH, the guest regions only, the heap cap, file views and pointer
- * validation, invalidation (M3), and the run loop's executable range (M3).
+ * validation, invalidation, and the run loop's executable range.
  * Image placement, the top-down ceiling and tw_image_mapped need the
  * server's sections, so the `section` harness
  * tests them. tests/wine/virtual.test.mjs runs this one.

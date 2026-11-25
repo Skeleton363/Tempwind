@@ -1,4 +1,4 @@
-// M3's imports for the harness hosts (abi.md v5, "Host entries of the Unix
+// The imports of the harness hosts (abi.md v5, "Host entries of the Unix
 // side"), passed through createUnixHost's opts.imports. The harnesses link
 // no translated code and have no bridge, so:
 // - tw_flags_materialize is the bridge's flags_materialize for a materialized
