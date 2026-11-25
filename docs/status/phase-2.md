@@ -859,10 +859,10 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 
 | WP | Agent | When | Owns | Done when |
 |---|---|---|---|---|
-| WP1: threads (resumed 2026-11-25 from `5b2e41a`) | deep-worker | after the contracts | decisions 1, 2 and 13, and SIGQUIT's delivery: `green.c`, `green_pthread.c`, `boot.c`, `signal_wasm64.c`'s thread setup, 0201's `send_thread_signal` hunk (SIGQUIT), the `unix-host.mjs` scheduler (spawn, scheduler stack, settling), `native/wine/tests/thread.c` and `tests/wine/thread.test.mjs` | `wine-unix.md` section 10's `thread` checks; `l2_threads` matches native on Wine |
-| WP2: win32u (resumed 2026-11-25 from `44c97f8`) | deep-worker | after the contracts, in parallel | decisions 5 and 6: `build.sh`, `config.h`, `rename-win32u.h`, `gen-syscalls.mjs` (table 1), `src/unixlibs.c`, the dispatchers' table-1 and unix-call parts, patches 0107, 0203 and 04xx, the `syscall` and `session` checks | the gates clean; section 10's WP2 checks; 7zz.exe with no arguments on Wine (`prepare.sh --all`) prints native Wine 11's text, exits 0, every image linked, no `tempwind:` line |
+| WP1: threads (merged, `0e28fbe`) | deep-worker | after the contracts | decisions 1, 2 and 13, and SIGQUIT's delivery: `green.c`, `green_pthread.c`, `boot.c`, `signal_wasm64.c`'s thread setup, 0201's `send_thread_signal` hunk (SIGQUIT), the `unix-host.mjs` scheduler (spawn, scheduler stack, settling), `native/wine/tests/thread.c` and `tests/wine/thread.test.mjs` | `wine-unix.md` section 10's `thread` checks; `l2_threads` matches native on Wine |
+| WP2: win32u (merged, `bfea4ee`; the coordinator's doc fix `55dacfb`) | deep-worker | after the contracts, in parallel | decisions 5 and 6: `build.sh`, `config.h`, `rename-win32u.h`, `gen-syscalls.mjs` (table 1), `src/unixlibs.c`, the dispatchers' table-1 and unix-call parts, patches 0107, 0203 and 04xx, the `syscall` and `session` checks | the gates clean; section 10's WP2 checks; 7zz.exe with no arguments on Wine (`prepare.sh --all`) prints native Wine 11's text, exits 0, every image linked, no `tempwind:` line |
 | WP3: tests and CI (merged, `23b8688`; the coordinator's fixes `e26abb1`) | builder | after the contracts, in parallel | decisions 8, 9 and 10: host files (`wine-process.mjs`, `run-wine.mjs --dir`), the matrix's and the benches' Wine mode, `catalog.mjs` and `prepare.sh`, `programs.test.mjs`, `tests/native/l2_threads.c` and `l2_suspend.c` with `.expected` (deterministic, checked under native Wine 11 here and on Windows in CI), `wine-unix.yml` (a separate matrix job), `bench.yml`, `commands.md` | unit tests for copy-in, collect and mtimes; the runner and the benches run end to end on today's programs; CI wired (red until WP5) |
-| WP4: signals and APCs | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
+| WP4: signals and APCs (running since 2026-11-25, from `bfea4ee`) | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
 | WP5: first light and the matrix | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
 | WP6: delete the shim | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
 
@@ -881,6 +881,8 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 - **After the second compaction:** 106k tokens. Segment 1 closed at 116 requests, mean 271k, max 414k, 31.1M cache reads.
 - **At the pause:** 163k tokens; segment 2, 25 requests, mean 136k, 3.3M cache reads.
 - **At WP3's merge:** 270k tokens; segment 2, 81 requests, mean 200k, 15.9M cache reads. Most of it went to reading WP3's diff in plan mode and verifying the merge.
+- **After the third compaction:** 116k tokens. Segment 2 closed at 86 requests, mean 204k, max 274k, 17.3M cache reads.
+- **At WP1's and WP2's merges (WP4 briefed):** 258k tokens; segment 3, 44 requests, mean 197k, 8.5M cache reads. The two reviews read about 2,400 diff lines.
 
 ## M4 progress (paused 2026-11-23)
 The owner paused M4 at 03:28 UTC on 2026-11-23, about 20 minutes into the first three work packages. Every agent is stopped and every track is pushed; nothing is uncommitted. The briefs come from this note's M4 section: the decisions, the work-package table, "Decided while writing the contracts" and "Settled in the briefs". The contracts are `wine-unix.md` v3 and `abi.md` v5.
@@ -958,7 +960,21 @@ The owner resumed M4 on 2026-11-25 (`continue`). The container had survived: the
   - `test:browser:wine` 1 of 1;
   - the census with `--check`: 798 of 798 in-scope forms have L1 fixtures, the two new programs included.
 - **A build gotcha:** WP3's `target/` was moved into the main tree to save a rebuild. `env!("CARGO_MANIFEST_DIR")` then still named the removed worktree, because cargo doesn't rebuild after a move, so the census couldn't find `crates/testkit/fixtures/l1`. `cargo clean -p testkit -p x64wasm -p x64wasm-cli -p pe-rebase` (and `--release -p testkit`) fixed it. Only testkit's fixture lookup and those crates' tests use the macro, so the prepared Wine inputs weren't affected.
-- **WP1 and WP2** were resumed by message from their WIP commits. Each merges the PR branch head into its worktree when it needs WP3's work.
+- **WP1 and WP2** were resumed by message from their WIP commits. Each merged the PR branch head into its worktree for WP3's work.
+- **WP1 and WP2 merged** as `0e28fbe` and `bfea4ee`, both right the first time. The coordinator's doc commit `55dacfb` words two of WP2's loud stops as the code prints them: a `wow` unix-library request, and a session view asked for before the server set the session up. The contract changes, each committed before its code:
+  - WP1's `939b58a`: a thread's `unix_tid` is its green thread's id, and a thread's end is the server's hang-up (`inproc_thread_hangup`, in 0201's `ptrace.c` hunk);
+  - WP1's `3e6d436` (`abi.md`): JS sets the overflow check's own limits (`__set_stack_limits`) for each thread it starts or resumes, and for the scheduler's stack;
+  - WP2's `2909eb6`: win32u's widl-generated headers come from `wine.lock`'s native tree, so `build.sh` needs `prepare.sh`'s first step;
+  - WP2's `94e165d`: the session cap holds about 12 first blocks of 1,327,104 bytes, not 256.
+- **Passing at `bfea4ee`:**
+  - `tests/wine/prepare.sh --all`, with the build's four gates: 19 collisions renamed, 87 imports, and table 1's 1,540 entries split into 1,062 stubs and 478 wrapped;
+  - `test:wine` 60 of 60: the `thread` and `session` checks, the new `syscall` checks, and `l2_threads` in `programs.test.mjs`;
+  - `test:node` 268 of 268 (in the main tree);
+  - `test:browser:wine` 1 of 1;
+  - 7zz.exe with no arguments: exit 0 with its help text (2,930 bytes) and no `tempwind:` line; boot 623 ms, 18 AOT links, no image fallbacks, 3 run-time translations.
+- **Sizes at `bfea4ee`:** `wine-unix.wasm` is 2,448,146 bytes (807,679 gzipped); before win32u it was 997,015 (361,977).
+- **CI at `b2a3333`:** `ci.yml` (dispatched) is green, its Windows job included: `l2_threads` and `l2_suspend` match on real Windows. `wine-unix.yml` built, tested and published `wine-unix-b2a3333`; its matrix job is red until WP5, as planned.
+- **WP4** was briefed from `bfea4ee`; its brief resets its worktree to the PR branch first.
 
 ## What works
 
@@ -1052,14 +1068,17 @@ The owner resumed M4 on 2026-11-25 (`continue`). The container had survived: the
   - M5's runner can tell them apart, from Wine's own crash output, if a case appears.
 - **M2's items for M3** were all decided in M3 (decisions 11-15 and 19): the `MEM_TOP_DOWN` ceiling (patch 0104), write-copy unchanged (it matches Wine 11), `STATUS_IMAGE_NOT_AT_BASE` moot after the rebase, the host's `chdir`, `WINEDEBUG` through `opts.env`, lazy boot-set nodes from the manifest, the wineboot skip's version constants kept, and the `PROCESSOR_*`, `XState` and `ActiveProcessorCount` checks (WP1).
 - **M2's, for M4:**
-  - the server's `process_sigkill` would `kill()` the process itself;
-  - every SIGQUIT exits with code 0, the console's CTRL_BREAK included;
+  - the server's `process_sigkill` would `kill()` the process itself (M4: unreachable; WP1's `exit_with_two_alive` check ends the process with two threads alive and no loud stop);
+  - every SIGQUIT exits with code 0, the console's CTRL_BREAK included (fixed in M4 by WP1: SIGQUIT ends only its thread, with `abort_thread(0)`);
   - `get_image_map_address` is called inside the virtual mutex, harmless while server calls never suspend.
 - **M3's, for M4:**
   - no `\KnownDlls`: the wineboot skip creates none, so a KnownDll in a program's own directory would win over system32's (`wine-unix.md`, section 8);
-  - no test checks `depth` across a switch between threads; M4's two-thread test is meant to;
+  - no test checks `depth` across a switch between threads (done in M4: WP1's `switch_two_threads`);
   - the loud stops that M4 and M5 remove: APCs, the six syscall stubs, a raw `syscall`, `EXIT_FAULT`, and translated stores to code (Phase 4);
   - WP1's three open questions (under "Resumed (2026-11-20)") never came up: no divergence pointed at them.
+- **M4's, so far:**
+  - a SIGQUIT sent to a thread before its `init_thread` returns 0, as natively, but the thread's later start would stop loudly in the in-process server instead of meeting EPIPE. It takes a `TerminateThread` right after `CreateThread`, before the new thread first runs (WP1's open point; WP4 fixes it only if a check reaches it);
+  - `KeUserModeCallback` stops loudly from `signal_wasm64.c`, beside `NtCallbackReturn` (deferred, decision 12).
 - **M3's, for M5** (the code review; each is harmless while every fault stops loudly):
   - the rep-range store check walks every page from the range's low end to its high end with no bound, so a garbage RCX loops for a long time, or reads past the page-state table, before the store faults (`emit.rs`, `page_range_check`). Bound it at the table's end with a translator test;
   - `run-wine.mjs` reports Wine's own `exit()`/`_exit()` (an `ExitStatus` rejection, `abort_thread`'s ends included) as a stop with exit code 1, not with that status;
