@@ -247,7 +247,6 @@ export async function createWineProcess(opts) {
   const driveC = drivePath(prefixPath, 'C:\\');
   writeHostFiles(host.FS, driveC, opts.files ?? []);
   const cwdPath = drivePath(prefixPath, opts.cwd ?? DEFAULT_CWD);
-  host.FS.mkdirTree(cwdPath);
   host.FS.chdir(cwdPath);
 
   return {

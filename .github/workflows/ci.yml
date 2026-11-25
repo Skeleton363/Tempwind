@@ -94,6 +94,7 @@ jobs:
           --closure target/wine/closure.json --tree target/wine/pe
           target/pe/basic.exe target/targets/coremark.exe target/targets/7zz.exe target/native/hello.exe
           target/native/l2_int.exe target/native/l2_crt.exe target/native/l2_float.exe
+          target/native/l2_threads.exe target/native/l2_suspend.exe
           target/wine/pe/tests/kernel32_test.exe target/wine/pe/tests/ntdll_test.exe
           --json target/wine/census.json --md target/wine/census.md --check
 

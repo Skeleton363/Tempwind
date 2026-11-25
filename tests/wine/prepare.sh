@@ -15,7 +15,9 @@
 #
 # 5. Packaging for the Unix side (docs/design/wine-build.md): fetches
 #    closure.json, builds the L2 programs (tests/native/build.sh) and basic.exe
-#    (tests/pe/build.sh) and copies them into target/wine, rebases the closure's DLLs into target/wine/rebased
+#    (tests/pe/build.sh) and copies them into target/wine, fetches 7zz.exe and
+#    coremark.exe from tests/targets/targets.lock's release into target/wine
+#    (M4), rebases the closure's DLLs into target/wine/rebased
 #    (native/wine/rebase, then its --verify), writes target/wine/bridge.wasm
 #    (x64wasm-cli bridge) and runs tests/wine/catalog.mjs: catalog/ (an AOT
 #    module per PE file) and boot-set.json. The catalog covers the modules the
@@ -105,6 +107,9 @@ tests/native/build.sh >/dev/null
 for p in hello l2_int l2_crt l2_float l2_threads l2_suspend; do cp "target/native/$p.exe" "$out/$p.exe"; done
 tests/pe/build.sh >/dev/null
 cp target/pe/basic.exe "$out/basic.exe"
+# M4: the target programs, from tests/targets/targets.lock's release
+# (wine-unix.md, section 10).
+for p in 7zz.exe coremark.exe; do scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" "$p" "$out" >/dev/null; done
 cargo build -q --release -p pe-rebase -p x64wasm-cli
 cargo build -q --release -p x64wasm-rt -p x64wasm-fp --target wasm32-unknown-unknown
 target/release/pe-rebase --tree "$out/pe" --closure "$out/closure.json" --out "$out/rebased"

@@ -22,7 +22,7 @@ const { values } = parseArgs({
     exe: { type: 'string', default: `${root}target/targets/coremark.exe` },
     runs: { type: 'string', default: '3' },
     wine: { type: 'string' },
-        'skip-native': { type: 'boolean', default: false },
+    'skip-native': { type: 'boolean', default: false },
   },
 });
 const runs = Number(values.runs);
