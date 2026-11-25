@@ -53,7 +53,6 @@ WINE_DECLARE_DEBUG_CHANNEL(syscall);
 #define S32(s, off) (*(UINT32 *)((BYTE *)(s) + (off)))
 #define GPR(s, i)   S64( s, TW_STATE_GPR(i) )
 enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15 };
-#define SIG_BIT(sig) ((uint64_t)1 << ((sig) - 1))
 
 /* signal_x86_64.c's struct apc_stack_layout (L432-444): what
  * call_user_apc_dispatcher writes below the thread's RSP. */
@@ -79,10 +78,10 @@ _Static_assert( sizeof(struct apc_stack_layout) == 0x560, "layout" );
 struct targ
 {
     BYTE *state;              /* its state block, from signal_start_thread */
-    int green_id;
     void *ctx;                /* RCX of its start: the CONTEXT LdrInitializeThunk gets */
     HANDLE event;
     volatile int flag, slept, after;
+    volatile int masked;      /* SIGUSR1 in its mask, as pthread_sigmask reports it */
     ULONG prev;               /* NtSuspendThread's previous count, on itself */
     NTSTATUS status;
     const char *fail;
@@ -94,7 +93,6 @@ static void thread_hook( void *entry, void *arg, void *state )
     struct targ *a = arg;
 
     a->state = state;
-    a->green_id = pthread_getthreadid_np();
     a->ctx = (void *)(ULONG_PTR)GPR( state, RCX );
     ((PRTL_THREAD_START_ROUTINE)entry)( arg );
     NtTerminateThread( NtCurrentThread(), 0 );
@@ -131,13 +129,27 @@ static HANDLE new_event( void )
     return event;
 }
 
-static NTSTATUS wait_ms( HANDLE handle, LONGLONG ms )
+/* A wait for another thread's event fails at this deadline: far beyond any
+ * check's run, so reaching it means the event never came. */
+#define DEADLINE_MS 10000
+
+/* Waits until the object is signaled, or fails at the deadline. */
+static NTSTATUS wait_for( HANDLE handle )
 {
-    LARGE_INTEGER timeout = { .QuadPart = -ms * MS };
+    LARGE_INTEGER timeout = { .QuadPart = -DEADLINE_MS * (LONGLONG)MS };
 
     return NtWaitForSingleObject( handle, FALSE, &timeout );
 }
 
+/* Whether the object is signaled now: a zero-timeout wait. */
+static BOOL signaled( HANDLE handle )
+{
+    LARGE_INTEGER timeout = { .QuadPart = 0 };
+
+    return !NtWaitForSingleObject( handle, FALSE, &timeout );
+}
+
+/* A non-alertable NtDelayExecution: only for a sleep that is the scenario. */
 static void sleep_ms( LONGLONG ms )
 {
     LARGE_INTEGER timeout = { .QuadPart = -ms * MS };
@@ -145,23 +157,43 @@ static void sleep_ms( LONGLONG ms )
     NtDelayExecution( FALSE, &timeout );
 }
 
-/* Yields until the thread has set its flag and then waits (its green thread
- * has a waiter): it is in the wait it entered after the flag. */
-static int until_waiting( struct targ *a )
+static LONGLONG now( void )
 {
-    int i;
+    LARGE_INTEGER t;
 
-    for (i = 0; i < 20 && !a->flag; i++) NtYieldExecution();
-    for (i = 0; i < 20 && a->flag && !(green_thread_by_id( a->green_id ) &&
-                                      green_thread_by_id( a->green_id )->waiter); i++)
-        NtYieldExecution();
-    return a->flag && green_thread_by_id( a->green_id ) && green_thread_by_id( a->green_id )->waiter;
+    NtQueryPerformanceCounter( &t, NULL );
+    return t.QuadPart;
+}
+
+/* Yields until cond holds, or fails the check at the deadline, naming the
+ * condition. Green threads switch only at blocking points, and sched_yield
+ * lets the runnable ones run first (wine-unix.md v3, section 9): so once a
+ * flag that another thread sets just before a blocking call shows here, that
+ * thread is in the call. A condition that needs a timer to fire never holds
+ * here, since a yield with nothing runnable returns at once; wait on an
+ * object for that. */
+#define UNTIL(cond) do { \
+    LONGLONG until_end_ = now() + DEADLINE_MS * (LONGLONG)MS; \
+    while (!(cond)) \
+    { \
+        if (now() >= until_end_) \
+            return tw_fail( "%s:%d: not true after %d ms: %s", __FILE__, __LINE__, DEADLINE_MS, #cond ); \
+        NtYieldExecution(); \
+    } } while (0)
+
+/* The thread's suspend count, as the server keeps it (ThreadSuspendCount). */
+static ULONG suspend_count( HANDLE thread )
+{
+    ULONG count = ~0u;
+
+    if (NtQueryInformationThread( thread, ThreadSuspendCount, &count, sizeof(count), NULL )) return ~0u;
+    return count;
 }
 
 /* Ends a check: the thread's handle signaled, its own failure if any. */
 static const char *joined( HANDLE thread, struct targ *a )
 {
-    NTSTATUS status = wait_ms( thread, 10000 );
+    NTSTATUS status = wait_for( thread );
 
     NtClose( thread );
     if (status) return tw_fail( "the thread didn't end: %#x", (unsigned)status );
@@ -187,20 +219,26 @@ static const char *suspend_other( void )
     struct targ a = { 0 };
     HANDLE thread;
     ULONG prev = 99;
+    CONTEXT c;
 
     TW_EXPECT( (a.event = new_event()) );
     TW_EXPECT( (thread = spawn( waits_on_event, &a, 0 )) );
-    TW_EXPECT( until_waiting( &a ) );
+    UNTIL( a.flag );  /* it is in its server wait */
     TW_EXPECT( !NtSuspendThread( thread, &prev ) && prev == 0 );
-    TW_EXPECT( green_thread_by_id( a.green_id )->sig_pending & SIG_BIT( SIGUSR1 ) );
+    TW_EXPECT( suspend_count( thread ) == 1 && !a.after );
     TW_EXPECT( !NtSuspendThread( thread, &prev ) && prev == 1 );
     TW_EXPECT( !NtSetEvent( a.event, NULL ) );
-    TW_EXPECT( wait_ms( thread, 100 ) == STATUS_TIMEOUT && !a.after );
-    /* the handler ran and the thread waits in wait_suspend */
-    TW_EXPECT( !(green_thread_by_id( a.green_id )->sig_pending & SIG_BIT( SIGUSR1 )) );
-    TW_EXPECT( green_thread_by_id( a.green_id )->waiter );
+    /* the handler ran and the thread waits in wait_suspend: the server's
+     * get_thread_context answers once the handler has posted its context
+     * there (unix/thread.c L1868-1872) */
+    memset( &c, 0, sizeof(c) );
+    c.ContextFlags = CONTEXT_FULL;
+    TW_EXPECT( !NtGetContextThread( thread, &c ) );
+    NtYieldExecution();
+    TW_EXPECT( !signaled( thread ) && !a.after );
     TW_EXPECT( !NtResumeThread( thread, &prev ) && prev == 2 );
-    TW_EXPECT( wait_ms( thread, 100 ) == STATUS_TIMEOUT && !a.after );
+    NtYieldExecution();
+    TW_EXPECT( suspend_count( thread ) == 1 && !signaled( thread ) && !a.after );
     TW_EXPECT( !NtResumeThread( thread, &prev ) && prev == 1 );
     if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
     TW_EXPECT( a.after && a.status == STATUS_WAIT_0 );
@@ -233,14 +271,16 @@ static const char *self_suspend( void )
     struct targ a = { 0 };
     HANDLE thread;
     ULONG prev = 99;
-    int i;
+    CONTEXT c;
 
     TW_EXPECT( (thread = spawn( suspends_itself, &a, 0 )) );
-    for (i = 0; i < 20 && !a.flag; i++) NtYieldExecution();
-    TW_EXPECT( a.flag );
-    sleep_ms( 50 );
-    TW_EXPECT( !a.after );
-    TW_EXPECT( green_thread_by_id( a.green_id )->waiter );
+    UNTIL( a.flag );
+    /* it stopped in wait_suspend, where its handler posted its context */
+    memset( &c, 0, sizeof(c) );
+    c.ContextFlags = CONTEXT_FULL;
+    TW_EXPECT( !NtGetContextThread( thread, &c ) );
+    NtYieldExecution();
+    TW_EXPECT( suspend_count( thread ) == 1 && !signaled( thread ) && !a.after );
     TW_EXPECT( !NtResumeThread( thread, &prev ) && prev == 1 );
     if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
     TW_EXPECT( a.after && a.status == STATUS_SUCCESS && a.prev == 0 );
@@ -303,7 +343,7 @@ static const char *context_other( void )
 
     TW_EXPECT( (a.event = new_event()) );
     TW_EXPECT( (thread = spawn( waits_seeded, &a, 0 )) );
-    TW_EXPECT( until_waiting( &a ) );
+    UNTIL( a.flag );  /* it is in its server wait */
     TW_EXPECT( !NtSuspendThread( thread, NULL ) );
 
     memset( &c, 0, sizeof(c) );
@@ -348,8 +388,12 @@ static void WINAPI blocks_then_sleeps( void *arg )
     sigemptyset( &set );
     sigaddset( &set, SIGUSR1 );
     pthread_sigmask( SIG_BLOCK, &set, NULL );
+    pthread_sigmask( SIG_BLOCK, NULL, &set );
+    a->masked = sigismember( &set, SIGUSR1 ) == 1;
+    sigemptyset( &set );
+    sigaddset( &set, SIGUSR1 );
     a->flag = 1;
-    sleep_ms( 100 );  /* non-alertable: a sleep in select, with SIGUSR1 blocked */
+    sleep_ms( 100 );  /* the scenario: a sleep in select with SIGUSR1 blocked; its timeout must fire */
     a->slept = 1;
     pthread_sigmask( SIG_UNBLOCK, &set, NULL );  /* delivery point 2: stops here */
     a->after = 1;
@@ -363,17 +407,27 @@ static const char *mask_blocks_sigusr1( void )
     struct targ a = { 0 };
     HANDLE thread;
     sigset_t set;
+    CONTEXT c;
+    ULONG prev = 99;
 
     TW_EXPECT( (thread = spawn( blocks_then_sleeps, &a, 0 )) );
-    TW_EXPECT( until_waiting( &a ) );
-    TW_EXPECT( !NtSuspendThread( thread, NULL ) );
-    TW_EXPECT( green_thread_by_id( a.green_id )->sig_pending & SIG_BIT( SIGUSR1 ) );
-    TW_EXPECT( green_thread_by_id( a.green_id )->sig_blocked & SIG_BIT( SIGUSR1 ) );
+    UNTIL( a.flag );
+    TW_EXPECT( a.masked );
+    /* It is in NtDelayExecution, whose first blocking call is a yield before
+     * its select (unix/sync.c L2452): one more yield lets it reach the
+     * select, where it sleeps. */
     NtYieldExecution();
-    TW_EXPECT( green_thread_by_id( a.green_id )->waiter && !a.slept );  /* still asleep */
-    sleep_ms( 300 );
+    TW_EXPECT( !NtSuspendThread( thread, &prev ) && prev == 0 );
+    NtYieldExecution();
+    TW_EXPECT( !a.slept );  /* still asleep: the blocked SIGUSR1 didn't end its sleep */
+    /* The server's get_thread_context answers once the handler has posted the
+     * context in wait_suspend (unix/thread.c L1868-1872). The thread got
+     * there after its whole sleep, at its unblock (delivery point 2): it
+     * didn't handle SIGUSR1 while it was blocked. */
+    memset( &c, 0, sizeof(c) );
+    c.ContextFlags = CONTEXT_FULL;
+    TW_EXPECT( !NtGetContextThread( thread, &c ) );
     TW_EXPECT( a.slept && !a.after );
-    TW_EXPECT( !(green_thread_by_id( a.green_id )->sig_pending & SIG_BIT( SIGUSR1 )) );
     TW_EXPECT( !NtResumeThread( thread, NULL ) );
     if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
     TW_EXPECT( a.after );
@@ -488,7 +542,7 @@ static const char *apc_in_alertable_wait( void )
     pKiUserApcDispatcher = (void *)APC_DISPATCHER;
     TW_EXPECT( (a.event = new_event()) );
     TW_EXPECT( (thread = spawn( waits_alertable, &a, 0 )) );
-    TW_EXPECT( until_waiting( &a ) );
+    UNTIL( a.flag );  /* it is in its alertable server wait */
     for (n = 1; n <= 2; n++)
         TW_EXPECT( !NtQueueApcThread( thread, (PNTAPCFUNC)APC_FUNC( n ), n, 2 * n, 3 * n ) );
     if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
