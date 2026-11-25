@@ -140,8 +140,9 @@ static uint64_t deliverable( const struct green_thread *thread )
 
 /* Handles the running thread's deliverable pending signals, lowest first.
  * Called only at the delivery points (section 9): after a wait or yield has
- * resumed and unlinked its waiter, from tw_pthread_sigmask when it unblocks one (green_pthread.c), and before a
- * dispatcher returns to guest code. Returns 1 when a handler ran and
+ * resumed and unlinked its waiter, from tw_pthread_sigmask when it unblocks
+ * one (green_pthread.c), and before a dispatcher returns to guest code.
+ * Returns 1 when a handler ran and
  * returned; SIGQUIT's never returns. */
 int green_deliver_signals( void )
 {
