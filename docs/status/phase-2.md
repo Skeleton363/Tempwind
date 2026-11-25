@@ -1079,6 +1079,19 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
   - a reasoned keep-or-remove for each file decision 11 doesn't name (`trace.mjs`, `wasm-mini.mjs`, `ntdll.test.mjs`, `pe-fixture.mjs`, `v3-mini.mjs`, `conformance-parse.test.mjs`);
   - the matrix at 138 of 138 after the deletion;
   - an accounting table of the removed tests in its final commit message.
+- **The owner's decision (2026-11-25): the close starts with a cleanup pass,** after WP6's merge and before `/milestone-close`'s verification, so the verification and both reviews cover it.
+  - **The problem it answers:** the owner asked whether the code is maintainable or AI slop. A measurement found these weak spots:
+    - work-package and milestone names in source comments (14 lines in 5 files), which mean nothing to a later reader;
+    - shared headers (`tempwind_private.h`, `config.h`) that grow as one appended block per work package, a rule that kept parallel agents from colliding, so they read as a log rather than by topic, with an `#include` mid-file;
+    - `signal` checks that read the scheduler's internal state and use fixed sleeps of 50-300 ms;
+    - every review so far by an AI.
+  - **The pass** (main loop):
+    - remove the work-package and milestone names from code comments, keeping the Wine citations and the contract sections;
+    - regroup the shared headers by topic, includes at the top;
+    - where the same thing can be shown from outside, make the tests assert visible behavior and wait for a condition instead of a fixed time;
+    - run `/simplify` over the milestone's code and apply its fixes. The review's stage 2 (`/code-review`) stays on correctness.
+  - **The draft PR asks for a human review** of the thread and signal code: `signal_wasm64.c`, `green.c`, `green_pthread.c`.
+  - **How we'll know it worked:** after the pass, a grep finds no work-package names in source comments, and every suite and the matrix pass as before. The retro decides whether the close keeps the pass, for example as a pre-push check on work-package names in sources.
 
 ## What works
 
@@ -1211,7 +1224,7 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
 
 ## Next step: M4, "Console programs on Wine", in a new session
 
-**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 (the shim's deletion) runs on `m4-wp6-wip`; `/milestone-close` follows it.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
+**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 (the shim's deletion) runs on `m4-wp6-wip`. Then the cleanup pass the owner added ("Resumed again (2026-11-25, 18:35 UTC)"), then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
 
 **M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
 
