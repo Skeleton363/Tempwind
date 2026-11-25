@@ -644,9 +644,13 @@ void *get_native_context( CONTEXT *context )
     return context;
 }
 
+/* L1105-1109. M4: contexts_to_server and contexts_from_server
+ * (unix/thread.c L1062-1063, L1087-1088) call it from wait_suspend and the
+ * context requests; with no WoW64 get_cpu_area returns NULL. */
 void *get_wow_context( CONTEXT *context )
 {
-    tw_unsupported( "get_wow_context" );
+    if (context->SegCs != cs64_sel) return NULL;
+    return get_cpu_area( IMAGE_FILE_MACHINE_I386 );
 }
 
 NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
