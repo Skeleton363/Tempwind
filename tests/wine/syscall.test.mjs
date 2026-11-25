@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createUnixHost, DEFAULT_ENV } from '../../runtime/src/wine/unix-host.mjs';
-import { m3Imports } from './harness-imports.mjs';
+import { harnessImports } from './harness-imports.mjs';
 
 const root = new URL('../../', import.meta.url);
 const dirUrl = (env, fallback) => (process.env[env]
@@ -31,14 +31,14 @@ async function start(env = {}) {
   const out = { stdout: '', stderr: '' };
   const dec = () => { const d = new TextDecoder(); return (b) => d.decode(b, { stream: true }); };
   const o = dec(), e = dec();
-  const m3 = m3Imports();
+  const harness = harnessImports();
   const host = await createUnixHost({
     factory, wasm, env,
     stdout: (b) => { out.stdout += o(b); },
     stderr: (b) => { out.stderr += e(b); },
-    imports: m3.imports,
+    imports: harness.imports,
   });
-  m3.attach(host);
+  harness.attach(host);
   host.FS.mkdirTree(`${DEFAULT_ENV.WINEPREFIX}/dosdevices`);
   host.FS.mkdirTree(NLS_DIR);
   host.FS.writeFile(`${NLS_DIR}/l_intl.nls`, intl);

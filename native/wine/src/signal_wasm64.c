@@ -288,8 +288,8 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     if (is_main && tw_boot_flags) tw_boot_stopped();
     if (tw_thread_start_hook) tw_thread_start_hook( (void *)entry, arg, state );
     else tw_run_loop( (uint64_t)(ULONG_PTR)state );
-    /* EXIT_HOST: nothing ends a thread that way today (section 12): a
-     * thread ends in pthread_exit, and process exit longjmps out */
+    /* EXIT_HOST: nothing ends a thread that way (section 12): a thread
+     * ends in pthread_exit, and process exit longjmps out */
     fprintf( stderr, "tempwind: unsupported: signal_start_thread: thread %d's run loop returned: %s\n",
              green_current->id, tw_thread_start_hook ? "the harness's routine returned" : tw_host_stop_reason );
     abort();

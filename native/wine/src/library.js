@@ -21,9 +21,10 @@ addToLibrary({
     updateMemoryViews();
     Module['onMemoryGrown']?.();
   },
-  // The bridge's and the JS host's imports (abi.md v5, "The bridge" and "Host entries of the Unix
-  // side"). The JS host replaces all of them; the bridge's four with the
-  // bridge's raw exports, so those calls are wasm to wasm.
+  // The bridge's and the JS host's imports (abi.md v5, "The bridge" and
+  // "Host entries of the Unix side"). The JS host replaces all of them; the
+  // bridge's four with the bridge's raw exports, so those calls are wasm to
+  // wasm.
   // (state i64) -> i32: the bridge's `run`.
   tw_run__sig: 'ij',
   tw_run: (state) => { throw new Error('tw_run: the JS host replaces this import'); },

@@ -31,7 +31,8 @@
 // - table 1: every return type is void, a scalar or a pointer of at most
 //   8 bytes; one narrower than 64 bits is zero-extended, and void returns 0.
 // The stubs' wrappers stop loudly (tempwind: unsupported: syscall NAME, or
-// win32u syscall NAME); wine-unix.md section 13 records the deferral. The generator prints each table's split.
+// win32u syscall NAME); wine-unix.md section 13 records the deferral. The
+// generator prints each table's split.
 // The output is written only when it changes, so make doesn't rebuild it.
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';

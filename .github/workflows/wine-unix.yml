@@ -161,8 +161,7 @@ jobs:
 
   # The 7-Zip command matrix on this workflow's own Unix side and catalog (tests/sevenzip/README.md):
   # 7zz.exe through run-wine.mjs --dir, one process per step, compared byte for byte with
-  # tests/sevenzip/expected/. It is red until 7zz.exe runs on this Wine, so `publish`
-  # does not depend on it.
+  # tests/sevenzip/expected/.
   sevenzip-matrix:
     needs: build
     if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'claude/') }}

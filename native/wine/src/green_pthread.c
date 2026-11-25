@@ -356,7 +356,8 @@ int pthread_mutex_lock( pthread_mutex_t *mutex )
         if (m->type == PTHREAD_MUTEX_ERRORCHECK) return EDEADLK;
         green_bug( "deadlock: a normal mutex locked again by its owner" );
     }
-    /* Held by another green thread: waiting for it needs the scheduler. */
+    /* Held by another green thread: unreachable, since no green thread
+     * suspends while it holds a mutex (green_switch checks mutexes_held). */
     tw_unsupported( "pthread_mutex_lock of a mutex another green thread holds" );
 }
 

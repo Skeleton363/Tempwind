@@ -17,7 +17,7 @@ const STATUS_FLAGS = 0x8d5n; // CF PF AF ZF SF OF
  *   imageMapped: {fd: number, path: string|null, base: bigint, size: bigint}[],
  *   invalidated: {base: bigint, size: bigint, marked: boolean}[] }}
  */
-export function m3Imports() {
+export function harnessImports() {
   let host = null;
   const imageMapped = [];
   const invalidated = [];

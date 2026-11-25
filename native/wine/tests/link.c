@@ -191,9 +191,9 @@ static const char *green_switch_resumes( void )
     return NULL;
 }
 
-/* Alone: pthread_create makes a green thread (wine-unix.md v3, section 9); the green layer's loud stop that remains is
- * pthread_join of the main thread, which Wine never does (pthread_id 0,
- * unix/thread.c L1128, L1507). */
+/* Alone: the green layer stops loudly at pthread_join of the main thread,
+ * which Wine never does (pthread_id 0, unix/thread.c L1128, L1507;
+ * wine-unix.md v3, section 9). */
 static const char *pthread_join_main_stops( void )
 {
     pthread_join( pthread_self(), NULL );

@@ -73,12 +73,12 @@ export const S_IFIFO = 0o010000;
  * @param {(thread: number, top: bigint, bottom: bigint) => void} [opts.onGreenSpawn]  green_spawn with opts.greenBlock
  * @param {(state: bigint) => number} [opts.run]  tw_run: the bridge's raw `run`
  * @param {Record<string, Function>} [opts.imports]  more `env` imports, replacing the defaults of
- *   the bridge's and the host's imports (abi.md v5, "Host entries of the Unix side"): the bridge's raw exports for
- *   tw_depth_get, tw_depth_set and tw_flags_materialize, and the host's tw_translate,
- *   tw_image_mapped and tw_invalidate. Without them tw_flags_materialize and tw_translate stop
- *   loudly, tw_depth_get and tw_depth_set keep a cell of the host's (0 unless set), and
- *   tw_image_mapped and tw_invalidate do nothing, which is right for a host that links no
- *   translated code (the boot and harness tests).
+ *   the bridge's and the host's imports (abi.md v5, "Host entries of the Unix side"): the
+ *   bridge's raw exports for tw_depth_get, tw_depth_set and tw_flags_materialize, and the host's
+ *   tw_translate, tw_image_mapped and tw_invalidate. Without them tw_flags_materialize and
+ *   tw_translate stop loudly, tw_depth_get and tw_depth_set keep a cell of the host's (0 unless
+ *   set), and tw_image_mapped and tw_invalidate do nothing, which is right for a host that links
+ *   no translated code (the boot and harness tests).
  * @param {() => void} [opts.onMemoryGrown]  after the module grew the memory
  * @param {WebAssembly.Memory} [opts.memory]  the process's memory, if it exists already
  */
@@ -114,7 +114,7 @@ export async function createUnixHost(opts) {
   // restores it at every switch (abi.md v5, "Green threads"), and a host
   // that links no translated code keeps it at 0.
   let depthCell = 0;
-  const m3Imports = {
+  const bridgeAndHostImports = {
     tw_depth_get: () => depthCell,
     tw_depth_set: (d) => { depthCell = d; },
     tw_flags_materialize: noBridge('tw_flags_materialize'),
@@ -135,7 +135,7 @@ export async function createUnixHost(opts) {
       Object.assign(imports.env, {
         green_block: new WebAssembly.Suspending(greenBlock),
         tw_run: run,
-        ...m3Imports,
+        ...bridgeAndHostImports,
       });
       // Synchronous, as the spike: the caller compiled the module already.
       const instance = new WebAssembly.Instance(wasm, imports);

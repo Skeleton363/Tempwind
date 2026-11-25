@@ -80,9 +80,8 @@ void inproc_thread_hangup( int tid );
 
 /* ---- Green threads ---- */
 
-/* green_pthread.c: a green thread as the pthread layer sees it (section 9).
- * The main thread is one; the spawned ones add their signal state (green.c
- * delivers it). */
+/* green_pthread.c: a green thread as the pthread layer sees it (section 9),
+ * the main thread or a spawned one. green.c delivers its signal state. */
 #define GREEN_KEYS_MAX 128
 struct green_waiter;
 struct green_thread
@@ -90,7 +89,7 @@ struct green_thread
     int32_t id;               /* the id green_block and green_wake carry */
     int mutexes_held;         /* suspending while > 0 is a bug */
     void *keys[GREEN_KEYS_MAX];
-    /* (section 9, "Signals"): bit sig - 1 of each */
+    /* section 9, "Signals": bit sig - 1 of each */
     uint64_t sig_pending;
     uint64_t sig_blocked;     /* the thread's mask; SIGQUIT is never blocked */
     struct green_waiter *waiter;  /* the wait it is in, which a signal ends */
@@ -133,11 +132,11 @@ int32_t tw_exit_status( void );
 
 /* ---- Signals and the mask ---- */
 
-/* green.c: signals. green_signal marks sig pending on the green thread with
- * that id and wakes it if it waits; 1, or 0 when no such green thread is
- * alive (send_thread_signal, section 7). green_deliver_signals handles the
- * running thread's pending signals that its mask doesn't block, at the
- * delivery points; it returns 1 when a handler ran and returned. */
+/* green.c: signals. inproc_thread_signal marks sig pending on the green
+ * thread with that id and wakes it if it waits; 1, or 0 when no such green
+ * thread is alive (send_thread_signal, section 7). green_deliver_signals
+ * handles the running thread's pending signals that its mask doesn't block,
+ * at the delivery points; it returns 1 when a handler ran and returned. */
 int inproc_thread_signal( int tid, int sig );
 int green_deliver_signals( void );
 
