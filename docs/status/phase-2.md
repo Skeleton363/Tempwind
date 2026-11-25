@@ -865,8 +865,8 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 | WP4: signals and APCs (merged, `1b5049d`) | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
 | WP5: first light and the matrix (merged, `f28b6b0`; the coordinator's doc commit `8a9c75e`) | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
 | WP6: delete the shim (merged, `1e155d6`; the coordinator's review fixes `b4a012d`) | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
-| Cleanup: labels and headers (running, briefed 2026-11-25 from `b4a012d`) | builder | after WP6 | the owner's cleanup pass: work-package and milestone labels out of the comments of `native/wine/`, `runtime/src/wine/` and `tests/wine/` (not the `thread` and `signal` checks); `tempwind_private.h` and `config.h` regrouped by topic | the label grep clean; the gates, `test:wine`, `test:browser:wine` and the matrix pass |
-| Cleanup: the `thread` and `signal` checks (running, briefed 2026-11-25 from `b4a012d`) | deep-worker | after WP6, in parallel | `native/wine/tests/thread.c` and `signal.c` and their `tests/wine/*.test.mjs`: waits for a condition in place of fixed sleeps; visible behavior in place of scheduler fields, where something outside shows it | only the sleeps a check is about remain; `test:wine` 62 of 62 three times in a row; run times before and after |
+| Cleanup: labels and headers (merged, `04e3126`; the coordinator's review fixes in progress at the pause) | builder | after WP6 | the owner's cleanup pass: work-package and milestone labels out of the comments of `native/wine/`, `runtime/src/wine/` and `tests/wine/` (not the `thread` and `signal` checks); `tempwind_private.h` and `config.h` regrouped by topic | the label grep clean; the gates, `test:wine`, `test:browser:wine` and the matrix pass |
+| Cleanup: the `thread` and `signal` checks (reported; `m4-cleanup-checks-wip` at `c6d78e3`, not reviewed yet) | deep-worker | after WP6, in parallel | `native/wine/tests/thread.c` and `signal.c` and their `tests/wine/*.test.mjs`: waits for a condition in place of fixed sleeps; visible behavior in place of scheduler fields, where something outside shows it | only the sleeps a check is about remain; `test:wine` 62 of 62 three times in a row; run times before and after |
 
 - **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
 - **The coordinator** reviews each diff, checks each report against its contract sections, merges each track into the PR branch and reads the context after each merge. After WP2 and WP4 merge it pushes so `wine-unix.yml` publishes a release, then bumps `tests/targets/wine-unix.lock`.
@@ -1113,6 +1113,38 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
   - **A builder** takes the labels and the two headers (`m4-cleanup-labels-wip`). **A deep-worker** takes the `thread` and `signal` checks (`m4-cleanup-checks-wip`). Both were briefed from `b4a012d`.
   - `/simplify` stays in the main loop, after both merge, with the dead code WP6 left.
 
+### Paused again (2026-11-25, 19:55 UTC)
+The owner paused M4 during the cleanup pass. Both cleanup agents had reported; no agent runs, and every track is pushed.
+
+**Committed** (the PR branch, this pause's commit after `04e3126`):
+- **The labels and headers track, merged as `04e3126`** (builder, 8 minutes). Comments in `native/wine/`, `runtime/src/wine/`, `tests/wine/` and `wine-unix.yml` lose their work-package and milestone labels (33 files, `de61b1b`); `tests/wine/m3-imports.mjs` is `harness-imports.mjs`; `tempwind_private.h` and `config.h` are grouped by topic, includes at the top (`bee011f`).
+  - **Checked:** a sorted diff of the two headers' non-comment lines finds every declaration unchanged. The merge's tree is `bee011f`'s, which the builder verified in its worktree: `prepare.sh --all` with gates 1-3 clean, `test:wine` 62 of 62, `test:browser:wine` 1 of 1 and the matrix 138 of 138. Nothing it changed is Rust or reaches `test:node`.
+  - **What the label grep leaves:** contract-section names ("The M4 checks", "Programs (M3)", "Host files (M4)", "The browser host (M3)"), three string literals, patch 0106's pointer to "M3 decision 17", and the first lines of `wine-unix.yml` and `wine.yml` ("Phase 2 M2", "M1"), which the brief left out.
+- **The ledger** has both cleanup agents' runs.
+
+**In progress:**
+- **The coordinator's review fixes for the labels track,** WIP on `m4-coordinator-wip`: one commit on top of this pause's commit. It renames the harness helper's export `m3Imports` to `harnessImports`, and `unix-host.mjs`'s local of that name to `bridgeAndHostImports`. Not run yet. Left:
+  - `tempwind_private.h`: the `green_thread` comment ("the main thread or a spawned one"); `section 9, "Signals"` without the parentheses; `inproc_thread_signal` in place of the stale name `green_signal`;
+  - `green_pthread.c` L359: "waiting for it needs the scheduler" becomes why the branch is unreachable: no green thread suspends while holding a mutex (`green_switch` checks `mutexes_held`). It is no deferral, so section 13 needs no line;
+  - `signal_wasm64.c` L291: drop "today";
+  - reflow the comment lines the label commit made too long: `link.c` L194, `gen-syscalls.mjs` L34, `library.js` L24 and `unix-host.mjs` L75-81;
+  - `wine-unix.yml` L162-165: drop "It is red until 7zz.exe runs on this Wine", since the matrix job passes. Whether `publish` should now wait for it is for the retro.
+- **The checks track has reported** (deep-worker, 10 minutes): `m4-cleanup-checks-wip` at `c6d78e3`, based on `84a317a`, with `67720f0` (thread) and `c6d78e3` (signal); no doc commit and no JS change. Not reviewed or merged. Its report:
+  - **Waits:** `UNTIL(cond)` yields until the condition holds and fails after 10 s, naming it; `wait_for(handle)` waits on an object with the same deadline. Where a thread must be stopped in its suspend wait, the check calls `NtGetContextThread`, which the server answers only once the thread's SIGUSR1 handler has posted its context.
+  - **What the checks assert now:** the suspend count (`ThreadSuspendCount`), whether a handle is signaled, the mask as `pthread_sigmask` reports it, a closed request fd, and flags the threads set. Unblocking SIGUSR1 before the sleep makes `mask_blocks_sigusr1` fail, as it should.
+  - **Sleeps** (`sleep_ms` and `wait_ms`, each helper's definition included): `thread.c` 14 → 4, `signal.c` 8 → 2. Kept as the scenario: the two 60 s main-thread sleeps, the 10 ms timeout that fires while the main thread is parked, and the 100 ms sleep with SIGUSR1 blocked.
+  - **Scheduler reads** (uses of `green_thread_by_id`, `green_parked`, `->sig_pending`, `->sig_blocked` and `->waiter`; the brief's 17 and 25 counted more): `thread.c` 10 → 4, `signal.c` 22 → 0. Kept: `green_parked` in `main_parked`; `green_thread_by_id(1)->sig_pending` in `main_sigquit_pending`, which now also asserts the SIGQUIT was never handled (the main thread's request fd stays open); the `depth` reads.
+  - **Run times:** `signal` 602 → about 144 ms, `thread` 48 → about 37 ms. `test:wine` passed 62 of 62 four times in a row.
+  - **Its open point:** that a sleeping thread is inside its `select` is no longer asserted. It follows from FIFO yields and `NtDelayExecution` yielding once before its `select` (`unix/sync.c` L2452).
+  - It found no scheduler defect.
+
+**How to resume** (a fresh session):
+1. **Read** `docs/plan.md` (M4), this note's M4 section (the work-package table, "Resumed again (2026-11-25, 18:35 UTC)" and this subsection), `ARCHITECTURE.md`, and `wine-unix.md` v3, sections 9, 10 and 13.
+2. **Finish the labels track's review fixes:** `git fetch origin m4-coordinator-wip m4-cleanup-checks-wip`, then on the PR branch `git merge --ff-only origin/m4-coordinator-wip`. Apply what "Left" lists above, build with `tests/wine/prepare.sh --all`, run `npm run test:wine`, and turn the WIP commit into "the labels track's review fixes".
+3. **Review the checks track:** `git diff 84a317a origin/m4-cleanup-checks-wip` against its table row and `wine-unix.md` v3, sections 9 and 10; weigh its open point. Merge with `--no-ff`.
+4. **Verify the head:** `tests/wine/prepare.sh --all` (not `--fetch`: the locked `wine-unix-1b5049d` has the old harnesses), `npm run test:wine` three times, `test:browser:wine`, `test:node`, and the 7-Zip matrix with `compare.mjs` (`commands.md`). Push.
+5. **Then:** `/simplify` over the milestone's code, with WP6's leftovers (the 37 exports of `abi.mjs` nothing reads; `plan.mjs`'s `checkPlan` and `addressMap`); bump `wine-unix.lock` to the release `wine-unix.yml` publishes from the head; then `/milestone-close`. Its draft PR asks for a human review of `signal_wasm64.c`, `green.c` and `green_pthread.c`.
+
 ## What works
 
 | Item | Evidence |
@@ -1245,7 +1277,7 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
 
 ## Next step: M4, "Console programs on Wine", in a new session
 
-**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The cleanup pass the owner added ("Resumed again (2026-11-25, 18:35 UTC)") runs as two agents, on `m4-cleanup-labels-wip` and `m4-cleanup-checks-wip`; then `/simplify` in the main loop, then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
+**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The owner paused M4 again during the cleanup pass ("Paused again (2026-11-25, 19:55 UTC)", which holds the resume path): its labels track is merged as `04e3126`, and its checks track has reported and waits for review. Then `/simplify` in the main loop, then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the earlier pauses and resumes, and this pause last. The rest of this section is M3's hand-off, which M4's planning has already used.
 
 **M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
 
