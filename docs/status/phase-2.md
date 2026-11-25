@@ -863,7 +863,7 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 | WP2: win32u (merged, `bfea4ee`; the coordinator's doc fix `55dacfb`) | deep-worker | after the contracts, in parallel | decisions 5 and 6: `build.sh`, `config.h`, `rename-win32u.h`, `gen-syscalls.mjs` (table 1), `src/unixlibs.c`, the dispatchers' table-1 and unix-call parts, patches 0107, 0203 and 04xx, the `syscall` and `session` checks | the gates clean; section 10's WP2 checks; 7zz.exe with no arguments on Wine (`prepare.sh --all`) prints native Wine 11's text, exits 0, every image linked, no `tempwind:` line |
 | WP3: tests and CI (merged, `23b8688`; the coordinator's fixes `e26abb1`) | builder | after the contracts, in parallel | decisions 8, 9 and 10: host files (`wine-process.mjs`, `run-wine.mjs --dir`), the matrix's and the benches' Wine mode, `catalog.mjs` and `prepare.sh`, `programs.test.mjs`, `tests/native/l2_threads.c` and `l2_suspend.c` with `.expected` (deterministic, checked under native Wine 11 here and on Windows in CI), `wine-unix.yml` (a separate matrix job), `bench.yml`, `commands.md` | unit tests for copy-in, collect and mtimes; the runner and the benches run end to end on today's programs; CI wired (red until WP5) |
 | WP4: signals and APCs (merged, `1b5049d`) | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
-| WP5: first light and the matrix | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
+| WP5: first light and the matrix (running, briefed 2026-11-25 from `303f03b`) | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
 | WP6: delete the shim | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
 
 - **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
@@ -1051,6 +1051,13 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
   - `test:node` 268 of 268 (in the main tree);
   - `test:browser:wine` 1 of 1.
 - **Size at `1b5049d`:** `wine-unix.wasm` is 2,450,455 bytes (808,528 gzipped).
+- **The lock bump** (`303f03b`): `wine-unix.lock` = `wine-unix-1b5049d`, which `wine-unix.yml` published from WP4's merge. In the main tree `prepare.sh --fetch` exits 0 and `test:wine` passes 62 of 62.
+  - A fetch right after the release appeared failed with a 404: the publish job was still uploading the release's files. The release appears before all its files are there; the retry passed.
+- **WP5** was briefed from `303f03b`, on track `m4-wp5-wip`. The brief is its row in the table, plus:
+  - the first check: user32's thread detach on 7zz.exe's second thread;
+  - the starting point: the `sevenzip-matrix` job of the run for `1b5049d`;
+  - native ratios through the `wine.lock` tree's `bin/wine`, since this container has no system `wine64`;
+  - the sysparams boot cost to measure (section 13).
 
 ## What works
 
@@ -1182,7 +1189,7 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
 
 ## Next step: M4, "Console programs on Wine", in a new session
 
-**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). Next: bump `wine-unix.lock` to the release `wine-unix.yml` publishes from `1b5049d`, then WP5 and WP6.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
+**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 runs on `m4-wp5-wip`; WP6 follows it.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
 
 **M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
 
