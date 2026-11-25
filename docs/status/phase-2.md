@@ -864,7 +864,9 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 | WP3: tests and CI (merged, `23b8688`; the coordinator's fixes `e26abb1`) | builder | after the contracts, in parallel | decisions 8, 9 and 10: host files (`wine-process.mjs`, `run-wine.mjs --dir`), the matrix's and the benches' Wine mode, `catalog.mjs` and `prepare.sh`, `programs.test.mjs`, `tests/native/l2_threads.c` and `l2_suspend.c` with `.expected` (deterministic, checked under native Wine 11 here and on Windows in CI), `wine-unix.yml` (a separate matrix job), `bench.yml`, `commands.md` | unit tests for copy-in, collect and mtimes; the runner and the benches run end to end on today's programs; CI wired (red until WP5) |
 | WP4: signals and APCs (merged, `1b5049d`) | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
 | WP5: first light and the matrix (merged, `f28b6b0`; the coordinator's doc commit `8a9c75e`) | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
-| WP6: delete the shim (running, briefed 2026-11-25 from `b7a750a`) | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
+| WP6: delete the shim (merged, `1e155d6`; the coordinator's review fixes `b4a012d`) | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
+| Cleanup: labels and headers (running, briefed 2026-11-25 from `b4a012d`) | builder | after WP6 | the owner's cleanup pass: work-package and milestone labels out of the comments of `native/wine/`, `runtime/src/wine/` and `tests/wine/` (not the `thread` and `signal` checks); `tempwind_private.h` and `config.h` regrouped by topic | the label grep clean; the gates, `test:wine`, `test:browser:wine` and the matrix pass |
+| Cleanup: the `thread` and `signal` checks (running, briefed 2026-11-25 from `b4a012d`) | deep-worker | after WP6, in parallel | `native/wine/tests/thread.c` and `signal.c` and their `tests/wine/*.test.mjs`: waits for a condition in place of fixed sleeps; visible behavior in place of scheduler fields, where something outside shows it | only the sleeps a check is about remain; `test:wine` 62 of 62 three times in a row; run times before and after |
 
 - **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
 - **The coordinator** reviews each diff, checks each report against its contract sections, merges each track into the PR branch and reads the context after each merge. After WP2 and WP4 merge it pushes so `wine-unix.yml` publishes a release, then bumps `tests/targets/wine-unix.lock`.
@@ -1092,6 +1094,24 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
     - run `/simplify` over the milestone's code and apply its fixes. The review's stage 2 (`/code-review`) stays on correctness.
   - **The draft PR asks for a human review** of the thread and signal code: `signal_wasm64.c`, `green.c`, `green_pthread.c`.
   - **How we'll know it worked:** after the pass, a grep finds no work-package names in source comments, and every suite and the matrix pass as before. The retro decides whether the close keeps the pass, for example as a pre-push check on work-package names in sources.
+- **WP6 merged as `1e155d6`** (builder, 15 min). It deleted the shim, its loader and its run loop: 63 files and 9,584 lines. Its commit `1aad667` accounts for each removed test.
+  - **Counts, before and after, in the main tree:** `test:node` 268 → 86 (the 182 tests of the deleted code), `test:wine` 62, `test:browser` 5, `test:browser:wine` 1, cargo 255 → 256 (the ported test below), and the matrix 138 of 138 (`--jobs 4`, 65.6 s).
+  - **The merge kept the PR branch's status note.** `1aad667` carried an older copy of it, which would have undone `bc17241` and `027527f`.
+  - **The coordinator's review fixes (`b4a012d`):**
+    - `ci.yml`'s two step names that still said they translate;
+    - a dead `TEMPWIND_TRACE` setting in both benchmarks;
+    - `tests/native/prepare.sh`'s `coremark.exe` fetch, which no Node test reads now;
+    - three references to `runtime.md` sections that are gone, and that file's Phase 1 benchmark paragraph, rewritten for Wine;
+    - `rt.test.mjs`'s pointer to the deleted `pe.test.mjs`;
+    - memory-checks' import-shape test, which needed no shim: ported to Rust (`translate.rs`, `optional_imports_follow_the_options`).
+  - **What no test covers now:** a NULL access or a store into code in a Wine process. The translator's checks are tested in Rust (`spike.rs`, `memory_checks_fault`), and every Wine program runs with both checks on, but nothing drives the run loop's loud stop on `EXIT_FAULT` or a store-check hit (`run.c`). M5 raises them as access violations, and its test of that covers this path. Known issues lists it.
+  - **Kept, with the reason:** `wasm-mini.mjs`, `v3-mini.mjs`, `pe-fixture.mjs` and `conformance-parse.test.mjs`, which kept tests import. **Removed:** `trace.mjs` and `ntdll.test.mjs`, which only the deleted code used, and the benchmarks' `images.mjs`, `profile.mjs` and `memchecks.mjs`. `ci.yml`'s shim matrix step is gone: `wine-unix.yml`'s `sevenzip-matrix` job runs the matrix on Wine.
+  - **Left for the cleanup pass:** 37 exports of `abi.mjs` that nothing reads now, and `plan.mjs`'s `checkPlan` and `addressMap` (Phase 1's address map), which only `plan.test.mjs` calls.
+- **The cleanup pass runs as two agents in parallel, split along file boundaries,** in place of the main loop that plan step 5 named. Measured first:
+  - 21 work-package names in 11 files, and 107 milestone names in 41 files of the milestone's code (`native/wine/`, `runtime/src/wine/`, `tests/wine/`). Some are contract-section names, which stay.
+  - `thread.c` has the same pattern as `signal.c`: 14 fixed sleeps and 17 reads of scheduler fields, against 8 and 25. So the checks' half covers both files.
+  - **A builder** takes the labels and the two headers (`m4-cleanup-labels-wip`). **A deep-worker** takes the `thread` and `signal` checks (`m4-cleanup-checks-wip`). Both were briefed from `b4a012d`.
+  - `/simplify` stays in the main loop, after both merge, with the dead code WP6 left.
 
 ## What works
 
@@ -1197,6 +1217,7 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
   - a SIGQUIT sent to a thread before its `init_thread` returns 0, as natively, but the thread's later start would stop loudly in the in-process server instead of meeting EPIPE. It takes a `TerminateThread` right after `CreateThread`, before the new thread first runs (WP1's open point; WP4 fixes it only if a check reaches it);
   - `KeUserModeCallback` stops loudly from `signal_wasm64.c`, beside `NtCallbackReturn` (deferred, decision 12);
   - `7z b` prints a CPU usage of 0 %, where native prints 99 %. Wine's `ProcessTimes` reads `times()` (`unix/process.c` L1241-1249), and Emscripten's `times()` returns zeros. The tracked rating (the Tot line's last column) doesn't use it. Fixing it needs a decision on where CPU time comes from, for example the green scheduler's time on the CPU per thread; it isn't in M4's done-when;
+  - no test drives a NULL access or a store into code in a Wine process: the run loop's loud stop on `EXIT_FAULT` and on a store-check hit (`run.c`) is untested since Phase 1's `memory-checks.test.mjs` went with the shim. The translator's side is tested in Rust (`spike.rs`, `memory_checks_fault`). M5 raises both as access violations and tests that;
   - no check reaches SIGUSR1 on a unix call's frame. `usr1_handler` clears the frame's incomplete mark and sets EFLAGS to 0x200, as Wine does (`sx.c` L2640-2645, `wine-unix.md` section 9), but no check suspends a thread inside a unix call.
 - **M3's, for M5** (the code review; each is harmless while every fault stops loudly):
   - the rep-range store check walks every page from the range's low end to its high end with no bound, so a garbage RCX loops for a long time, or reads past the page-state table, before the store faults (`emit.rs`, `page_range_check`). Bound it at the table's end with a translator test;
@@ -1224,7 +1245,7 @@ The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by
 
 ## Next step: M4, "Console programs on Wine", in a new session
 
-**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 (the shim's deletion) runs on `m4-wp6-wip`. Then the cleanup pass the owner added ("Resumed again (2026-11-25, 18:35 UTC)"), then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
+**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The cleanup pass the owner added ("Resumed again (2026-11-25, 18:35 UTC)") runs as two agents, on `m4-cleanup-labels-wip` and `m4-cleanup-checks-wip`; then `/simplify` in the main loop, then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the resume path, then the first pause and its resume. The rest of this section is M3's hand-off, which M4's planning has already used.
 
 **M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
 
