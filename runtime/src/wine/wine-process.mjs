@@ -27,6 +27,7 @@ import { requestFlags } from '../process.mjs';
 import { createUnixHost, INITIAL_PAGES, MAXIMUM_PAGES, DEFAULT_ENV } from './unix-host.mjs';
 import { installBootSet, parseBootSetManifest, drivePath, boot, BOOT_RUN } from './boot-set.mjs';
 import { parseCatalog, matchCatalog } from './aot-catalog.mjs';
+import { writeHostFiles, collectHostFiles } from './host-files.mjs';
 
 /** The request flags of every run-time translation in a Wine process (translator.md, "Wine processes"). */
 export const WINE_RT_FLAGS = requestFlags({ nullCheck: true, storeCheck: true, sharedMemory: true, structured: true });
@@ -69,6 +70,8 @@ export async function sha256Hex(bytes) {
  *   installFiles: string[]}} opts.prefix  readPrefix's (installFiles: drive_c's file paths, for the install copies)
  * @param {Uint8Array} opts.overlay  native/wine/prefix/overlay.reg
  * @param {{name: string, bytes: Uint8Array}} opts.program  written up front at C:\tempwind\<name>
+ * @param {{path: string, bytes?: Uint8Array, dir?: boolean, mtime: number}[]} [opts.files]  host files written into
+ *   drive_c before boot, with their mtimes (host-files.mjs; paths relative to drive_c, `mtime` in ms)
  * @param {string[]} [opts.args]  the program's arguments
  * @param {string} [opts.cwd]  the launch directory, a DOS path on C: (default C:\tempwind)
  * @param {Record<string,string>} [opts.env]  added to the Unix side's environment (WINEDEBUG goes here)
@@ -241,12 +244,24 @@ export async function createWineProcess(opts) {
     overlay: opts.overlay,
   });
   stats.lazy = loaded;
-  host.FS.chdir(drivePath(prefixPath, opts.cwd ?? DEFAULT_CWD));
+  const driveC = drivePath(prefixPath, 'C:\\');
+  writeHostFiles(host.FS, driveC, opts.files ?? []);
+  const cwdPath = drivePath(prefixPath, opts.cwd ?? DEFAULT_CWD);
+  host.FS.mkdirTree(cwdPath);
+  host.FS.chdir(cwdPath);
 
   return {
     host, linker, memory, table, depth, stats, programPath,
+    /** The MEMFS path of the prefix's drive_c. */
+    driveC,
     /** The JS imports the Unix side calls (tw_image_mapped, tw_translate, tw_invalidate), for tests. */
     imports,
+    /**
+     * The tree under drive_c/`dir` after the process has settled, in the form
+     * of `opts.files` (host-files.mjs): paths relative to drive_c, sorted,
+     * with bytes and mtimes.
+     */
+    collect: (dir) => collectHostFiles(host.FS, driveC, dir),
     /**
      * Enters boot, in run mode by default. Resolves with the exit status, the
      * full Windows status as a u32 (abi.md v5, "Process exit"); rejects when

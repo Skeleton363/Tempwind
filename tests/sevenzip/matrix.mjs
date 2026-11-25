@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // The 7-Zip command matrix (tests/sevenzip/README.md).
 //
-//   node tests/sevenzip/matrix.mjs --mode native|wine|translated --out OUT [--exe 7zz.exe]
+//   node tests/sevenzip/matrix.mjs --mode native|wine|translated|shim --out OUT [--exe 7zz.exe]
 //        [--filter SUBSTRING] [--jobs N] [--wine CMD] [--aot-dir DIR] [--skip-translate] [--quiet]
+//
+// Modes: native (Windows), wine (wine64), translated (7zz.exe on our Wine: runtime/src/wine/run-wine.mjs --dir
+// on the work directory, one process per step, inputs in TW_WINE_DIR/TW_WINE_UNIX_DIR) and shim (Phase 1's
+// run-pe with the Win32 shim; --aot-dir and --skip-translate apply to it only; WP6 deletes it).
 //
 // Steps come from steps.json and are grouped: a group is the steps of one archive (a, t, l, x), run in order in
 // its own work directory OUT/work/<group> that holds a fresh copy of the input tree (tree.mjs). Groups are
@@ -37,8 +41,8 @@ const { values } = parseArgs({
   },
 });
 const mode = values.mode;
-if (!['native', 'wine', 'translated'].includes(mode) || !values.out) {
-  console.error('usage: node tests/sevenzip/matrix.mjs --mode native|wine|translated --out OUT [--exe 7zz.exe] [--filter S] [--jobs N]');
+if (!['native', 'wine', 'translated', 'shim'].includes(mode) || !values.out) {
+  console.error('usage: node tests/sevenzip/matrix.mjs --mode native|wine|translated|shim --out OUT [--exe 7zz.exe] [--filter S] [--jobs N]');
   process.exit(2);
 }
 const exe = resolve(values.exe);
@@ -69,7 +73,7 @@ if (mode === 'wine') {
   const w = spawnSync(wine, [exe, 'i'], { env, timeout: 300000 });
   if (w.status !== 0) throw new Error(`wine warm-up failed (${w.status}): ${w.stderr}`);
 }
-if (mode === 'translated') {
+if (mode === 'shim') {
   const aot = resolve(values['aot-dir']);
   if (!values['skip-translate']) {
     const r = spawnSync('cargo', ['run', '-q', '-p', 'x64wasm-cli', '--release', '--', 'translate-pe', exe, '--out-dir', aot], { cwd: root, encoding: 'utf8' });
@@ -83,6 +87,7 @@ const wasmDir = join(root, 'target/wasm32-unknown-unknown/release');
 function command(args, work) {
   if (mode === 'native') return [exe, args];
   if (mode === 'wine') return [wine, [exe, ...args]];
+  if (mode === 'translated') return [process.execPath, [join(root, 'runtime/src/wine/run-wine.mjs'), '--dir', work, exe, ...args]];
   const a = values['aot-dir'];
   return [process.execPath, [join(root, 'runtime/src/run-pe.mjs'), '--exe', exe, '--aot', join(a, '7zz.wasm'), '--plan', join(a, '7zz.plan.json'),
     '--rt', join(wasmDir, 'x64wasm_rt.wasm'), '--fp', join(wasmDir, 'x64wasm_fp.wasm'), '--dir', work, '--', ...args]];

@@ -14,8 +14,8 @@
 #    names (the tag on one line, like wine.lock).
 #
 # 5. Packaging for the Unix side (docs/design/wine-build.md): fetches
-#    closure.json, builds the L2 programs (tests/native/build.sh) and copies
-#    them into target/wine, rebases the closure's DLLs into target/wine/rebased
+#    closure.json, builds the L2 programs (tests/native/build.sh) and basic.exe
+#    (tests/pe/build.sh) and copies them into target/wine, rebases the closure's DLLs into target/wine/rebased
 #    (native/wine/rebase, then its --verify), writes target/wine/bridge.wasm
 #    (x64wasm-cli bridge) and runs tests/wine/catalog.mjs: catalog/ (an AOT
 #    module per PE file) and boot-set.json. The catalog covers the modules the
@@ -102,7 +102,9 @@ fi
 # 5. Packaging for the Unix side.
 [ -s "$out/closure.json" ] || scripts/fetch-artifact.sh "$tag" closure.json "$out"
 tests/native/build.sh >/dev/null
-for p in hello l2_int l2_crt l2_float; do cp "target/native/$p.exe" "$out/$p.exe"; done
+for p in hello l2_int l2_crt l2_float l2_threads l2_suspend; do cp "target/native/$p.exe" "$out/$p.exe"; done
+tests/pe/build.sh >/dev/null
+cp target/pe/basic.exe "$out/basic.exe"
 cargo build -q --release -p pe-rebase -p x64wasm-cli
 cargo build -q --release -p x64wasm-rt -p x64wasm-fp --target wasm32-unknown-unknown
 target/release/pe-rebase --tree "$out/pe" --closure "$out/closure.json" --out "$out/rebased"
