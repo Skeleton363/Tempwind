@@ -867,6 +867,7 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 | WP6: delete the shim (merged, `1e155d6`; the coordinator's review fixes `b4a012d`) | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
 | Cleanup: labels and headers (merged, `04e3126`; the coordinator's review fixes `ca65786`) | builder | after WP6 | the owner's cleanup pass: work-package and milestone labels out of the comments of `native/wine/`, `runtime/src/wine/` and `tests/wine/` (not the `thread` and `signal` checks); `tempwind_private.h` and `config.h` regrouped by topic | the label grep clean; the gates, `test:wine`, `test:browser:wine` and the matrix pass |
 | Cleanup: the `thread` and `signal` checks (merged, `42101fa`; the coordinator's review fix `59db8a0`) | deep-worker | after WP6, in parallel | `native/wine/tests/thread.c` and `signal.c` and their `tests/wine/*.test.mjs`: waits for a condition in place of fixed sleeps; visible behavior in place of scheduler fields, where something outside shows it | only the sleeps a check is about remain; `test:wine` 62 of 62 three times in a row; run times before and after |
+| Cleanup: `/simplify` (on the side branch `m4-simplify-wip`, `1de5479`; its verification stopped by the owner's pause) | four read-only reviewers, a builder, the coordinator | after the two tracks above | the milestone's added and changed code (59 files): reuse, simplification, efficiency and altitude, and the dead code the shim's deletion left | each finding applied, or skipped with its reason; the gates, `test:wine` three times, `test:browser:wine`, `test:node`, cargo and the matrix pass |
 
 - **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
 - **The coordinator** reviews each diff, checks each report against its contract sections, merges each track into the PR branch and reads the context after each merge. After WP2 and WP4 merge it pushes so `wine-unix.yml` publishes a release, then bumps `tests/targets/wine-unix.lock`.
@@ -1161,6 +1162,42 @@ The owner paused M4 during the cleanup pass. Both cleanup agents had reported; n
   - the matrix 138 of 138 in 85.6 s (`--jobs 4`; 65.6 s at `1e155d6`). The close measures it again.
 - **Branches:** the agents' worktrees are removed. The side branches `m4-coordinator-wip` (`faf7aac`, the pause's WIP, now in `ca65786`; a force-push to refresh it was refused) and `m4-cleanup-review-wip` (`59db8a0`) are superseded, for the close's branch list.
 
+### Paused again (2026-11-26, 18:25 UTC)
+- **The PR branch is at `b5f16fd` plus this note,** verified as "Resumed (2026-11-26)" says.
+- **The `/simplify` pass is on the side branch `m4-simplify-wip`, at `1de5479`.** It is not on the PR branch yet, because the pause stopped its verification.
+- **What the pass did.** Four read-only reviews (reuse, simplification, efficiency, altitude) went over the 59 files that `c9a3b35..b5f16fd` adds or changes, leaving out the fixtures, the docs, the Wine patches and the two recorded L2 programs. The five ledger lines of 2026-11-26 give each review's applied and skipped findings, with the reasons. The commit messages give what changed. The side branch, on base `b5f16fd`:
+  - **`7a6900c`:** removes Phase 1's address map and plan check from `plan.mjs`, and 55 `abi.mjs` exports, with the 20 tests of that code. `test:node` went from 86 to 66 tests, all passing.
+  - **`b734af3`:** the harnesses' shared setup: `native/wine/tests/server.h`, and `startHarness` and `runChecks` in `tests/wine/harness-imports.mjs`. A builder wrote it as `13c9e6d` on the contract commit `3af42b9`, and verified it on its branch: `prepare.sh --all`, `test:wine` 62 three times, `test:browser:wine` 1.
+  - **`3bdee53`:** the other fixes.
+  - **`1de5479` (WIP):**
+    - `wine-unix.yml`'s path triggers now name `scripts/apt-install.sh`, which `3bdee53`'s matrix job runs. `workflow-paths.test.mjs` failed without that line, and passes on its own with it.
+    - the ledger's five runs;
+    - `wine-unix.md` section 13's line on debug registers.
+- **The verification of `3bdee53`, stopped by the pause:**
+  - `prepare.sh --all` passed: gates clean, the catalog's 82 modules, the boot set's 160 files.
+  - `test:wine` passed 62 of 62 three times, and `test:browser:wine` 1 of 1.
+  - `test:node` failed on `workflow-paths`, which `1de5479` fixes.
+  - Cargo and the matrix did not run.
+- **Nothing is running.** Every agent of the pass has finished, and the builder's worktree is removed.
+- **To resume.** A fresh session works from this note; the coordinator's plan file is not in the repository.
+  1. **Turn the WIP into a commit, and verify it:**
+     - `git fetch origin m4-simplify-wip && git checkout -b simplify-resume origin/m4-simplify-wip`;
+     - `git commit --amend` with a "Phase 2 M4: …" message;
+     - `tests/wine/prepare.sh --all`;
+     - `npm run test:wine` three times (62 each), `npm run test:browser:wine` (1) and `npm run test:node` (66);
+     - `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` (256);
+     - `node tests/sevenzip/matrix.mjs --mode translated --out target/sz-out --jobs 4 --quiet`, then `node tests/sevenzip/compare.mjs target/sz-out tests/sevenzip/expected` (138 of 138; it took 85.6 s at `59db8a0`).
+  2. **Merge it into the PR branch** with `git merge --no-ff simplify-resume`. Then add a "The simplify pass" section to this note: applied, skipped with the reasons, and the CI numbers for the retro.
+     - The matrix job downloads and unpacks all of `target/wine`, about 0.5 GB compressed. Run-wine reads the boot set (about 62 MB), the catalog and the prefix.
+     - Each bench job runs its own `prepare.sh --fetch`, 1.5 to 3 minutes.
+
+     Update this row and the next-step line, then push.
+  3. **Bump the lock.** The push makes `wine-unix.yml` publish `wine-unix-<sha7>` of the head. Check that run once, set `tests/targets/wine-unix.lock` to the release, run `tests/wine/prepare.sh --fetch` and `npm run test:wine`, and push.
+  4. **`/milestone-close`.**
+     - The draft PR, "[Phase 2] Console programs on Wine", asks for a human review of `signal_wasm64.c`, `green.c` and `green_pthread.c`.
+     - The retro asks whether to keep the cleanup pass and whether `publish` should wait for the matrix job, and weighs the CI numbers above.
+     - Side branches for the close's list: `m4-coordinator-wip`, `m4-cleanup-review-wip`, `m4-cleanup-labels-wip`, `m4-cleanup-checks-wip`, `m4-simplify-harness-wip` and `m4-simplify-wip`.
+
 ## What works
 
 | Item | Evidence |
@@ -1293,7 +1330,7 @@ The owner paused M4 during the cleanup pass. Both cleanup agents had reported; n
 
 ## Next step: M4, "Console programs on Wine", in a new session
 
-**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The cleanup pass the owner added is merged and verified ("Resumed (2026-11-26)"): the labels track as `04e3126` and the checks track as `42101fa`, each with the coordinator's review fixes. Next: `/simplify` in the main loop, the lock bump, then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the pauses and resumes, the latest last. The rest of this section is M3's hand-off, which M4's planning has already used.
+**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The cleanup pass the owner added is merged and verified ("Resumed (2026-11-26)"): the labels track as `04e3126` and the checks track as `42101fa`, each with the coordinator's review fixes. The `/simplify` pass is done on the side branch `m4-simplify-wip`, but the owner's pause stopped its verification ("Paused again (2026-11-26, 18:25 UTC)"). Next: resume there, then the lock bump and `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the pauses and resumes, the latest last. The rest of this section is M3's hand-off, which M4's planning has already used.
 
 **M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
 
