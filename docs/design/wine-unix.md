@@ -580,6 +580,7 @@ From then on JS links modules on demand: an AOT module through `tw_image_mapped`
   - a store-check hit on a write-watched page records the write;
   - guard pages;
   - threads on more than one core.
+- **Debug registers:** `NtSetContextThread` on the running thread with nonzero debug registers stops loudly (`signal_wasm64.c`). Wine sends a change of them through the server's `set_thread_context` (`unix/signal_x86_64.c` L1138-1148), and the translator has no hardware breakpoints to act on them.
 - **KUSER's clock** advances only at syscall entries, server requests and green switches (`signal_wasm64.c` L239, section 7). A guest that only reads KUSER sees time stand still between syscalls; kernel32's `GetTickCount` is such a read (`dlls/kernel32/sync.c` L85-105). CoreMark and `7z b` time with QPC, a syscall (`ntdll/time.c` L383-388 → `unix/sync.c` L2473-2478), and `7z b`'s `GetTickCount` comes with `GetProcessTimes`, another syscall (`research.md`, 2026-11-21). WP5 checks for a loop that reads `GetTickCount` with no syscall in it; one it finds gets a ticker.
 - **The boot's sysparams cost:** the volatile sysparams key is new at every boot of the in-process server, so win32u writes its default entries at every boot (`win32u/sysparams.c` L5897-5900). WP5 measures it.
 
