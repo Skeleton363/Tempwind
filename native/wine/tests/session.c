@@ -38,6 +38,7 @@
 
 #include "harness.h"
 #include "tempwind_private.h"
+#include "server.h"
 
 /* The server's (server/mapping.c, server/file.h): its session header and
  * its shared-object allocator. */
@@ -166,11 +167,7 @@ int tw_test_main( void )
 
     if (only && !strcmp( only, "view_before_setup" ))
         return tw_run_checks( checks, sizeof(checks) / sizeof(checks[0]) );
-    virtual_init();
-    virtual_alloc_first_teb();
-    dbg_init();
-    config_dir = getenv( "WINEPREFIX" );  /* what set_config_dir does (loader.c) */
-    server_init_process();
+    tw_server_start();
     NtQuerySystemInformation( SystemBasicInformation, &system_info, sizeof(system_info), NULL );
     return tw_run_checks( checks, sizeof(checks) / sizeof(checks[0]) );
 }
