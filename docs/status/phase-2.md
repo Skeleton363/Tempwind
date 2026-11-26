@@ -865,8 +865,8 @@ At most two deep-workers at once and three subagents in all. Each brief names it
 | WP4: signals and APCs (merged, `1b5049d`) | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
 | WP5: first light and the matrix (merged, `f28b6b0`; the coordinator's doc commit `8a9c75e`) | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
 | WP6: delete the shim (merged, `1e155d6`; the coordinator's review fixes `b4a012d`) | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
-| Cleanup: labels and headers (merged, `04e3126`; the coordinator's review fixes in progress at the pause) | builder | after WP6 | the owner's cleanup pass: work-package and milestone labels out of the comments of `native/wine/`, `runtime/src/wine/` and `tests/wine/` (not the `thread` and `signal` checks); `tempwind_private.h` and `config.h` regrouped by topic | the label grep clean; the gates, `test:wine`, `test:browser:wine` and the matrix pass |
-| Cleanup: the `thread` and `signal` checks (reported; `m4-cleanup-checks-wip` at `c6d78e3`, not reviewed yet) | deep-worker | after WP6, in parallel | `native/wine/tests/thread.c` and `signal.c` and their `tests/wine/*.test.mjs`: waits for a condition in place of fixed sleeps; visible behavior in place of scheduler fields, where something outside shows it | only the sleeps a check is about remain; `test:wine` 62 of 62 three times in a row; run times before and after |
+| Cleanup: labels and headers (merged, `04e3126`; the coordinator's review fixes `ca65786`) | builder | after WP6 | the owner's cleanup pass: work-package and milestone labels out of the comments of `native/wine/`, `runtime/src/wine/` and `tests/wine/` (not the `thread` and `signal` checks); `tempwind_private.h` and `config.h` regrouped by topic | the label grep clean; the gates, `test:wine`, `test:browser:wine` and the matrix pass |
+| Cleanup: the `thread` and `signal` checks (merged, `42101fa`; the coordinator's review fix `59db8a0`) | deep-worker | after WP6, in parallel | `native/wine/tests/thread.c` and `signal.c` and their `tests/wine/*.test.mjs`: waits for a condition in place of fixed sleeps; visible behavior in place of scheduler fields, where something outside shows it | only the sleeps a check is about remain; `test:wine` 62 of 62 three times in a row; run times before and after |
 
 - **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
 - **The coordinator** reviews each diff, checks each report against its contract sections, merges each track into the PR branch and reads the context after each merge. After WP2 and WP4 merge it pushes so `wine-unix.yml` publishes a release, then bumps `tests/targets/wine-unix.lock`.
@@ -1145,6 +1145,22 @@ The owner paused M4 during the cleanup pass. Both cleanup agents had reported; n
 4. **Verify the head:** `tests/wine/prepare.sh --all` (not `--fetch`: the locked `wine-unix-1b5049d` has the old harnesses), `npm run test:wine` three times, `test:browser:wine`, `test:node`, and the 7-Zip matrix with `compare.mjs` (`commands.md`). Push.
 5. **Then:** `/simplify` over the milestone's code, with WP6's leftovers (the 37 exports of `abi.mjs` nothing reads; `plan.mjs`'s `checkPlan` and `addressMap`); bump `wine-unix.lock` to the release `wine-unix.yml` publishes from the head; then `/milestone-close`. Its draft PR asks for a human review of `signal_wasm64.c`, `green.c` and `green_pthread.c`.
 
+### Resumed (2026-11-26)
+- **The labels track's review fixes are `ca65786`:** the "Left" list above, and the harness helpers' rename. `test:wine` passed 62 of 62 on the fetched build.
+- **The checks track merged as `42101fa`, with one review fix, `59db8a0`.**
+  - **What the review found:** a check's precondition, "the target is blocked in its wait", was no longer asserted. The old checks read `->waiter`, which only `wait_until` sets (`green.c`; a yield sets none). The new ones waited for the thread's flag and reasoned that it then blocks: FIFO yields, and `NtDelayExecution`'s one yield before its `select` (`unix/sync.c` L2452). Had that drifted, six checks would still have passed, with the signal pending before the wait: a weaker scenario that nothing reports.
+  - **The fix:** `in_wait(id)` in each harness, the one scheduler read the precondition needs, since nothing outside shows a thread blocked in a wait. The waits are `UNTIL( a.flag && in_wait( a.green_id ) )`, so the extra yields and their comments are gone.
+  - **Counts at `59db8a0`:**
+    - sleeps (`sleep_ms` and `wait_ms`, each helper's definition included): `thread.c` 14 → 4 and `signal.c` 8 → 2, each kept one the scenario;
+    - scheduler reads: `thread.c` 10 → 6 (`green_parked`, the main thread's pending SIGQUIT and `in_wait`) and `signal.c` 22 → 2 (`in_wait`);
+    - run times: `signal` 602 → about 150 ms, `thread` 48 → about 45 ms.
+- **Verified at `59db8a0` in the main tree:**
+  - `prepare.sh --all`: gates 1-3 logged clean (gate 4 prints only on failure, `build.sh` L112-114), and the catalog's 82 modules;
+  - `test:wine` 62 of 62 three times, `test:browser:wine` 1 of 1, `test:node` 86 of 86;
+  - cargo 256, with fmt and clippy clean;
+  - the matrix 138 of 138 in 85.6 s (`--jobs 4`; 65.6 s at `1e155d6`). The close measures it again.
+- **Branches:** the agents' worktrees are removed. The side branches `m4-coordinator-wip` (`faf7aac`, the pause's WIP, now in `ca65786`; a force-push to refresh it was refused) and `m4-cleanup-review-wip` (`59db8a0`) are superseded, for the close's branch list.
+
 ## What works
 
 | Item | Evidence |
@@ -1277,7 +1293,7 @@ The owner paused M4 during the cleanup pass. Both cleanup agents had reported; n
 
 ## Next step: M4, "Console programs on Wine", in a new session
 
-**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The owner paused M4 again during the cleanup pass ("Paused again (2026-11-25, 19:55 UTC)", which holds the resume path): its labels track is merged as `04e3126`, and its checks track has reported and waits for review. Then `/simplify` in the main loop, then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the earlier pauses and resumes, and this pause last. The rest of this section is M3's hand-off, which M4's planning has already used.
+**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The cleanup pass the owner added is merged and verified ("Resumed (2026-11-26)"): the labels track as `04e3126` and the checks track as `42101fa`, each with the coordinator's review fixes. Next: `/simplify` in the main loop, the lock bump, then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the pauses and resumes, the latest last. The rest of this section is M3's hand-off, which M4's planning has already used.
 
 **M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
 
