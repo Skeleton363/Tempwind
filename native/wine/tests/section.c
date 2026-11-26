@@ -39,6 +39,7 @@
 #include "harness.h"
 #include "tempwind/abi.h"
 #include "tempwind_private.h"
+#include "server.h"
 
 #define WASM_PAGE        0x10000ull
 #define IMAGE_RANGE      0x100000000ull  /* the server's ranges64 (section 4), to TW_IMAGE_RANGE_END */
@@ -274,10 +275,6 @@ static const struct tw_check checks[] =
 
 int tw_test_main( void )
 {
-    virtual_init();
-    virtual_alloc_first_teb();
-    dbg_init();
-    config_dir = getenv( "WINEPREFIX" );  /* what set_config_dir does (loader.c) */
-    server_init_process();
+    tw_server_start();
     return tw_run_checks( checks, sizeof(checks) / sizeof(checks[0]) );
 }

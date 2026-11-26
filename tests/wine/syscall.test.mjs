@@ -9,41 +9,10 @@
 // and tests/wine/prepare.sh's target/wine (or TW_WINE_DIR) for l_intl.nls.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-import { createUnixHost, DEFAULT_ENV } from '../../runtime/src/wine/unix-host.mjs';
-import { harnessImports } from './harness-imports.mjs';
+import { startHarness, runChecks } from './harness-imports.mjs';
 
-const root = new URL('../../', import.meta.url);
-const dirUrl = (env, fallback) => (process.env[env]
-  ? pathToFileURL(process.env[env].replace(/\/?$/, '/'))
-  : new URL(fallback, root));
-const unixDir = dirUrl('TW_WINE_UNIX_DIR', 'target/wine-unix/');
-const wineDir = dirUrl('TW_WINE_DIR', 'target/wine/');
-
-const NLS_DIR = '/wine/share/wine/nls';
-const intl = readFileSync(new URL('native/opt/wine-11.0/share/wine/nls/l_intl.nls', wineDir));
-
-const { default: factory } = await import(new URL('test-syscall.mjs', unixDir));
-const wasm = new WebAssembly.Module(readFileSync(new URL('test-syscall.wasm', unixDir)));
-
-async function start(env = {}) {
-  const out = { stdout: '', stderr: '' };
-  const dec = () => { const d = new TextDecoder(); return (b) => d.decode(b, { stream: true }); };
-  const o = dec(), e = dec();
-  const harness = harnessImports();
-  const host = await createUnixHost({
-    factory, wasm, env,
-    stdout: (b) => { out.stdout += o(b); },
-    stderr: (b) => { out.stderr += e(b); },
-    imports: harness.imports,
-  });
-  harness.attach(host);
-  host.FS.mkdirTree(`${DEFAULT_ENV.WINEPREFIX}/dosdevices`);
-  host.FS.mkdirTree(NLS_DIR);
-  host.FS.writeFile(`${NLS_DIR}/l_intl.nls`, intl);
-  return { host, out };
-}
+/** A fresh instance of test-syscall. */
+const start = (env = {}) => startHarness('syscall', { env, imports: true });
 
 // In the harness's order (it runs them in one instance). Then
 // table 1 before and after win32u's init registers it, and that init as a
@@ -53,13 +22,9 @@ const CHECKS = ['dispatcher_page', 'stack_arguments', 'variant_entries', 'bad_id
   'table1_before_init', 'win32u_unix_call_init', 'table1_after_init'];
 
 test('syscall: the harness checks pass', async () => {
-  const { host, out } = await start();
-  const ret = await host.call('tw_test_main');
-  const lines = out.stdout.trim().split('\n');
-  assert.deepEqual(lines.filter((l) => l.startsWith('not ok')), [], out.stdout + out.stderr);
-  assert.deepEqual(lines.filter((l) => l.startsWith('ok ')).map((l) => l.slice(3)), CHECKS);
-  assert.equal(lines.at(-1), `done ${CHECKS.length}/${CHECKS.length}`);
-  assert.equal(ret, 0);
+  const h = await start();
+  await runChecks(h, CHECKS);
+  const { out } = h;
   assert.ok(!/SysCall|SysRet/.test(out.stderr), 'no +syscall lines without WINEDEBUG');
 });
 

@@ -46,8 +46,7 @@
 #include "harness.h"
 #include "tempwind/abi.h"
 #include "tempwind_private.h"
-
-WINE_DECLARE_DEBUG_CHANNEL(syscall);
+#include "server.h"
 
 /* The dispatchers (src/signal_wasm64.c) and the generated table. */
 int32_t tw_syscall_dispatcher( uint64_t state, int32_t entry, uint64_t ret );
@@ -62,12 +61,8 @@ extern const unsigned int tw_win32_syscall_count;  /* table 1 */
 #define CALLER_RET  0x180005678ull  /* [RSP + 8]: its caller's */
 #define TICKS_1601_TO_1970 116444736000000000ll
 
-#define S64(s, off) (*(UINT64 *)((s) + (off)))
-#define S32(s, off) (*(UINT32 *)((s) + (off)))
 #define S16(s, off) (*(UINT16 *)((s) + (off)))
-#define GPR(s, i)   S64( s, TW_STATE_GPR(i) )
 #define FPR(s, p)   ((s) + TW_STATE_FPR + 16 * (p))
-enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15 };
 
 static UINT64 stack_top;  /* a committed guest stack */
 
@@ -646,15 +641,7 @@ int tw_test_main( void )
     void *stack = NULL;
     SIZE_T size = 0x10000;
 
-    virtual_init();
-    virtual_alloc_first_teb();
-    dbg_init();
-    config_dir = getenv( "WINEPREFIX" );  /* what set_config_dir does (loader.c) */
-    server_init_process();
-    /* what server_init_process_done does (unix/server.c L1750-1752) */
-    signal_init_process();
-    ntdll_get_thread_data()->syscall_table = KeServiceDescriptorTable;
-    ntdll_get_thread_data()->syscall_trace = TRACE_ON(syscall);
+    tw_process_start();
     if (NtAllocateVirtualMemory( NtCurrentProcess(), &stack, 0, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE ))
     {
         printf( "not ok setup: no guest stack\n" );
