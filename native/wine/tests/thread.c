@@ -68,13 +68,14 @@ enum { RAX, RCX, RDX, RBX, RSP };
 struct targ
 {
     BYTE *state;              /* its state block, from signal_start_thread */
-    int green_id;             /* its green thread's id */
     LONG exit_code;           /* what it ends with */
     HANDLE event_a, event_b;
-    int flag;                 /* set by the thread when it reached a point */
-    int after;                /* set by code that must never run */
+    volatile int flag;        /* set by the thread when it reached a point */
+    volatile int after;       /* set by code that must never run */
+    volatile int main_asleep, main_woke;  /* the main thread's, around its sleep */
     int request_fd;           /* its request pipe's client end */
     HANDLE main_thread;       /* a real handle to the main thread */
+    HANDLE other;             /* another harness thread */
     const char *fail;         /* its first failure */
     char buf[512];
 };
@@ -89,7 +90,6 @@ static void thread_hook( void *entry, void *arg, void *state )
     struct targ *a = arg;
 
     a->state = state;
-    a->green_id = pthread_getthreadid_np();
     routine( arg );
     NtTerminateThread( NtCurrentThread(), a->exit_code );
 }
@@ -125,13 +125,27 @@ static HANDLE new_event( void )
     return event;
 }
 
-static NTSTATUS wait_ms( HANDLE handle, LONGLONG ms )
+/* A wait for another thread's event fails at this deadline: far beyond any
+ * check's run, so reaching it means the event never came. */
+#define DEADLINE_MS 10000
+
+/* Waits until the object is signaled, or fails at the deadline. */
+static NTSTATUS wait_for( HANDLE handle )
 {
-    LARGE_INTEGER timeout = { .QuadPart = -ms * MS };
+    LARGE_INTEGER timeout = { .QuadPart = -DEADLINE_MS * (LONGLONG)MS };
 
     return NtWaitForSingleObject( handle, FALSE, &timeout );
 }
 
+/* Whether the object is signaled now: a zero-timeout wait. */
+static BOOL signaled( HANDLE handle )
+{
+    LARGE_INTEGER timeout = { .QuadPart = 0 };
+
+    return !NtWaitForSingleObject( handle, FALSE, &timeout );
+}
+
+/* A non-alertable NtDelayExecution: only for a sleep that is the scenario. */
 static void sleep_ms( LONGLONG ms )
 {
     LARGE_INTEGER timeout = { .QuadPart = -ms * MS };
@@ -146,6 +160,23 @@ static LONGLONG now( void )
     NtQueryPerformanceCounter( &t, NULL );
     return t.QuadPart;
 }
+
+/* Yields until cond holds and is then 1, or 0 at the deadline. Green threads
+ * switch only at blocking points, and sched_yield lets the runnable ones run
+ * first (wine-unix.md v3, section 9): so once a flag that another thread sets
+ * just before a blocking call shows here, that thread is in the call. A
+ * condition that needs a timer to fire never holds here, since a yield with
+ * nothing runnable returns at once; wait on an object for that. */
+#define YIELD_UNTIL(cond) ({ \
+    LONGLONG until_end_ = now() + DEADLINE_MS * (LONGLONG)MS; \
+    int until_ok_; \
+    while (!(until_ok_ = !!(cond)) && now() < until_end_) NtYieldExecution(); \
+    until_ok_; })
+
+/* In a check: fails it, naming the condition, when it doesn't hold by the
+ * deadline. */
+#define UNTIL(cond) do { if (!YIELD_UNTIL( cond )) \
+    return tw_fail( "%s:%d: not true after %d ms: %s", __FILE__, __LINE__, DEADLINE_MS, #cond ); } while (0)
 
 static THREAD_BASIC_INFORMATION thread_info( HANDLE handle )
 {
@@ -251,7 +282,7 @@ static void WINAPI switch_thread( void *arg )
     /* and across a server wait: the main thread sets event_b */
     v = take_view( 0 );
     NtSetEvent( a->event_a, NULL );
-    if (wait_ms( a->event_b, 10000 )) thread_fail( a, "event_b's wait failed" );
+    if (wait_for( a->event_b )) thread_fail( a, "event_b's wait failed" );
     errno = 0;
     if ((detail = same_view( &v, 2 ))) thread_fail( a, "after the server wait: %s", detail );
     for (i = 0; i < sizeof(buf); i++) if (buf[i] != 2) thread_fail( a, "its stack buffer changed" );
@@ -296,12 +327,12 @@ static const char *switch_two_threads( void )
     if (!detail)
     {
         v = take_view( 0 );
-        if (wait_ms( a.event_a, 10000 )) detail = "event_a's wait failed";
+        if (wait_for( a.event_a )) detail = "event_a's wait failed";
         errno = 0;
         if (!detail) detail = same_view( &v, 1 );
         NtSetEvent( a.event_b, NULL );
     }
-    if (wait_ms( thread, 10000 )) detail = detail ? detail : "the thread didn't end";
+    if (wait_for( thread )) detail = detail ? detail : "the thread didn't end";
     for (i = 0; i < sizeof(buf); i++) if (buf[i] != 1) detail = detail ? detail : "the main stack buffer changed";
     if (GPR( main_state, RBX ) != MAIN_MARK) detail = detail ? detail : "the main state block changed";
     tw_depth_set( 0 );
@@ -311,7 +342,8 @@ static const char *switch_two_threads( void )
     NtClose( a.event_b );
     if (detail) return detail;
     if (a.fail) return tw_fail( "thread 2: %s", a.fail );
-    /* FIFO: each yield lets the other thread run first */
+    /* FIFO: each yield lets the other thread run first. The scheduler's
+     * order is the unit under test, and only the threads' own log shows it. */
     if (switch_log_count != 2 * ROUNDS) return tw_fail( "%d rounds logged", switch_log_count );
     for (i = 0; i < 2 * ROUNDS; i++)
         if (switch_log[i] != 1 + (i & 1)) return tw_fail( "round %d ran thread %d", i / 2, switch_log[i] );
@@ -325,7 +357,7 @@ static void WINAPI waits_then_ends( void *arg )
     struct targ *a = arg;
 
     a->flag = 1;
-    if (wait_ms( a->event_a, 10000 )) thread_fail( a, "its event's wait failed" );
+    if (wait_for( a->event_a )) thread_fail( a, "its event's wait failed" );
     order[order_count++] = 2;
     a->exit_code = 0x22;
 }
@@ -351,7 +383,7 @@ static const char *join_and_exit_order( void )
     TW_EXPECT( (a2.event_a = new_event()) );
     TW_EXPECT( (t2 = spawn( waits_then_ends, &a2 )) );
     TW_EXPECT( (t3 = spawn( ends_at_once, &a3 )) );
-    if (wait_ms( t3, 10000 )) return tw_fail( "thread 3's handle wasn't signaled" );
+    if (wait_for( t3 )) return tw_fail( "thread 3's handle wasn't signaled" );
     teb3 = thread_info( t3 ).TebBaseAddress;  /* the server learns it at the thread's init_thread */
     TW_EXPECT( teb3 );
     TW_EXPECT( a2.flag && order_count == 1 && order[0] == 3 );
@@ -362,7 +394,7 @@ static const char *join_and_exit_order( void )
     TW_EXPECT( thread_info( t2 ).ExitStatus == STATUS_PENDING );
 
     NtSetEvent( a2.event_a, NULL );
-    if (wait_ms( t2, 10000 )) return tw_fail( "thread 2's handle wasn't signaled" );
+    if (wait_for( t2 )) return tw_fail( "thread 2's handle wasn't signaled" );
     if (a2.fail) return tw_fail( "thread 2: %s", a2.fail );
     TW_EXPECT( order_count == 2 && order[1] == 2 );
     info = thread_info( t2 );
@@ -385,7 +417,8 @@ static void WINAPI sleeps( void *arg )
 
     a->request_fd = ntdll_get_thread_data()->request_fd;
     a->flag = 1;
-    NtDelayExecution( FALSE, &timeout );  /* non-alertable: a sleep in select, not in the server */
+    /* the scenario: a 60 s non-alertable sleep, in select, not in the server */
+    NtDelayExecution( FALSE, &timeout );
     a->after = 1;
 }
 
@@ -397,22 +430,25 @@ static const char *sigquit_kills_sleeper( void )
     struct targ a = { .request_fd = -1 };
     LONGLONG start;
     HANDLE thread;
-    int i;
 
     TW_EXPECT( (thread = spawn( sleeps, &a )) );
-    for (i = 0; i < 10 && !a.flag; i++) NtYieldExecution();
-    TW_EXPECT( a.flag && a.request_fd >= 0 );
-    NtYieldExecution();  /* NtDelayExecution yields first, then sleeps in select */
-    TW_EXPECT( green_thread_by_id( a.green_id ) && green_thread_by_id( a.green_id )->waiter );
+    UNTIL( a.flag );
+    TW_EXPECT( a.request_fd >= 0 );
+    /* The sleeper is in NtDelayExecution, whose first blocking call is a
+     * yield before its select (unix/sync.c L2452): one more yield lets it
+     * reach the select, where it sleeps. */
+    NtYieldExecution();
+    TW_EXPECT( !a.after && !signaled( thread ) );
     start = now();
     if (NtTerminateThread( thread, 0x77 )) return tw_fail( "NtTerminateThread failed" );
-    if (wait_ms( thread, 10000 )) return tw_fail( "the thread's handle wasn't signaled" );
-    sleep_ms( 10 );  /* the killed thread runs its handler */
+    /* kill_thread signals the handle before the thread has run its handler
+     * (server/thread.c L1608-1631) */
+    if (wait_for( thread )) return tw_fail( "the thread's handle wasn't signaled" );
+    /* abort_thread reached pthread_exit_wrapper, which closed its fds */
+    UNTIL( fcntl( a.request_fd, F_GETFD ) == -1 && errno == EBADF );
     if (now() - start >= 10000 * MS) return tw_fail( "the kill took %lld ms", (now() - start) / MS );
     if (a.after) return tw_fail( "the sleeper returned from its sleep" );
     if (thread_info( thread ).ExitStatus != 0x77) return tw_fail( "exit status %#x", (unsigned)thread_info( thread ).ExitStatus );
-    /* abort_thread reached pthread_exit_wrapper, which closed its fds */
-    if (fcntl( a.request_fd, F_GETFD ) != -1 || errno != EBADF) return tw_fail( "its request fd is still open" );
     NtClose( thread );
     return NULL;
 }
@@ -426,16 +462,32 @@ static void report( const char *name, const char *detail )
     fflush( stdout );
 }
 
+/* Whether the main thread is in its sleep: it set main_asleep just before
+ * it, and this thread first ran at the sleep's first blocking call, a yield
+ * before its select (unix/sync.c L2452). This yield lets it reach the
+ * select. */
+static BOOL main_sleeps( struct targ *a )
+{
+    NtYieldExecution();
+    return a->main_asleep && !a->main_woke && !signaled( a->main_thread );
+}
+
 static void WINAPI exits_process( void *arg )
 {
-    struct green_thread *main_green = green_thread_by_id( 1 );
+    struct targ *a = arg;
+    struct green_thread *main_green;
 
-    NtYieldExecution();  /* the main thread's NtDelayExecution yields first, then sleeps */
-    report( "main_sleeps", main_green && main_green->waiter ? NULL : "the main thread isn't in its sleep" );
+    report( "main_sleeps", main_sleeps( a ) ? NULL : "the main thread isn't in its sleep" );
     NtTerminateProcess( 0, EXIT_FROM_THREAD );  /* RtlExitUserProcess's first call: kills the main thread */
+    /* Pending is the scheduler's own state (section 9, "Sending"): nothing
+     * outside shows a signal that waits for its delivery point. That it was
+     * never handled shows: abort_thread would have closed the main thread's
+     * fds. */
+    main_green = green_thread_by_id( 1 );
     report( "main_sigquit_pending",
             !main_green ? "the main green thread is gone" :
-            (main_green->sig_pending & ((uint64_t)1 << (SIGQUIT - 1))) ? NULL : "no SIGQUIT pending on the main thread" );
+            !(main_green->sig_pending & ((uint64_t)1 << (SIGQUIT - 1))) ? "no SIGQUIT pending on the main thread" :
+            fcntl( a->request_fd, F_GETFD ) == -1 ? "the main thread handled its SIGQUIT" : NULL );
     NtTerminateProcess( NtCurrentProcess(), EXIT_FROM_THREAD );
     report( "exits_process", "NtTerminateProcess returned" );
 }
@@ -448,8 +500,13 @@ static const char *process_exit_from_thread( void )
 {
     static struct targ a;
 
+    TW_EXPECT( !NtDuplicateObject( NtCurrentProcess(), NtCurrentThread(), NtCurrentProcess(),
+                                   &a.main_thread, 0, 0, DUPLICATE_SAME_ACCESS ) );
+    a.request_fd = ntdll_get_thread_data()->request_fd;
     TW_EXPECT( spawn( exits_process, &a ) );
-    sleep_ms( 60000 );
+    a.main_asleep = 1;
+    sleep_ms( 60000 );  /* the scenario: the sleep that the other thread's process exit cuts short */
+    a.main_woke = 1;
     return tw_fail( "the main thread woke from its sleep" );
 }
 
@@ -457,10 +514,12 @@ static void WINAPI exits_after_main( void *arg )
 {
     struct targ *a = arg;
 
-    sleep_ms( 10 );  /* a timeout with the main thread parked */
+    sleep_ms( 10 );  /* the scenario: a timeout that fires with the main thread parked */
+    /* The park is the scheduler's own state (section 9, "The main thread"):
+     * nothing outside tells a parked thread from one that waits. */
     report( "main_parked", green_parked && green_parked->id == 1 ? NULL : "the main thread isn't parked" );
     /* the main thread's end signaled its handle (the hang-up, section 7) */
-    report( "main_handle_signaled", wait_ms( a->main_thread, 0 ) ? "the main thread's handle isn't signaled" : NULL );
+    report( "main_handle_signaled", signaled( a->main_thread ) ? NULL : "the main thread's handle isn't signaled" );
     NtTerminateProcess( 0, EXIT_AFTER_PARK );
     NtTerminateProcess( NtCurrentProcess(), EXIT_AFTER_PARK );
     report( "exits_after_main", "NtTerminateProcess returned" );
@@ -492,10 +551,10 @@ static void WINAPI waits_forever( void *arg )
 static void WINAPI exits_with_two_alive( void *arg )
 {
     struct targ *a = arg;
-    struct green_thread *main_green = green_thread_by_id( 1 );
 
-    NtYieldExecution();  /* the main thread's NtDelayExecution yields first, then sleeps */
-    report( "two_threads_alive", a->flag && main_green && main_green->waiter ? NULL
+    /* The other thread started first and set its flag just before its server
+     * wait, so it is in that wait. */
+    report( "two_threads_alive", main_sleeps( a ) && a->flag && !a->after && !signaled( a->other ) ? NULL
             : "the main thread isn't asleep, or the other thread isn't in its wait" );
     NtTerminateProcess( 0, EXIT_TWO_ALIVE );
     NtTerminateProcess( NtCurrentProcess(), EXIT_TWO_ALIVE );
@@ -509,10 +568,14 @@ static const char *exit_with_two_alive( void )
 {
     static struct targ waiter;
 
+    TW_EXPECT( !NtDuplicateObject( NtCurrentProcess(), NtCurrentThread(), NtCurrentProcess(),
+                                   &waiter.main_thread, 0, 0, DUPLICATE_SAME_ACCESS ) );
     TW_EXPECT( (waiter.event_a = new_event()) );
-    TW_EXPECT( spawn( waits_forever, &waiter ) );
+    TW_EXPECT( (waiter.other = spawn( waits_forever, &waiter )) );
     TW_EXPECT( spawn( exits_with_two_alive, &waiter ) );
-    sleep_ms( 60000 );
+    waiter.main_asleep = 1;
+    sleep_ms( 60000 );  /* the scenario: the sleep that the other thread's process exit cuts short */
+    waiter.main_woke = 1;
     return tw_fail( "the main thread woke from its sleep" );
 }
 
