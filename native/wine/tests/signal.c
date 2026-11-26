@@ -78,6 +78,7 @@ _Static_assert( sizeof(struct apc_stack_layout) == 0x560, "layout" );
 struct targ
 {
     BYTE *state;              /* its state block, from signal_start_thread */
+    int green_id;             /* its green thread's id, for in_wait */
     void *ctx;                /* RCX of its start: the CONTEXT LdrInitializeThunk gets */
     HANDLE event;
     volatile int flag, slept, after;
@@ -93,6 +94,7 @@ static void thread_hook( void *entry, void *arg, void *state )
     struct targ *a = arg;
 
     a->state = state;
+    a->green_id = pthread_getthreadid_np();
     a->ctx = (void *)(ULONG_PTR)GPR( state, RCX );
     ((PRTL_THREAD_START_ROUTINE)entry)( arg );
     NtTerminateThread( NtCurrentThread(), 0 );
@@ -181,6 +183,17 @@ static LONGLONG now( void )
         NtYieldExecution(); \
     } } while (0)
 
+/* Whether the green thread with that id is blocked in a wait: a select or a
+ * server wait. A check's precondition that nothing outside shows; the
+ * scheduler's waiter does, which only a wait sets (green.c, wait_until; a
+ * yield sets none). */
+static BOOL in_wait( int id )
+{
+    struct green_thread *thread = green_thread_by_id( id );
+
+    return thread && thread->waiter;
+}
+
 /* The thread's suspend count, as the server keeps it (ThreadSuspendCount). */
 static ULONG suspend_count( HANDLE thread )
 {
@@ -223,7 +236,7 @@ static const char *suspend_other( void )
 
     TW_EXPECT( (a.event = new_event()) );
     TW_EXPECT( (thread = spawn( waits_on_event, &a, 0 )) );
-    UNTIL( a.flag );  /* it is in its server wait */
+    UNTIL( a.flag && in_wait( a.green_id ) );  /* in its server wait */
     TW_EXPECT( !NtSuspendThread( thread, &prev ) && prev == 0 );
     TW_EXPECT( suspend_count( thread ) == 1 && !a.after );
     TW_EXPECT( !NtSuspendThread( thread, &prev ) && prev == 1 );
@@ -343,7 +356,7 @@ static const char *context_other( void )
 
     TW_EXPECT( (a.event = new_event()) );
     TW_EXPECT( (thread = spawn( waits_seeded, &a, 0 )) );
-    UNTIL( a.flag );  /* it is in its server wait */
+    UNTIL( a.flag && in_wait( a.green_id ) );  /* in its server wait */
     TW_EXPECT( !NtSuspendThread( thread, NULL ) );
 
     memset( &c, 0, sizeof(c) );
@@ -411,12 +424,8 @@ static const char *mask_blocks_sigusr1( void )
     ULONG prev = 99;
 
     TW_EXPECT( (thread = spawn( blocks_then_sleeps, &a, 0 )) );
-    UNTIL( a.flag );
+    UNTIL( a.flag && in_wait( a.green_id ) );  /* in its sleep's select */
     TW_EXPECT( a.masked );
-    /* It is in NtDelayExecution, whose first blocking call is a yield before
-     * its select (unix/sync.c L2452): one more yield lets it reach the
-     * select, where it sleeps. */
-    NtYieldExecution();
     TW_EXPECT( !NtSuspendThread( thread, &prev ) && prev == 0 );
     NtYieldExecution();
     TW_EXPECT( !a.slept );  /* still asleep: the blocked SIGUSR1 didn't end its sleep */
@@ -542,7 +551,7 @@ static const char *apc_in_alertable_wait( void )
     pKiUserApcDispatcher = (void *)APC_DISPATCHER;
     TW_EXPECT( (a.event = new_event()) );
     TW_EXPECT( (thread = spawn( waits_alertable, &a, 0 )) );
-    UNTIL( a.flag );  /* it is in its alertable server wait */
+    UNTIL( a.flag && in_wait( a.green_id ) );  /* in its alertable server wait */
     for (n = 1; n <= 2; n++)
         TW_EXPECT( !NtQueueApcThread( thread, (PNTAPCFUNC)APC_FUNC( n ), n, 2 * n, 3 * n ) );
     if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );

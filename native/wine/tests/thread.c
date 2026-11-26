@@ -68,6 +68,7 @@ enum { RAX, RCX, RDX, RBX, RSP };
 struct targ
 {
     BYTE *state;              /* its state block, from signal_start_thread */
+    int green_id;             /* its green thread's id, for in_wait */
     LONG exit_code;           /* what it ends with */
     HANDLE event_a, event_b;
     volatile int flag;        /* set by the thread when it reached a point */
@@ -90,6 +91,7 @@ static void thread_hook( void *entry, void *arg, void *state )
     struct targ *a = arg;
 
     a->state = state;
+    a->green_id = pthread_getthreadid_np();
     routine( arg );
     NtTerminateThread( NtCurrentThread(), a->exit_code );
 }
@@ -177,6 +179,17 @@ static LONGLONG now( void )
  * deadline. */
 #define UNTIL(cond) do { if (!YIELD_UNTIL( cond )) \
     return tw_fail( "%s:%d: not true after %d ms: %s", __FILE__, __LINE__, DEADLINE_MS, #cond ); } while (0)
+
+/* Whether the green thread with that id is blocked in a wait: a select or a
+ * server wait. A check's precondition that nothing outside shows; the
+ * scheduler's waiter does, which only a wait sets (green.c, wait_until; a
+ * yield sets none). */
+static BOOL in_wait( int id )
+{
+    struct green_thread *thread = green_thread_by_id( id );
+
+    return thread && thread->waiter;
+}
 
 static THREAD_BASIC_INFORMATION thread_info( HANDLE handle )
 {
@@ -432,13 +445,8 @@ static const char *sigquit_kills_sleeper( void )
     HANDLE thread;
 
     TW_EXPECT( (thread = spawn( sleeps, &a )) );
-    UNTIL( a.flag );
-    TW_EXPECT( a.request_fd >= 0 );
-    /* The sleeper is in NtDelayExecution, whose first blocking call is a
-     * yield before its select (unix/sync.c L2452): one more yield lets it
-     * reach the select, where it sleeps. */
-    NtYieldExecution();
-    TW_EXPECT( !a.after && !signaled( thread ) );
+    UNTIL( a.flag && in_wait( a.green_id ) );  /* in its sleep's select */
+    TW_EXPECT( a.request_fd >= 0 && !a.after && !signaled( thread ) );
     start = now();
     if (NtTerminateThread( thread, 0x77 )) return tw_fail( "NtTerminateThread failed" );
     /* kill_thread signals the handle before the thread has run its handler
@@ -462,14 +470,11 @@ static void report( const char *name, const char *detail )
     fflush( stdout );
 }
 
-/* Whether the main thread is in its sleep: it set main_asleep just before
- * it, and this thread first ran at the sleep's first blocking call, a yield
- * before its select (unix/sync.c L2452). This yield lets it reach the
- * select. */
+/* Whether the main thread (green thread 1) is in its sleep: it set
+ * main_asleep just before the sleep, and waits in the sleep's select. */
 static BOOL main_sleeps( struct targ *a )
 {
-    NtYieldExecution();
-    return a->main_asleep && !a->main_woke && !signaled( a->main_thread );
+    return YIELD_UNTIL( a->main_asleep && in_wait( 1 ) ) && !a->main_woke && !signaled( a->main_thread );
 }
 
 static void WINAPI exits_process( void *arg )
