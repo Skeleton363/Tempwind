@@ -61,8 +61,6 @@ static int runnable;                  /* threads woken and not yet resumed, and
                                          spawned ones that have yet to start */
 struct green_thread *green_parked;    /* the main thread, once pthread_exit parked it */
 
-#define SIG_BIT(sig) ((uint64_t)1 << ((sig) - 1))
-
 static int64_t monotonic_ns( void )
 {
     struct timespec ts;

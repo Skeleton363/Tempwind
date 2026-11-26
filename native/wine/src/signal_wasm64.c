@@ -534,7 +534,7 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
     /* debug registers other than the cached ones, all 0, need the server */
     if ((flags & CONTEXT_DEBUG_REGISTERS) &&
         (context->Dr0 || context->Dr1 || context->Dr2 || context->Dr3 || context->Dr6 || context->Dr7))
-        tw_unsupported( "NtSetContextThread: debug registers (the server's set_thread_context, M4)" );
+        tw_unsupported( "NtSetContextThread: nonzero debug registers (the server's set_thread_context)" );
 
     if (flags & CONTEXT_INTEGER)
     {

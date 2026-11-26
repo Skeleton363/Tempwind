@@ -39,9 +39,9 @@ export const INITIAL_PAGES = 65536;
 export const MAXIMUM_PAGES = 262144;
 
 /** tw_thread_main's value when the process exited on that thread (abi.md v5, "Process exit"). */
-export const TW_THREAD_PROCESS_EXIT = 1;
+const TW_THREAD_PROCESS_EXIT = 1;
 /** The scheduler's own stack (abi.md v5, "Green threads"): 64 KiB. */
-export const SCHEDULER_STACK_SIZE = 0x10000;
+const SCHEDULER_STACK_SIZE = 0x10000;
 
 /** wine-unix.md, section 8: the environment of the Unix side. */
 export const DEFAULT_ENV = Object.freeze({
@@ -224,13 +224,18 @@ function createScheduler(getRaw, stderr, encoder) {
     getRaw().__set_stack_limits?.(top, bottom);
   }
 
+  // Moves the stack pointer to the top of a region and sets both limits to it.
+  function useStack(region) {
+    const raw = getRaw();
+    checkLimits(region);
+    raw.emscripten_stack_set_limits(region.top, region.bottom);
+    raw._emscripten_stack_restore(region.top);
+  }
+
   // A direct raw call while no thread runs, on the scheduler's own stack.
   function direct(name) {
-    const raw = getRaw();
-    checkLimits(stack);
-    raw.emscripten_stack_set_limits(stack.top, stack.bottom);
-    raw._emscripten_stack_restore(stack.top);
-    return raw[name]();
+    useStack(stack);
+    return getRaw()[name]();
   }
 
   function settle(ok, value) {
@@ -257,9 +262,7 @@ function createScheduler(getRaw, stderr, encoder) {
     threadMain ??= WebAssembly.promising(raw.tw_thread_main);
     let p;
     try {
-      checkLimits({ top, bottom });
-      raw.emscripten_stack_set_limits(top, bottom);
-      raw._emscripten_stack_restore(top);
+      useStack({ top, bottom });
       p = threadMain(thread);
     } catch (e) {
       ended(thread);

@@ -181,8 +181,7 @@ jobs:
       - name: Unpack the inputs and fetch 7zz.exe (targets release)
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq zstd
+          command -v zstd >/dev/null || scripts/apt-install.sh zstd
           mkdir -p target
           tar -C target -I zstd -xf inputs/wine-inputs.tar.zst
           scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets

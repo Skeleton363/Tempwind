@@ -254,8 +254,6 @@ int pthread_cancel( pthread_t thread )
 
 /* ---- the signal mask (wine-unix.md, section 9, "The mask") ---- */
 
-#define SIG_BIT(sig) ((uint64_t)1 << ((sig) - 1))
-
 /* pthread_sigmask on the running green thread's mask (bit sig - 1 of
  * sig_blocked, signals 1-64), in place of libc's process-wide one. SIGKILL
  * and SIGSTOP are never blocked, as on Linux. Unblocking a pending signal is

@@ -98,7 +98,6 @@ export function writeBackHostDir(hostDir, under, before, after, rootMtime) {
       if (!kindKept) {
         fs.mkdirSync(hp, { recursive: true });
         touched.add(parentOf(hp));
-        touched.add(hp);
       }
       if (!kindKept || was.mtime !== f.mtime) touched.add(hp);
       dirTimes.push([hp, f.mtime]);
