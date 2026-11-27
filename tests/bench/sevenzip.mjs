@@ -48,7 +48,8 @@ function parse(r, what) {
 // (target/wine, tests/wine/prepare.sh): the catalog matches an image by its sha256, so --exe must be those bytes.
 const translated = [];
 for (let i = 0; i < runs; i++) {
-  const r = sh(process.execPath, [`${root}runtime/src/wine/run-wine.mjs`, exe, ...ARGS], { encoding: 'utf8' });
+  // Our Wine reads only the environment its host is given (wine-unix.md section 8): WINEDEBUG=-all, as for native.
+  const r = sh(process.execPath, [`${root}runtime/src/wine/run-wine.mjs`, '--env', 'WINEDEBUG=-all', exe, ...ARGS], { encoding: 'utf8' });
   translated.push(parse(r, `translated run ${i + 1}`));
   process.stderr.write(`translated ${i + 1}/${runs}: Tot rating ${translated[i]} MIPS\n`);
 }
