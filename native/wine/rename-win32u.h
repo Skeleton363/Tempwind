@@ -6,7 +6,6 @@
  *
  * Each NAME becomes win32u_NAME; gate 3 strips that prefix to recover
  * win32u's names. Regenerate the collision list with `build.sh --census`.
- * Later packages append lines here, each with its reason.
  */
 #ifndef TEMPWIND_RENAME_WIN32U_H
 #define TEMPWIND_RENAME_WIN32U_H

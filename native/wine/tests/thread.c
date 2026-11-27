@@ -47,17 +47,11 @@
 #include "harness.h"
 #include "tempwind/abi.h"
 #include "tempwind_private.h"
+#include "server.h"
 
-WINE_DECLARE_DEBUG_CHANNEL(syscall);
-
-#define MS 10000  /* ticks of 100 ns */
-#define S64(s, off) (*(UINT64 *)((BYTE *)(s) + (off)))
-#define S32(s, off) (*(UINT32 *)((BYTE *)(s) + (off)))
-#define GPR(s, i)   S64( s, TW_STATE_GPR(i) )
 /* The running thread's frame record's state block: the first member of
  * src/signal_wasm64.c's struct syscall_frame (wine-unix.md, section 11). */
 #define FRAME_STATE() (*(BYTE **)get_syscall_frame())
-enum { RAX, RCX, RDX, RBX, RSP };
 
 /* The statuses the process-exit checks end with; the JS test expects them. */
 #define EXIT_FROM_THREAD   0x1234
@@ -94,101 +88,6 @@ static void thread_hook( void *entry, void *arg, void *state )
     a->green_id = pthread_getthreadid_np();
     routine( arg );
     NtTerminateThread( NtCurrentThread(), a->exit_code );
-}
-
-static const char *thread_fail( struct targ *a, const char *fmt, ... )
-{
-    va_list args;
-
-    if (a->fail) return a->fail;
-    va_start( args, fmt );
-    vsnprintf( a->buf, sizeof(a->buf), fmt, args );
-    va_end( args );
-    return a->fail = a->buf;
-}
-
-#define T_EXPECT(a, cond) do { if (!(cond)) thread_fail( a, "%s:%d: %s", __FILE__, __LINE__, #cond ); } while (0)
-
-static HANDLE spawn( void (WINAPI *routine)( void * ), struct targ *a )
-{
-    HANDLE handle = 0;
-
-    if (NtCreateThreadEx( &handle, THREAD_ALL_ACCESS, NULL, NtCurrentProcess(),
-                          (PRTL_THREAD_START_ROUTINE)routine, a, 0, 0, 0, 0, NULL ))
-        return 0;
-    return handle;
-}
-
-static HANDLE new_event( void )
-{
-    HANDLE event = 0;
-
-    if (NtCreateEvent( &event, EVENT_ALL_ACCESS, NULL, SynchronizationEvent, FALSE )) return 0;
-    return event;
-}
-
-/* A wait for another thread's event fails at this deadline: far beyond any
- * check's run, so reaching it means the event never came. */
-#define DEADLINE_MS 10000
-
-/* Waits until the object is signaled, or fails at the deadline. */
-static NTSTATUS wait_for( HANDLE handle )
-{
-    LARGE_INTEGER timeout = { .QuadPart = -DEADLINE_MS * (LONGLONG)MS };
-
-    return NtWaitForSingleObject( handle, FALSE, &timeout );
-}
-
-/* Whether the object is signaled now: a zero-timeout wait. */
-static BOOL signaled( HANDLE handle )
-{
-    LARGE_INTEGER timeout = { .QuadPart = 0 };
-
-    return !NtWaitForSingleObject( handle, FALSE, &timeout );
-}
-
-/* A non-alertable NtDelayExecution: only for a sleep that is the scenario. */
-static void sleep_ms( LONGLONG ms )
-{
-    LARGE_INTEGER timeout = { .QuadPart = -ms * MS };
-
-    NtDelayExecution( FALSE, &timeout );
-}
-
-static LONGLONG now( void )
-{
-    LARGE_INTEGER t;
-
-    NtQueryPerformanceCounter( &t, NULL );
-    return t.QuadPart;
-}
-
-/* Yields until cond holds and is then 1, or 0 at the deadline. Green threads
- * switch only at blocking points, and sched_yield lets the runnable ones run
- * first (wine-unix.md v3, section 9): so once a flag that another thread sets
- * just before a blocking call shows here, that thread is in the call. A
- * condition that needs a timer to fire never holds here, since a yield with
- * nothing runnable returns at once; wait on an object for that. */
-#define YIELD_UNTIL(cond) ({ \
-    LONGLONG until_end_ = now() + DEADLINE_MS * (LONGLONG)MS; \
-    int until_ok_; \
-    while (!(until_ok_ = !!(cond)) && now() < until_end_) NtYieldExecution(); \
-    until_ok_; })
-
-/* In a check: fails it, naming the condition, when it doesn't hold by the
- * deadline. */
-#define UNTIL(cond) do { if (!YIELD_UNTIL( cond )) \
-    return tw_fail( "%s:%d: not true after %d ms: %s", __FILE__, __LINE__, DEADLINE_MS, #cond ); } while (0)
-
-/* Whether the green thread with that id is blocked in a wait: a select or a
- * server wait. A check's precondition that nothing outside shows; the
- * scheduler's waiter does, which only a wait sets (green.c, wait_until; a
- * yield sets none). */
-static BOOL in_wait( int id )
-{
-    struct green_thread *thread = green_thread_by_id( id );
-
-    return thread && thread->waiter;
 }
 
 static THREAD_BASIC_INFORMATION thread_info( HANDLE handle )
@@ -320,13 +219,13 @@ static const char *switch_two_threads( void )
     GPR( main_state, RBX ) = MAIN_MARK;
     FRAME_STATE() = main_state;
     memset( (char *)buf, 1, sizeof(buf) );
-    a.event_a = new_event();
-    a.event_b = new_event();
+    a.event_a = new_event( SynchronizationEvent, FALSE );
+    a.event_b = new_event( SynchronizationEvent, FALSE );
     TW_EXPECT( a.event_a && a.event_b );
     tw_depth_set( MAIN_DEPTH );
     switch_log_count = 0;
 
-    TW_EXPECT( (thread = spawn( switch_thread, &a )) );
+    TW_EXPECT( (thread = spawn( switch_thread, &a, 0 )) );
     for (i = 0; i < ROUNDS && !detail; i++)
     {
         uintptr_t sp = emscripten_stack_get_current();
@@ -393,9 +292,9 @@ static const char *join_and_exit_order( void )
     TEB *teb3;
 
     order_count = 0;
-    TW_EXPECT( (a2.event_a = new_event()) );
-    TW_EXPECT( (t2 = spawn( waits_then_ends, &a2 )) );
-    TW_EXPECT( (t3 = spawn( ends_at_once, &a3 )) );
+    TW_EXPECT( (a2.event_a = new_event( SynchronizationEvent, FALSE )) );
+    TW_EXPECT( (t2 = spawn( waits_then_ends, &a2, 0 )) );
+    TW_EXPECT( (t3 = spawn( ends_at_once, &a3, 0 )) );
     if (wait_for( t3 )) return tw_fail( "thread 3's handle wasn't signaled" );
     teb3 = thread_info( t3 ).TebBaseAddress;  /* the server learns it at the thread's init_thread */
     TW_EXPECT( teb3 );
@@ -444,7 +343,7 @@ static const char *sigquit_kills_sleeper( void )
     LONGLONG start;
     HANDLE thread;
 
-    TW_EXPECT( (thread = spawn( sleeps, &a )) );
+    TW_EXPECT( (thread = spawn( sleeps, &a, 0 )) );
     UNTIL( a.flag && in_wait( a.green_id ) );  /* in its sleep's select */
     TW_EXPECT( a.request_fd >= 0 && !a.after && !signaled( thread ) );
     start = now();
@@ -508,7 +407,7 @@ static const char *process_exit_from_thread( void )
     TW_EXPECT( !NtDuplicateObject( NtCurrentProcess(), NtCurrentThread(), NtCurrentProcess(),
                                    &a.main_thread, 0, 0, DUPLICATE_SAME_ACCESS ) );
     a.request_fd = ntdll_get_thread_data()->request_fd;
-    TW_EXPECT( spawn( exits_process, &a ) );
+    TW_EXPECT( spawn( exits_process, &a, 0 ) );
     a.main_asleep = 1;
     sleep_ms( 60000 );  /* the scenario: the sleep that the other thread's process exit cuts short */
     a.main_woke = 1;
@@ -539,7 +438,7 @@ static const char *main_exit_parks( void )
 
     TW_EXPECT( !NtDuplicateObject( NtCurrentProcess(), NtCurrentThread(), NtCurrentProcess(),
                                    &a.main_thread, 0, 0, DUPLICATE_SAME_ACCESS ) );
-    TW_EXPECT( spawn( exits_after_main, &a ) );
+    TW_EXPECT( spawn( exits_after_main, &a, 0 ) );
     NtTerminateThread( NtCurrentThread(), 0 );
     return tw_fail( "the main thread ran after its exit" );
 }
@@ -575,9 +474,9 @@ static const char *exit_with_two_alive( void )
 
     TW_EXPECT( !NtDuplicateObject( NtCurrentProcess(), NtCurrentThread(), NtCurrentProcess(),
                                    &waiter.main_thread, 0, 0, DUPLICATE_SAME_ACCESS ) );
-    TW_EXPECT( (waiter.event_a = new_event()) );
-    TW_EXPECT( (waiter.other = spawn( waits_forever, &waiter )) );
-    TW_EXPECT( spawn( exits_with_two_alive, &waiter ) );
+    TW_EXPECT( (waiter.event_a = new_event( SynchronizationEvent, FALSE )) );
+    TW_EXPECT( (waiter.other = spawn( waits_forever, &waiter, 0 )) );
+    TW_EXPECT( spawn( exits_with_two_alive, &waiter, 0 ) );
     waiter.main_asleep = 1;
     sleep_ms( 60000 );  /* the scenario: the sleep that the other thread's process exit cuts short */
     waiter.main_woke = 1;
@@ -596,15 +495,7 @@ static const struct tw_check checks[] =
 
 int tw_test_main( void )
 {
-    virtual_init();
-    virtual_alloc_first_teb();
-    dbg_init();
-    config_dir = getenv( "WINEPREFIX" );  /* what set_config_dir does (loader.c) */
-    server_init_process();
-    /* what server_init_process_done does (unix/server.c L1750-1752) */
-    signal_init_process();
-    ntdll_get_thread_data()->syscall_table = KeServiceDescriptorTable;
-    ntdll_get_thread_data()->syscall_trace = TRACE_ON(syscall);
+    tw_process_start();
     tw_thread_start_hook = thread_hook;
     return tw_run_checks( checks, sizeof(checks) / sizeof(checks[0]) );
 }

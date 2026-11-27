@@ -45,20 +45,19 @@ const file = argv.shift();
 if (!file) { console.error(usage); process.exit(2); }
 
 const WORK = 'work'; // C:\work in drive_c
-let files, hostTree;
+let hostTree;
 if (hostDir !== undefined) {
   try { hostTree = loadHostDir(hostDir, WORK); } catch (e) {
     console.error(`run-wine: cannot load --dir ${hostDir}: ${e.message}`);
     process.exit(2);
   }
-  files = hostTree;
   cwd ??= 'C:\\work';
 }
 const inputs = await loadWineInputs();
 const proc = await createWineProcess({
   ...inputs,
   program: { name: basename(file), bytes: new Uint8Array(readFileSync(file)) },
-  args: argv, cwd, env, files,
+  args: argv, cwd, env, files: hostTree,
   stdout: (b) => process.stdout.write(b),
   stderr: (b) => process.stderr.write(b),
 });

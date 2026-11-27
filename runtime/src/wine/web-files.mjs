@@ -33,14 +33,10 @@ const compile = async (url, what) => WebAssembly.compile(await getBytes(url, wha
  * @param {string} urls.rt  x64wasm_rt.wasm
  * @param {string} urls.fp  x64wasm_fp.wasm
  * @param {string} urls.overlay  native/wine/prefix/overlay.reg
- * @param {object} [extra]
- * @param {{path: string, bytes?: Uint8Array, dir?: boolean, mtime: number}[]} [extra.files]  host files
- *   (host-files.mjs), e.g. received from the page by postMessage, passed through to createWineProcess;
- *   `proc.collect(dir)` returns the tree after the run, for the Worker to post back
  * @returns the same shape as loadWineInputs: factory, wasm, bridge, rt, fp,
- *   manifest, catalog, read, prefix, overlay and moduleCache, and `files`
+ *   manifest, catalog, read, prefix, overlay and moduleCache
  */
-export async function loadWebWineInputs(urls, extra = {}) {
+export async function loadWebWineInputs(urls) {
   const wine = dirUrl(urls.wine);
   const unix = dirUrl(urls.unix);
   const prep = 'run tests/wine/prepare.sh and tests/wine/catalog.mjs --all';
@@ -76,7 +72,6 @@ export async function loadWebWineInputs(urls, extra = {}) {
       installFiles: listing.installFiles,
     },
     overlay,
-    files: extra.files ?? [],
     moduleCache: new Map(),
   };
 }

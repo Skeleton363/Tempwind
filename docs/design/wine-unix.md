@@ -390,6 +390,8 @@ Line numbers are in `dlls/ntdll/unix/thread.c` unless another file is named; `sx
 
 ## 10. Tests
 - **C harnesses:** `native/wine/tests/NAME.c` defines `int tw_test_main(void)`, entered through `promising` by the JS host. It reports through `native/wine/tests/harness.h`: one line per check on stdout, `ok NAME` or `not ok NAME: detail`, and a last line `done PASSED/TOTAL`.
+- **The harnesses that start the server** share `native/wine/tests/server.h` as well: the server start (`tw_server_start`, and `tw_process_start` for the harnesses that also set up the process the way `server_init_process_done` does), and the helpers of the ones that run threads (spawning, waiting, `in_wait`, the yield-until loop). Each harness keeps its own thread argument, hook and checks.
+- **The Node harness hosts** share `startHarness` and `runChecks` in `tests/wine/harness-imports.mjs`: the host's directories, the prefix and `l_intl.nls` in MEMFS, and the "checks pass" assertions.
 - **Node tests:** `tests/wine/NAME.test.mjs` runs `test-NAME` and asserts that there is no `not ok` line and that the checks that ran are the expected list, by name. `npm run test:wine` runs `tests/wine/*.test.mjs` against `target/wine-unix` (or `TW_WINE_UNIX_DIR`).
 - **A check that expects a loud stop** runs alone in a fresh instance: the Node test sets `TW_TEST_ONLY=<check>` in `ENV`, the harness runs only that check, and the test asserts that the run ended with the expected `tempwind:` line on stderr (or the scheduler's deadlock error) and not with `done`.
 - **`tests/wine/prepare.sh`** fetches the `wine.lock` assets into `target/wine`, builds `hello.exe` and `kuser-dump.exe`, runs `kuser-dump.exe` under native Wine 11 (with `TZ=UTC`) to write `target/wine/kuser.bin`, and builds the Unix side, or fetches `wine-unix.lock`'s release with `--fetch`.
@@ -578,6 +580,7 @@ From then on JS links modules on demand: an AOT module through `tw_image_mapped`
   - a store-check hit on a write-watched page records the write;
   - guard pages;
   - threads on more than one core.
+- **Debug registers:** `NtSetContextThread` on the running thread with nonzero debug registers stops loudly (`signal_wasm64.c`). Wine sends a change of them through the server's `set_thread_context` (`unix/signal_x86_64.c` L1138-1148), and the translator has no hardware breakpoints to act on them.
 - **KUSER's clock** advances only at syscall entries, server requests and green switches (`signal_wasm64.c` L239, section 7). A guest that only reads KUSER sees time stand still between syscalls; kernel32's `GetTickCount` is such a read (`dlls/kernel32/sync.c` L85-105). CoreMark and `7z b` time with QPC, a syscall (`ntdll/time.c` L383-388 → `unix/sync.c` L2473-2478), and `7z b`'s `GetTickCount` comes with `GetProcessTimes`, another syscall (`research.md`, 2026-11-21). WP5 checks for a loop that reads `GetTickCount` with no syscall in it; one it finds gets a ticker.
 - **The boot's sysparams cost:** the volatile sysparams key is new at every boot of the in-process server, so win32u writes its default entries at every boot (`win32u/sysparams.c` L5897-5900). WP5 measures it.
 

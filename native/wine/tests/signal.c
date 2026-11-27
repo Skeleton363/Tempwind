@@ -45,14 +45,7 @@
 #include "harness.h"
 #include "tempwind/abi.h"
 #include "tempwind_private.h"
-
-WINE_DECLARE_DEBUG_CHANNEL(syscall);
-
-#define MS 10000  /* ticks of 100 ns */
-#define S64(s, off) (*(UINT64 *)((BYTE *)(s) + (off)))
-#define S32(s, off) (*(UINT32 *)((BYTE *)(s) + (off)))
-#define GPR(s, i)   S64( s, TW_STATE_GPR(i) )
-enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15 };
+#include "server.h"
 
 /* signal_x86_64.c's struct apc_stack_layout (L432-444): what
  * call_user_apc_dispatcher writes below the thread's RSP. */
@@ -100,100 +93,6 @@ static void thread_hook( void *entry, void *arg, void *state )
     NtTerminateThread( NtCurrentThread(), 0 );
 }
 
-static const char *thread_fail( struct targ *a, const char *fmt, ... )
-{
-    va_list args;
-
-    if (a->fail) return a->fail;
-    va_start( args, fmt );
-    vsnprintf( a->buf, sizeof(a->buf), fmt, args );
-    va_end( args );
-    return a->fail = a->buf;
-}
-
-#define T_EXPECT(a, cond) do { if (!(cond)) thread_fail( a, "%s:%d: %s", __FILE__, __LINE__, #cond ); } while (0)
-
-static HANDLE spawn( void (WINAPI *routine)( void * ), struct targ *a, ULONG flags )
-{
-    HANDLE handle = 0;
-
-    if (NtCreateThreadEx( &handle, THREAD_ALL_ACCESS, NULL, NtCurrentProcess(),
-                          (PRTL_THREAD_START_ROUTINE)routine, a, flags, 0, 0, 0, NULL ))
-        return 0;
-    return handle;
-}
-
-static HANDLE new_event( void )
-{
-    HANDLE event = 0;
-
-    if (NtCreateEvent( &event, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE )) return 0;
-    return event;
-}
-
-/* A wait for another thread's event fails at this deadline: far beyond any
- * check's run, so reaching it means the event never came. */
-#define DEADLINE_MS 10000
-
-/* Waits until the object is signaled, or fails at the deadline. */
-static NTSTATUS wait_for( HANDLE handle )
-{
-    LARGE_INTEGER timeout = { .QuadPart = -DEADLINE_MS * (LONGLONG)MS };
-
-    return NtWaitForSingleObject( handle, FALSE, &timeout );
-}
-
-/* Whether the object is signaled now: a zero-timeout wait. */
-static BOOL signaled( HANDLE handle )
-{
-    LARGE_INTEGER timeout = { .QuadPart = 0 };
-
-    return !NtWaitForSingleObject( handle, FALSE, &timeout );
-}
-
-/* A non-alertable NtDelayExecution: only for a sleep that is the scenario. */
-static void sleep_ms( LONGLONG ms )
-{
-    LARGE_INTEGER timeout = { .QuadPart = -ms * MS };
-
-    NtDelayExecution( FALSE, &timeout );
-}
-
-static LONGLONG now( void )
-{
-    LARGE_INTEGER t;
-
-    NtQueryPerformanceCounter( &t, NULL );
-    return t.QuadPart;
-}
-
-/* Yields until cond holds, or fails the check at the deadline, naming the
- * condition. Green threads switch only at blocking points, and sched_yield
- * lets the runnable ones run first (wine-unix.md v3, section 9): so once a
- * flag that another thread sets just before a blocking call shows here, that
- * thread is in the call. A condition that needs a timer to fire never holds
- * here, since a yield with nothing runnable returns at once; wait on an
- * object for that. */
-#define UNTIL(cond) do { \
-    LONGLONG until_end_ = now() + DEADLINE_MS * (LONGLONG)MS; \
-    while (!(cond)) \
-    { \
-        if (now() >= until_end_) \
-            return tw_fail( "%s:%d: not true after %d ms: %s", __FILE__, __LINE__, DEADLINE_MS, #cond ); \
-        NtYieldExecution(); \
-    } } while (0)
-
-/* Whether the green thread with that id is blocked in a wait: a select or a
- * server wait. A check's precondition that nothing outside shows; the
- * scheduler's waiter does, which only a wait sets (green.c, wait_until; a
- * yield sets none). */
-static BOOL in_wait( int id )
-{
-    struct green_thread *thread = green_thread_by_id( id );
-
-    return thread && thread->waiter;
-}
-
 /* The thread's suspend count, as the server keeps it (ThreadSuspendCount). */
 static ULONG suspend_count( HANDLE thread )
 {
@@ -231,10 +130,11 @@ static const char *suspend_other( void )
 {
     struct targ a = { 0 };
     HANDLE thread;
+    const char *err;
     ULONG prev = 99;
     CONTEXT c;
 
-    TW_EXPECT( (a.event = new_event()) );
+    TW_EXPECT( (a.event = new_event( NotificationEvent, FALSE )) );
     TW_EXPECT( (thread = spawn( waits_on_event, &a, 0 )) );
     UNTIL( a.flag && in_wait( a.green_id ) );  /* in its server wait */
     TW_EXPECT( !NtSuspendThread( thread, &prev ) && prev == 0 );
@@ -253,7 +153,7 @@ static const char *suspend_other( void )
     NtYieldExecution();
     TW_EXPECT( suspend_count( thread ) == 1 && !signaled( thread ) && !a.after );
     TW_EXPECT( !NtResumeThread( thread, &prev ) && prev == 1 );
-    if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
+    if ((err = joined( thread, &a ))) return err;
     TW_EXPECT( a.after && a.status == STATUS_WAIT_0 );
     NtClose( a.event );
     return NULL;
@@ -283,6 +183,7 @@ static const char *self_suspend( void )
 {
     struct targ a = { 0 };
     HANDLE thread;
+    const char *err;
     ULONG prev = 99;
     CONTEXT c;
 
@@ -295,7 +196,7 @@ static const char *self_suspend( void )
     NtYieldExecution();
     TW_EXPECT( suspend_count( thread ) == 1 && !signaled( thread ) && !a.after );
     TW_EXPECT( !NtResumeThread( thread, &prev ) && prev == 1 );
-    if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
+    if ((err = joined( thread, &a ))) return err;
     TW_EXPECT( a.after && a.status == STATUS_SUCCESS && a.prev == 0 );
     return NULL;
 }
@@ -354,7 +255,7 @@ static const char *context_other( void )
     const char *err;
     int i;
 
-    TW_EXPECT( (a.event = new_event()) );
+    TW_EXPECT( (a.event = new_event( NotificationEvent, FALSE )) );
     TW_EXPECT( (thread = spawn( waits_seeded, &a, 0 )) );
     UNTIL( a.flag && in_wait( a.green_id ) );  /* in its server wait */
     TW_EXPECT( !NtSuspendThread( thread, NULL ) );
@@ -384,7 +285,7 @@ static const char *context_other( void )
 
     TW_EXPECT( !NtSetEvent( a.event, NULL ) );
     TW_EXPECT( !NtResumeThread( thread, NULL ) );
-    if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
+    if ((err = joined( thread, &a ))) return err;
     /* the thread's state block now holds what the other thread set */
     if ((err = same_as_state( &c, a.state ))) return err;
     NtClose( a.event );
@@ -419,6 +320,7 @@ static const char *mask_blocks_sigusr1( void )
 {
     struct targ a = { 0 };
     HANDLE thread;
+    const char *err;
     sigset_t set;
     CONTEXT c;
     ULONG prev = 99;
@@ -438,7 +340,7 @@ static const char *mask_blocks_sigusr1( void )
     TW_EXPECT( !NtGetContextThread( thread, &c ) );
     TW_EXPECT( a.slept && !a.after );
     TW_EXPECT( !NtResumeThread( thread, NULL ) );
-    if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
+    if ((err = joined( thread, &a ))) return err;
     TW_EXPECT( a.after );
     /* this thread's own mask didn't change */
     pthread_sigmask( SIG_BLOCK, NULL, &set );
@@ -463,6 +365,7 @@ static const char *suspended_start( void )
 {
     struct targ a = { 0 };
     HANDLE thread;
+    const char *err;
     CONTEXT c;
     ULONG prev = 99;
 
@@ -478,7 +381,7 @@ static const char *suspended_start( void )
     NtYieldExecution();
     TW_EXPECT( !a.flag );
     TW_EXPECT( !NtResumeThread( thread, &prev ) && prev == 1 );
-    if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
+    if ((err = joined( thread, &a ))) return err;
     TW_EXPECT( a.flag && a.state && a.ctx );
     TW_EXPECT( ((CONTEXT *)a.ctx)->R12 == 0x1234567887654321ull && ((CONTEXT *)a.ctx)->Rdx == (ULONG_PTR)&a );
     TW_EXPECT( GPR( a.state, R12 ) == 0x1234567887654321ull && GPR( a.state, RCX ) == (ULONG_PTR)a.ctx );
@@ -546,15 +449,16 @@ static const char *apc_in_alertable_wait( void )
 {
     struct targ a = { 0 };
     HANDLE thread;
+    const char *err;
     ULONG_PTR n;
 
     pKiUserApcDispatcher = (void *)APC_DISPATCHER;
-    TW_EXPECT( (a.event = new_event()) );
+    TW_EXPECT( (a.event = new_event( NotificationEvent, FALSE )) );
     TW_EXPECT( (thread = spawn( waits_alertable, &a, 0 )) );
     UNTIL( a.flag && in_wait( a.green_id ) );  /* in its alertable server wait */
     for (n = 1; n <= 2; n++)
         TW_EXPECT( !NtQueueApcThread( thread, (PNTAPCFUNC)APC_FUNC( n ), n, 2 * n, 3 * n ) );
-    if (joined( thread, &a )) return a.fail ? a.fail : tw_fail( "the thread didn't end" );
+    if ((err = joined( thread, &a ))) return err;
     TW_EXPECT( a.after );
     NtClose( a.event );
     return NULL;
@@ -574,15 +478,8 @@ int tw_test_main( void )
 {
     unsigned int status;
 
-    virtual_init();
-    virtual_alloc_first_teb();
-    dbg_init();
-    config_dir = getenv( "WINEPREFIX" );  /* what set_config_dir does (loader.c) */
-    server_init_process();
-    /* what server_init_process_done does (unix/server.c L1750-1765) */
-    signal_init_process();
-    ntdll_get_thread_data()->syscall_table = KeServiceDescriptorTable;
-    ntdll_get_thread_data()->syscall_trace = TRACE_ON(syscall);
+    tw_process_start();
+    /* what server_init_process_done does besides (unix/server.c L1758-1765) */
     SERVER_START_REQ( init_process_done )
     {
         req->teb = wine_server_client_ptr( NtCurrentTeb() );

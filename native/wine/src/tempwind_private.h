@@ -94,6 +94,7 @@ struct green_thread
     uint64_t sig_blocked;     /* the thread's mask; SIGQUIT is never blocked */
     struct green_waiter *waiter;  /* the wait it is in, which a signal ends */
 };
+#define SIG_BIT(sig) ((uint64_t)1 << ((sig) - 1))  /* sig's bit in sig_pending and sig_blocked */
 extern struct green_thread *green_current;
 
 /* green.c (section 9). */

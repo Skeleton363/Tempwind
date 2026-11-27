@@ -11,18 +11,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { STATE_RIP, STATE_GS_BASE } from '../../runtime/src/abi.mjs';
 import { createUnixHost, DEFAULT_ENV } from '../../runtime/src/wine/unix-host.mjs';
+import { unixDir, wineDir } from './harness-imports.mjs';
 import { installBootSet, recordOpens, boot, parseBootSetManifest, OVERLAY_PATH, PE_DIR } from '../../runtime/src/wine/boot-set.mjs';
 import { readPrefix, nodeReader } from '../../runtime/src/wine/node-files.mjs';
 
 const root = new URL('../../', import.meta.url);
-const dirUrl = (env, fallback) => (process.env[env]
-  ? pathToFileURL(process.env[env].replace(/\/?$/, '/'))
-  : new URL(fallback, root));
-const unixDir = dirUrl('TW_WINE_UNIX_DIR', 'target/wine-unix/');
-const wineDir = dirUrl('TW_WINE_DIR', 'target/wine/');
 const read = (rel) => readFileSync(new URL(rel, wineDir));
 
 const PROGRAM = 'C:\\tempwind\\hello.exe';

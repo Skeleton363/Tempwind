@@ -81,6 +81,9 @@ export async function sha256Hex(bytes) {
  *   modules shared between processes of one host (each process still links its own instance)
  */
 export async function createWineProcess(opts) {
+  // What the process's closures keep. They never read opts, so its files and
+  // program bytes, which MEMFS copies, are not held for the process's life.
+  const { read, args = [] } = opts;
   const stderr = opts.stderr ?? (() => {});
   const encoder = new TextEncoder();
   const say = (line) => stderr(encoder.encode(line + '\n'));
@@ -136,13 +139,13 @@ export async function createWineProcess(opts) {
     const key = `${entry.wasm} ${entry.sha256} ${entry.base}`;
     let m = moduleCache.get(key);
     if (!m) {
-      const plan = parsePlan(JSON.parse(new TextDecoder().decode(opts.read(`catalog/${entry.plan}`))));
+      const plan = parsePlan(JSON.parse(new TextDecoder().decode(read(`catalog/${entry.plan}`))));
       if (plan.sha256 !== entry.sha256) throw new Error(`catalog/${entry.plan}: sha256 differs from catalog.json's for ${entry.path}`);
       if (plan.imageBase !== entry.base) throw new Error(`catalog/${entry.plan}: image base ${hex(plan.imageBase)}, catalog.json says ${hex(entry.base)}`);
       if (!plan.options.sharedMemory || !plan.options.nullCheck || !plan.options.storeCheck) {
         throw new Error(`catalog/${entry.plan}: not built with --shared --null-check --store-check`);
       }
-      m = { module: new WebAssembly.Module(opts.read(`catalog/${entry.wasm}`)), plan };
+      m = { module: new WebAssembly.Module(read(`catalog/${entry.wasm}`)), plan };
       moduleCache.set(key, m);
     }
     return m;
@@ -238,7 +241,7 @@ export async function createWineProcess(opts) {
     prefixPath, prefixFiles: opts.prefix.files, prefixDirs: opts.prefix.dirs, prefixLinks: opts.prefix.links,
     installFiles: opts.prefix.installFiles,
     lazy: manifest.filter((f) => f.lazy),
-    read: opts.read,
+    read,
     programs: { [programDos]: opts.program.bytes },
     overlay: opts.overlay,
   });
@@ -270,7 +273,7 @@ export async function createWineProcess(opts) {
     async run(flags = BOOT_RUN) {
       const t0 = performance.now();
       try {
-        const status = await boot(host, [programDos, ...(opts.args ?? [])], flags);
+        const status = await boot(host, [programDos, ...args], flags);
         return status >>> 0;
       } finally {
         stats.bootMs = performance.now() - t0;

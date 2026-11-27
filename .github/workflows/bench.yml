@@ -35,8 +35,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install wine64
-        run: scripts/apt-install.sh wine64
+      - name: Install wine64, zstd and MinGW (the last two for tests/wine/prepare.sh)
+        run: scripts/apt-install.sh wine64 zstd gcc-mingw-w64-x86-64
 
       - uses: actions/setup-node@v7
         with:
@@ -53,9 +53,7 @@ jobs:
       - name: Prepare target/wine (wine.lock and wine-unix.lock releases)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          scripts/apt-install.sh zstd gcc-mingw-w64-x86-64
-          tests/wine/prepare.sh --fetch
+        run: tests/wine/prepare.sh --fetch
 
       - name: CoreMark, translated and under wine64 (medians of 3)
         env:
@@ -78,22 +76,8 @@ jobs:
             echo "No bench-data branch yet; nothing to compare with."
             exit 0
           fi
-          # Only a line of the same host compares: Phase 1's lines (the shim) have no `host`, ours say "wine".
           git show FETCH_HEAD:coremark.jsonl > coremark-history.jsonl 2>/dev/null || true
-          last=$(node -e '
-            const now = JSON.parse(require("fs").readFileSync("coremark-result.json", "utf8"));
-            const lines = require("fs").readFileSync("coremark-history.jsonl", "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-            const same = lines.filter((l) => (l.host ?? null) === (now.host ?? null));
-            if (same.length) console.log(JSON.stringify(same[same.length - 1]));
-          ')
-          if [ -z "$last" ]; then echo "no line of host wine in coremark.jsonl yet; nothing to compare with."; exit 0; fi
-          node -e '
-            const last = JSON.parse(process.argv[1]), now = JSON.parse(require("fs").readFileSync("coremark-result.json", "utf8"));
-            if (!last.ratio || !now.ratio) { console.log("a line has no ratio; skipping"); process.exit(0); }
-            const change = now.ratio / last.ratio - 1;
-            console.log(`ratio ${now.ratio} now, ${last.ratio} at ${last.commit} (${(change * 100).toFixed(1)} %)`);
-            if (change < -0.10) console.log(`::warning title=CoreMark ratio::translated/native ratio fell ${(-change * 100).toFixed(1)} % (${last.ratio} at ${last.commit} -> ${now.ratio})`);
-          ' "$last"
+          node tests/bench/compare-ratio.mjs coremark-result.json coremark-history.jsonl 'CoreMark'
 
       - uses: actions/upload-artifact@v7
         with:
@@ -112,8 +96,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install wine64
-        run: scripts/apt-install.sh wine64
+      - name: Install wine64, zstd and MinGW (the last two for tests/wine/prepare.sh)
+        run: scripts/apt-install.sh wine64 zstd gcc-mingw-w64-x86-64
 
       - uses: actions/setup-node@v7
         with:
@@ -130,9 +114,7 @@ jobs:
       - name: Prepare target/wine (wine.lock and wine-unix.lock releases)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          scripts/apt-install.sh zstd gcc-mingw-w64-x86-64
-          tests/wine/prepare.sh --fetch
+        run: tests/wine/prepare.sh --fetch
 
       - name: 7z b, translated and under wine64 (`b 2 -mmt1 -md18`, medians of 3)
         env:
@@ -155,22 +137,8 @@ jobs:
             echo "No bench-data branch yet; nothing to compare with."
             exit 0
           fi
-          # Only a line of the same host compares: Phase 1's lines (the shim) have no `host`, ours say "wine".
           git show FETCH_HEAD:sevenzip.jsonl > sevenzip-history.jsonl 2>/dev/null || true
-          last=$(node -e '
-            const now = JSON.parse(require("fs").readFileSync("sevenzip-result.json", "utf8"));
-            const lines = require("fs").readFileSync("sevenzip-history.jsonl", "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-            const same = lines.filter((l) => (l.host ?? null) === (now.host ?? null));
-            if (same.length) console.log(JSON.stringify(same[same.length - 1]));
-          ')
-          if [ -z "$last" ]; then echo "no line of host wine in sevenzip.jsonl yet; nothing to compare with."; exit 0; fi
-          node -e '
-            const last = JSON.parse(process.argv[1]), now = JSON.parse(require("fs").readFileSync("sevenzip-result.json", "utf8"));
-            if (!last.ratio || !now.ratio) { console.log("a line has no ratio; skipping"); process.exit(0); }
-            const change = now.ratio / last.ratio - 1;
-            console.log(`ratio ${now.ratio} now, ${last.ratio} at ${last.commit} (${(change * 100).toFixed(1)} %)`);
-            if (change < -0.10) console.log(`::warning title=7z b ratio::translated/native ratio fell ${(-change * 100).toFixed(1)} % (${last.ratio} at ${last.commit} -> ${now.ratio})`);
-          ' "$last"
+          node tests/bench/compare-ratio.mjs sevenzip-result.json sevenzip-history.jsonl '7z b'
 
       - uses: actions/upload-artifact@v7
         with:
