@@ -1245,6 +1245,7 @@ The owner paused M4 during the cleanup pass. Both cleanup agents had reported; n
 - **For the close's retro, measured on the PR's CI runs before deciding:**
   - The matrix job downloads and unpacks all of `target/wine`: about 1.9 GB raw, about 0.5 GB compressed. Run-wine reads the boot set (about 62 MB), the catalog and the prefix.
   - Both bench jobs run their own `prepare.sh --fetch`, 1.5 to 3 minutes each.
+- **The lock bump:** `wine-unix.lock` = `wine-unix-2aee661`. `wine-unix.yml` run 41 published it from `2aee661`, green with its matrix job, in 5 min 22 s. In the main tree, `prepare.sh --fetch` passed: without `--all`, its catalog covers the test programs' 61 modules. `test:wine` passed 62 of 62 on it.
 
 ## What works
 
@@ -1378,7 +1379,7 @@ The owner paused M4 during the cleanup pass. Both cleanup agents had reported; n
 
 ## Next step: M4, "Console programs on Wine", in a new session
 
-**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-1b5049d` (`303f03b`). WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The cleanup pass the owner added is merged and verified ("Resumed (2026-11-26)"): the labels track as `04e3126` and the checks track as `42101fa`, each with the coordinator's review fixes. The `/simplify` pass is merged as `e282218` and verified ("Resumed (2026-11-27)"). Next: the lock bump, then `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the pauses and resumes, the latest last. The rest of this section is M3's hand-off, which M4's planning has already used.
+**M4 is under way again (resumed 2026-11-25): WP1-WP4 are merged (WP4 as `1b5049d`). The lock names `wine-unix-2aee661`, published from the simplify pass's merge. WP5 merged as `f28b6b0`: the 7-Zip matrix is 138 of 138 on Wine and CoreMark validates. WP6 merged as `1e155d6`: the shim is deleted. The cleanup pass the owner added is merged and verified ("Resumed (2026-11-26)"): the labels track as `04e3126` and the checks track as `42101fa`, each with the coordinator's review fixes. The `/simplify` pass is merged as `e282218` and verified ("Resumed (2026-11-27)"). Next: `/milestone-close`.** The M4 section's work-package table is current. "M4 progress (paused 2026-11-25)" holds the pauses and resumes, the latest last. The rest of this section is M3's hand-off, which M4's planning has already used.
 
 **M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
 
