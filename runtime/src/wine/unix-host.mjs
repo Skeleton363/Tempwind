@@ -221,7 +221,7 @@ function createScheduler(getRaw, stderr, encoder) {
 
   // The overflow check's limits (-sSTACK_OVERFLOW_CHECK=2's export).
   function checkLimits({ top, bottom }) {
-    getRaw().__set_stack_limits?.(top, bottom);
+    getRaw().__set_stack_limits(top, bottom);
   }
 
   // Moves the stack pointer to the top of a region and sets both limits to it.

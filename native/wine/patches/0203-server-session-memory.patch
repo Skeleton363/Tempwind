@@ -11,7 +11,7 @@ directly, as with KUSER.
   reservation of TW_SESSION_CAP (16 MiB) bytes in the host heap, in place
   of its mmap. Its only caller is init_directories (server/directory.c
   L501-502), at the in-process server's start.
-- grow_session_mapping (L1375-1406) still grows the section's file (L1386),
+- grow_session_mapping (L1375-1406) still grows the section's file (L1387),
   so the mapping's size stays Wine's (growth rule L1382), and takes the
   grown block as the range right after the previous one, zeroed, in place
   of its mmap. Its only caller is find_free_session_block (L1408-1416),

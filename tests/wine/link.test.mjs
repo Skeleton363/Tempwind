@@ -19,7 +19,8 @@ const FOUR_GIB = 4 * 1024 ** 3;
 
 // abi.md v5, "Host entries of the Unix side": the raw exports.
 const HOST_ENTRIES = ['malloc', 'free', 'tw_page_flags', 'tw_main_state', 'tw_next_timeout',
-  'tw_run_timeouts', 'emscripten_stack_set_limits', '_emscripten_stack_restore'];
+  'tw_run_timeouts', 'emscripten_stack_set_limits', '_emscripten_stack_restore',
+  'emscripten_stack_get_base', 'emscripten_stack_get_end', '__set_stack_limits', 'tw_thread_main', 'tw_exit_status'];
 
 const listed = new Set(readFileSync(new URL('native/wine/imports.txt', root), 'utf8').split('\n')
   .map((l) => l.replace(/#.*/, '').trim()).filter(Boolean).map((l) => l.split(/\s+/)[0]));

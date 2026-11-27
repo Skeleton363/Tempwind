@@ -421,7 +421,7 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 **`tw_unix_call_dispatcher`** is Wine's `__wine_unix_call_dispatcher` (L3352-3464).
 - **Entry:** RCX = the handle, EDX = the code (an `unsigned int`, `include/wine/unixlib.h` L275), R8 = the argument pointer (L3353, L3424-3425).
 - **The frame record:** it pops the return address `t` into the frame's `rip` unadjusted (L3356) and sets `restore_flags` = 0x20000 (L3359). It doesn't materialize the flags: the frame is incomplete, as Wine marks it.
-- **The call:** only ntdll's `unix_call_funcs` are reachable, through the handle the Unix side stored. An unknown handle or a code past the table stops loudly. Wine checks neither.
+- **The call:** ntdll's `unix_call_funcs` and, from M4, win32u's `__wine_unix_call_funcs` are reachable, through the handles the Unix side stored (`tw_unixlib_count`, `native/wine/src/unixlibs.c`; `wine-unix.md` section 2). An unknown handle or a code past its table stops loudly. Wine checks neither.
 
 **Return,** for both, by the frame's `restore_flags` (Wine's return path, L3191-3276; for a unix call, L3438):
 - **CONTROL (0x1) or INTEGER (0x2):** the new-context return ("Host functions"). The frame's RIP, RSP and EFLAGS are the context's, since Wine resumes with `iretq` (L3256-3276).
@@ -509,6 +509,7 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 | `tw_next_timeout` | `() -> i64` | Milliseconds until the earliest thread wait or server timer, rounded up; 0 if one is due; -1 if there is none. It ignores the server's KUSER tick and its registry save. When it returns -1, it prints each waiting thread's wait on stderr, for the scheduler's deadlock report (`wine-unix.md`, section 9). |
 | `tw_run_timeouts` | `() -> ()` | Runs the expired server timeouts and wakes the threads whose deadline has passed. |
 | `emscripten_stack_set_limits`, `_emscripten_stack_restore` | as in the spike | A new green thread's stack, and the scheduler's (M4, "Green threads"). |
+| `emscripten_stack_get_base`, `emscripten_stack_get_end` | `() -> i64` | M4. The main thread's stack region, Emscripten's own stack, read once when the scheduler starts ("Green threads"). |
 | `__set_stack_limits` | `(base i64, end i64) -> ()` | M4. Added by `-sSTACK_OVERFLOW_CHECK=2`: the limits its check uses, set by JS for the thread it starts or resumes and for the scheduler's stack ("Green threads"). |
 | `tw_thread_main` | `(id i32) -> i32` | M4. Entered through `promising` once per spawned green thread, on its own stack. Returns 0 when the thread ended, `TW_THREAD_PROCESS_EXIT` (1) when the process exited on it (`wine-unix.md` v3, section 9). |
 | `tw_exit_status` | `() -> i32` | M4. The full Windows exit status recorded by process exit on a thread other than the main one. Stops loudly before one. |

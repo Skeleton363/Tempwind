@@ -12,8 +12,8 @@ sections 2, 3 and 7).
 - winstation.c, map_shared_session_block (L106-144): block->data is
   tw_session_view(off, &size) (patch 0203) instead of a read-only view of
   \KernelObjects\__wine_session. off is Wine's offset rounded down to the
-  allocation granularity (L113), and the size runs to the reservation's
-  end, as Wine's view of size 0 runs to the section's end (L127-128), so
+  allocation granularity (L114), and the size runs to the reservation's
+  end, as Wine's view of size 0 runs to the section's end (L129-130), so
   find_shared_session_block's strict < (L157) keeps finding later objects
   in the same block. Its only caller is find_shared_session_block (L165),
   under session_lock, whose callers are find_shared_session_object (L182),

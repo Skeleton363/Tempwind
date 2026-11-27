@@ -62,7 +62,7 @@ static size_t first_block_size( void )
 
 /* An object the server allocated: its shared_object_t through the view of
  * its offset rounded down to 64 KiB, as win32u's map_shared_session_block
- * takes it (winstation.c L113). */
+ * takes it (winstation.c L114). */
 static const char *check_object( volatile void *shm, const char *what )
 {
     struct obj_locator loc = get_shared_object_locator( shm );
