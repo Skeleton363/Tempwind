@@ -122,11 +122,16 @@ const G_DEPTH: u32 = 2;
 const G_COUNTERS: u32 = 3;
 /// The kinds a memory check's site passes to `$fault` (low two bits of
 /// the status local): `FAULT_READ`, `FAULT_WRITE` (as `FAULT_READ` + the
-/// kind) and `EXIT_UNSUPPORTED`.
+/// kind) and, with bit 1, `FAULT_CODE_WRITE` (`translator.md`, "Memory
+/// checks", "Emission").
 const SITE_READ: u32 = 0;
 const SITE_WRITE: u32 = 1;
-const SITE_UNSUPPORTED: u32 = 2;
+const SITE_CODE_WRITE: u32 = 2;
 const _: () = assert!(abi::FAULT_WRITE == abi::FAULT_READ + SITE_WRITE);
+/// The end of the page-state table, in bytes of guest address: the
+/// memory's maximum (16 GiB). A `rep` range's walk counts the pages from
+/// here up as marked (`translator.md`, "`rep` string ranges").
+const PAGE_TABLE_END: u64 = abi::MAX_MEMORY_PAGES << 16;
 
 /// Present with `Options::store_check`, after `counters` if present.
 const fn g_page_flags(counters: bool) -> u32 {
@@ -732,9 +737,10 @@ impl ChunkEmitter<'_> {
     /// A memory check's exit: branches to the chunk's `$fault` block with
     /// what differs per site. The status local carries the kind and the
     /// instruction's offset from `site_base` (`offset << 2 | kind`), the
-    /// scratch local the fault address, and the mask local the dirty set.
-    fn fault_site(&mut self, f: &mut InstructionSink<'_>, kind: u32, addr: Value) {
-        if kind != SITE_UNSUPPORTED {
+    /// scratch local the fault address (`addr`, or with `None` what the
+    /// scratch local already holds), and the mask local the dirty set.
+    fn fault_site(&mut self, f: &mut InstructionSink<'_>, kind: u32, addr: Option<Value>) {
+        if let Some(addr) = addr {
             self.value(f, addr);
             f.local_set(L_SCRATCH);
         }
@@ -755,8 +761,8 @@ impl ChunkEmitter<'_> {
     }
 
     /// The `$fault` block's code, reached from [`Self::fault_site`]: sets
-    /// RIP, the exit reason and (for a fault) its kind and address, then
-    /// falls through to the epilogue with `STATUS_EXIT`.
+    /// RIP, the exit reason, the fault kind and address, then falls through
+    /// to the epilogue with `STATUS_EXIT`.
     fn fault_block(&mut self, f: &mut InstructionSink<'_>) {
         f.local_get(self.l_status);
         f.i32_const(2);
@@ -765,25 +771,24 @@ impl ChunkEmitter<'_> {
         f.i64_const(self.site_base as i64);
         f.i64_add();
         f.local_set(L_RIP);
+        // kind = site & 2 ? FAULT_CODE_WRITE : FAULT_READ + (site & 1)
         f.local_get(P_STATE);
-        f.local_get(self.l_status);
-        f.i32_const(SITE_UNSUPPORTED as i32);
-        f.i32_and();
-        f.if_(BlockType::Result(ValType::I32));
-        f.i32_const(abi::EXIT_UNSUPPORTED as i32);
-        f.else_();
-        f.local_get(P_STATE);
+        f.i32_const(abi::FAULT_CODE_WRITE as i32);
         f.local_get(self.l_status);
         f.i32_const(1);
         f.i32_and();
         f.i32_const(abi::FAULT_READ as i32);
         f.i32_add();
+        f.local_get(self.l_status);
+        f.i32_const(SITE_CODE_WRITE as i32);
+        f.i32_and();
+        f.select();
         f.i32_store(mem(abi::STATE_FAULT_KIND));
         f.local_get(P_STATE);
         f.local_get(L_SCRATCH);
         f.i64_store(mem(abi::STATE_FAULT_ADDR));
+        f.local_get(P_STATE);
         f.i32_const(abi::EXIT_FAULT as i32);
-        f.end();
         f.i32_store(mem(abi::STATE_EXIT));
         f.i32_const(abi::STATUS_EXIT);
         f.local_set(self.l_status);
@@ -826,7 +831,7 @@ impl ChunkEmitter<'_> {
         let kind = if write { SITE_WRITE } else { SITE_READ };
         match addr {
             // Known at translation time: no test.
-            Value::Imm(a) if null && a < abi::NULL_LIMIT => self.fault_site(f, kind, addr),
+            Value::Imm(a) if null && a < abi::NULL_LIMIT => self.fault_site(f, kind, Some(addr)),
             Value::Imm(_) => {}
             _ if null => {
                 self.value(f, addr);
@@ -834,23 +839,41 @@ impl ChunkEmitter<'_> {
                 f.i64_lt_u();
                 f.if_(BlockType::Empty);
                 self.labels.push(Label::If);
-                self.fault_site(f, kind, addr);
+                self.fault_site(f, kind, Some(addr));
                 f.end();
                 self.labels.pop();
             }
             _ => {}
         }
         if code {
+            let marked = i32::from(abi::PAGE_CODE | abi::PAGE_WATCH);
             self.page_flags(f, addr, 0);
             if len > 1 {
                 self.page_flags(f, addr, u64::from(len) - 1);
                 f.i32_or();
             }
-            f.i32_const(i32::from(abi::PAGE_CODE | abi::PAGE_WATCH));
+            f.i32_const(marked);
             f.i32_and();
             f.if_(BlockType::Empty);
             self.labels.push(Label::If);
-            self.fault_site(f, SITE_UNSUPPORTED, Value::Imm(0));
+            if len > 1 {
+                // The lowest address on a marked page: `addr` if its page
+                // is marked, else the last byte's page base (cold path).
+                self.value(f, addr);
+                self.value(f, addr);
+                f.i64_const(i64::from(len) - 1);
+                f.i64_add();
+                f.i64_const(!((1i64 << abi::PAGE_FLAGS_SHIFT) - 1));
+                f.i64_and();
+                self.page_flags(f, addr, 0);
+                f.i32_const(marked);
+                f.i32_and();
+                f.select();
+                f.local_set(L_SCRATCH);
+                self.fault_site(f, SITE_CODE_WRITE, None);
+            } else {
+                self.fault_site(f, SITE_CODE_WRITE, Some(addr));
+            }
             f.end();
             self.labels.pop();
         }
@@ -861,8 +884,10 @@ impl ChunkEmitter<'_> {
     }
 
     /// `Op::PageRangeCheck`: walks the page-state bytes from `lo`'s page up
-    /// to `hi`'s, the page index in the scratch local (an
-    /// `EXIT_UNSUPPORTED` site doesn't pass the scratch local to `$fault`).
+    /// to `hi`'s. The scratch local holds `lo`, then each next page's base,
+    /// so at a marked page it is the fault address: the range's lowest
+    /// address there. Pages from [`PAGE_TABLE_END`] up count as marked, so
+    /// the walk never reads past the table.
     fn page_range_check(
         &mut self,
         f: &mut InstructionSink<'_>,
@@ -877,33 +902,47 @@ impl ChunkEmitter<'_> {
             f.if_(BlockType::Empty);
             self.labels.push(Label::If);
         }
+        let shift = abi::PAGE_FLAGS_SHIFT as i64;
         self.value(f, lo);
-        f.i64_const(abi::PAGE_FLAGS_SHIFT as i64);
-        f.i64_shr_u();
         f.local_set(L_SCRATCH);
         f.block(BlockType::Empty);
         self.labels.push(Label::PagesDone);
         f.loop_(BlockType::Empty);
         self.labels.push(Label::PagesLoop);
+        // Past the table's end, or a marked page: fault.
+        f.local_get(L_SCRATCH);
+        f.i64_const(PAGE_TABLE_END as i64);
+        f.i64_ge_u();
+        f.if_(BlockType::Result(ValType::I32));
+        f.i32_const(1);
+        f.else_();
         f.global_get(g_page_flags(self.counters));
         f.local_get(L_SCRATCH);
+        f.i64_const(shift);
+        f.i64_shr_u();
         f.i64_add();
         f.i32_load8_u(mem(0));
         f.i32_const(i32::from(abi::PAGE_CODE | abi::PAGE_WATCH));
         f.i32_and();
+        f.end();
         f.if_(BlockType::Empty);
         self.labels.push(Label::If);
-        self.fault_site(f, SITE_UNSUPPORTED, Value::Imm(0));
+        self.fault_site(f, SITE_CODE_WRITE, None);
         f.end();
         self.labels.pop();
         // The last page tested: done. A wrapped range stops after `lo`'s.
         f.local_get(L_SCRATCH);
+        f.i64_const(shift);
+        f.i64_shr_u();
         self.value(f, hi);
-        f.i64_const(abi::PAGE_FLAGS_SHIFT as i64);
+        f.i64_const(shift);
         f.i64_shr_u();
         f.i64_ge_u();
         f.br_if(self.depth(Label::PagesDone));
+        // The next page's base.
         f.local_get(L_SCRATCH);
+        f.i64_const((1i64 << shift) - 1);
+        f.i64_or();
         f.i64_const(1);
         f.i64_add();
         f.local_set(L_SCRATCH);

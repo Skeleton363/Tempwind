@@ -1,4 +1,4 @@
-//! Flag and no-op instructions: `ud2`, `cmc`, `clc`, `stc`, `std`, `cld`,
+//! Flag and no-op instructions: `ud2`, `int3`, `cmc`, `clc`, `stc`, `std`, `cld`,
 //! `lahf`, `sahf`; the nop forms, `pause`, `prefetch*` (no access, never
 //! fault); `cpuid`; `mov r/m16, Sreg` (`segment_selector`).
 
@@ -30,6 +30,15 @@ impl Lower<'_> {
             Mnemonic::Ud2 => {
                 return Ok(Flow::End(Term::Fault {
                     kind: abi::FAULT_INVALID_OPCODE,
+                    rip: self.insn.ip(),
+                }));
+            }
+            // #BP with RIP at the int3 itself, where Wine's handler backs
+            // up to (`translator.md`, "Faults"). `int imm8` stays
+            // unsupported, vector 3 included.
+            Mnemonic::Int3 => {
+                return Ok(Flow::End(Term::Fault {
+                    kind: abi::FAULT_BREAKPOINT,
                     rip: self.insn.ip(),
                 }));
             }

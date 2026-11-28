@@ -564,17 +564,24 @@
         i64.ne
         if ;; label = @3
           local.get $t6
-          i64.const 12
-          i64.shr_u
           local.set $scratch
           block ;; label = @4
             loop ;; label = @5
-              global.get $page_flags
               local.get $scratch
-              i64.add
-              i32.load8_u
-              i32.const 3
-              i32.and
+              i64.const 17179869184
+              i64.ge_u
+              if (result i32) ;; label = @6
+                i32.const 1
+              else
+                global.get $page_flags
+                local.get $scratch
+                i64.const 12
+                i64.shr_u
+                i64.add
+                i32.load8_u
+                i32.const 3
+                i32.and
+              end
               if ;; label = @6
                 i32.const 6
                 local.set $status
@@ -583,12 +590,16 @@
                 br 4 (;@2;)
               end
               local.get $scratch
+              i64.const 12
+              i64.shr_u
               local.get $t8
               i64.const 12
               i64.shr_u
               i64.ge_u
               br_if 1 (;@4;)
               local.get $scratch
+              i64.const 4095
+              i64.or
               i64.const 1
               i64.add
               local.set $scratch
@@ -738,17 +749,24 @@
         i64.ne
         if ;; label = @3
           local.get $t7
-          i64.const 12
-          i64.shr_u
           local.set $scratch
           block ;; label = @4
             loop ;; label = @5
-              global.get $page_flags
               local.get $scratch
-              i64.add
-              i32.load8_u
-              i32.const 3
-              i32.and
+              i64.const 17179869184
+              i64.ge_u
+              if (result i32) ;; label = @6
+                i32.const 1
+              else
+                global.get $page_flags
+                local.get $scratch
+                i64.const 12
+                i64.shr_u
+                i64.add
+                i32.load8_u
+                i32.const 3
+                i32.and
+              end
               if ;; label = @6
                 i32.const 22
                 local.set $status
@@ -757,12 +775,16 @@
                 br 4 (;@2;)
               end
               local.get $scratch
+              i64.const 12
+              i64.shr_u
               local.get $t8
               i64.const 12
               i64.shr_u
               i64.ge_u
               br_if 1 (;@4;)
               local.get $scratch
+              i64.const 4095
+              i64.or
               i64.const 1
               i64.add
               local.set $scratch
@@ -869,24 +891,22 @@
       i64.add
       local.set $rip
       local.get $state
+      i32.const 8
+      local.get $status
+      i32.const 1
+      i32.and
+      i32.const 1
+      i32.add
       local.get $status
       i32.const 2
       i32.and
-      if (result i32) ;; label = @2
-        i32.const 2
-      else
-        local.get $state
-        local.get $status
-        i32.const 1
-        i32.and
-        i32.const 1
-        i32.add
-        i32.store offset=200 align=1
-        local.get $state
-        local.get $scratch
-        i64.store offset=192 align=1
-        i32.const 3
-      end
+      select
+      i32.store offset=200 align=1
+      local.get $state
+      local.get $scratch
+      i64.store offset=192 align=1
+      local.get $state
+      i32.const 3
       i32.store offset=144 align=1
       i32.const 2
       local.set $status

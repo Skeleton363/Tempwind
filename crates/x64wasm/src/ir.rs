@@ -810,7 +810,8 @@ pub enum Op {
     /// access of `len` bytes at `addr`, a store if `write`. With `null`,
     /// `addr <u 0x10000` faults (FAULT_READ or FAULT_WRITE, the fault
     /// address `addr`); with `code`, a page-state byte of the first or last
-    /// byte with PAGE_CODE or PAGE_WATCH exits with EXIT_UNSUPPORTED. Both
+    /// byte with PAGE_CODE or PAGE_WATCH faults with FAULT_CODE_WRITE, the
+    /// fault address the access's lowest address on a marked page. Both
     /// leave the state from before the instruction. With `when`, only if
     /// `when != 0`.
     MemCheck {
@@ -824,10 +825,11 @@ pub enum Op {
     /// The store check of a `rep` string range (`translator.md`, "Memory
     /// checks"): the page-state byte of every page from the one holding
     /// byte `lo` to the one holding byte `hi` (inclusive) is tested against
-    /// PAGE_CODE | PAGE_WATCH, and a hit exits with EXIT_UNSUPPORTED with the
-    /// state from before the instruction. A range whose `hi` is below `lo`
-    /// (it wrapped) tests `lo`'s page only, whose access traps. With `when`,
-    /// only if `when != 0`.
+    /// PAGE_CODE | PAGE_WATCH, and a hit faults with FAULT_CODE_WRITE at the
+    /// range's lowest address on a marked page, with the state from before
+    /// the instruction. Pages at or above 16 GiB (the table's end) count as
+    /// marked. A range whose `hi` is below `lo` (it wrapped) tests `lo`'s
+    /// page only, whose access traps. With `when`, only if `when != 0`.
     PageRangeCheck {
         lo: Value,
         hi: Value,
