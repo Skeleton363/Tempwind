@@ -6,3 +6,4 @@
 {"commit":"61b7058","date":"2026-11-14T15:26:56.053Z","node":"v24.22.0","cpu":"AMD EPYC 7763 64-Core Processor","runs":3,"args":"b 2 -mmt1 -md18","translated_mips":2160,"native_mips":5610,"ratio":0.385}
 {"commit":"070de32","date":"2026-11-14T15:43:46.460Z","node":"v24.22.0","cpu":"INTEL(R) XEON(R) PLATINUM 8573C","runs":3,"args":"b 2 -mmt1 -md18","translated_mips":2148,"native_mips":5390,"ratio":0.3985}
 {"commit":"c9a3b35","date":"2026-11-21T12:12:17.749Z","node":"v24.22.0","cpu":"Intel(R) Xeon(R) 6975P-C","runs":3,"args":"b 2 -mmt1 -md18","translated_mips":2821,"native_mips":6724,"ratio":0.4195}
+{"commit":"7bae322","date":"2026-11-28T00:39:05.067Z","node":"v24.22.0","cpu":"AMD EPYC 9V74 80-Core Processor","host":"wine","runs":3,"args":"b 2 -mmt1 -md18","translated_mips":1847,"native_mips":6989,"ratio":0.2643}

@@ -8,3 +8,4 @@
 {"commit":"61b7058","date":"2026-11-14T15:26:51.273Z","node":"v24.22.0","cpu":"AMD EPYC 9V74 80-Core Processor","runs":3,"translated_ips":12392.401426,"native_ips":31161.224593,"ratio":0.3977}
 {"commit":"070de32","date":"2026-11-14T15:43:16.811Z","node":"v24.22.0","cpu":"AMD EPYC 9V45 96-Core Processor","runs":3,"translated_ips":16491.685758,"native_ips":42076.072698,"ratio":0.3919}
 {"commit":"c9a3b35","date":"2026-11-21T12:12:59.652Z","node":"v24.22.0","cpu":"AMD EPYC 7763 64-Core Processor","runs":3,"translated_ips":10462.826806,"native_ips":26189.252311,"ratio":0.3995}
+{"commit":"7bae322","date":"2026-11-28T00:38:45.144Z","node":"v24.22.0","cpu":"AMD EPYC 7763 64-Core Processor","host":"wine","runs":3,"translated_ips":7554.710527,"native_ips":26297.498871,"ratio":0.2873}
