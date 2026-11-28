@@ -262,6 +262,7 @@ jobs:
             ./l2-exes/$name.exe > $name.actual || code=$?
             tr -d '\r' < tests/native/$name.expected | sed 's/$/\r/' > $name.expected
             if ! cmp $name.expected $name.actual; then
+              diff $name.expected $name.actual || true
               echo "::error::$name.exe raw output differs from tests/native/$name.expected (LF turned into CRLF)"
               exit 1
             fi
