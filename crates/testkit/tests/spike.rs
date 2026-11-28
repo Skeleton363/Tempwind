@@ -140,7 +140,8 @@ fn both_checks() -> Options {
 
 /// `translator.md`, "Memory checks": a NULL read or write faults with its
 /// kind and address, the state from before the instruction; a store into a
-/// code page exits EXIT_UNSUPPORTED at the store.
+/// code page faults with `FAULT_CODE_WRITE` at the store, with the lowest
+/// address of the store on the code page (Phase 2 M5).
 #[test]
 fn memory_checks_fault() {
     // mov rax, 7; mov rcx, [rbx + 8]; ret
@@ -181,17 +182,15 @@ fn memory_checks_fault() {
     let (out, _, _) = run_checked(&hex("f3aa c3"), &[("rdi", 0)], &both_checks());
     assert_eq!(out.exit, abi::EXIT_LEFT_CODE);
     // A store into the code page: mov [rbx], ecx, and one that ends there.
-    for rbx in [0x1_0010, 0xfffe] {
+    for (rbx, want) in [(0x1_0010, 0x1_0010), (0xfffe, 0x1_0000)] {
         let opts = Options {
             store_check: true,
             ..Options::default()
         };
-        let (out, _, _) = run_checked(&hex("890b c3"), &[("rbx", rbx)], &opts);
-        assert_eq!(
-            (out.exit, out.rip),
-            (abi::EXIT_UNSUPPORTED, 0x1_0000),
-            "{rbx:#x}"
-        );
+        let (out, kind, addr) = run_checked(&hex("890b c3"), &[("rbx", rbx)], &opts);
+        assert_eq!((out.exit, out.rip), (abi::EXIT_FAULT, 0x1_0000), "{rbx:#x}");
+        assert_eq!((kind, addr), (abi::FAULT_CODE_WRITE, want), "{rbx:#x}");
+        assert_eq!(out.gpr[3], rbx, "{rbx:#x}: registers unchanged");
     }
     // A load from the code page is fine, and without the checks NULL is
     // ordinary memory.

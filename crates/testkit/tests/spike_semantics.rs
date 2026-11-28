@@ -106,8 +106,10 @@ fn unsupported_forms() {
         ("push imm16", vec![0x66, 0x6a, 0x01]),
         ("mov from segment register", vec![0x8c, 0xd8]), // mov eax, ds
         ("retf", vec![0xcb]),
-        ("int3", vec![0xcc]),
         ("int1", vec![0xf1]),
+        // int imm8 stays unsupported, vector 3 too (Phase 2 M5).
+        ("int 3", vec![0xcd, 0x03]),
+        ("int 29h", vec![0xcd, 0x29]),
         ("address size prefix on jecxz", vec![0x67, 0xe3, 0x00]),
         ("outside the profile (AVX)", vec![0xc5, 0xf8, 0x77]), // vzeroupper
     ];
@@ -155,6 +157,65 @@ fn undecodable_bytes_fault_invalid_opcode() {
             abi::FAULT_INVALID_OPCODE,
             "{name}"
         );
+    }
+}
+
+/// `int3` (Phase 2 M5, `translator.md`, "Faults"): EXIT_FAULT with
+/// `FAULT_BREAKPOINT`, fault address 0 and RIP at the `int3` itself, after
+/// the instructions before it and with the state otherwise untouched.
+/// Until M5 it was EXIT_UNSUPPORTED (`unsupported_forms`).
+#[test]
+fn int3_faults_as_a_breakpoint() {
+    // mov eax, 7; int3; nop; ret
+    let c = [0xb8, 7, 0, 0, 0, 0xcc, 0x90, 0xc3];
+    let input = state(&[(RAX, 0x1234), (RBX, 0x9000)]);
+    let mut want = input.gpr;
+    want[RAX] = 7;
+    // (entries, the run's start, the int3's address, registers after)
+    for (entry, at, gpr) in [(BASE, BASE + 5, want), (BASE + 5, BASE + 5, input.gpr)] {
+        let t = x64wasm::translate(
+            CodeRegion {
+                base: BASE,
+                bytes: &c,
+            },
+            &[entry],
+            &Options::default(),
+        )
+        .unwrap();
+        let host = Host::new().unwrap();
+        let module = host.compile(&t.wasm).unwrap();
+        let mut m = host.machine(MEMORY).unwrap();
+        m.write(BASE, &c).unwrap();
+        m.write_state(
+            STATE,
+            &CpuState {
+                rip: entry,
+                ..input
+            },
+        )
+        .unwrap();
+        // A stale fault address and kind, which the fault overwrites.
+        m.write(STATE + abi::STATE_FAULT_ADDR, &[0xa5; 8]).unwrap();
+        m.write(STATE + abi::STATE_FAULT_KIND, &[0xa5; 4]).unwrap();
+        let exit = m.run(&module, STATE).unwrap();
+        let out = m.read_state(STATE).unwrap();
+        let ctx = format!("entry {entry:#x}");
+        assert_eq!(
+            (exit, out.exit),
+            (abi::EXIT_FAULT, abi::EXIT_FAULT),
+            "{ctx}"
+        );
+        assert_eq!(out.rip, at, "{ctx}: at the int3");
+        assert_eq!(out.gpr, gpr, "{ctx}");
+        assert_eq!(out.rflags, input.rflags, "{ctx}: flags unchanged");
+        let kind = m.read(STATE + abi::STATE_FAULT_KIND, 4).unwrap();
+        let addr = m.read(STATE + abi::STATE_FAULT_ADDR, 8).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(kind.try_into().unwrap()),
+            abi::FAULT_BREAKPOINT,
+            "{ctx}"
+        );
+        assert_eq!(u64::from_le_bytes(addr.try_into().unwrap()), 0, "{ctx}");
     }
 }
 

@@ -470,8 +470,8 @@ fn discovery_continues_after_unsupported_instructions() {
     );
     assert_eq!(prog.blocks[0].after_exit, Some(0x1008));
 
-    // An instruction that doesn't continue (ud2 and an invalid encoding,
-    // which fault, and unsupported int3) ends discovery there.
+    // An instruction that doesn't continue (ud2, an invalid encoding and,
+    // from Phase 2 M5, int3, which all fault) ends discovery there.
     for stop in ["0f0b", "cc", "06"] {
         let code = hex(&format!("b801000000 {stop} 90 c3"));
         let t = translate(&code, 0x1000, &Options::default());

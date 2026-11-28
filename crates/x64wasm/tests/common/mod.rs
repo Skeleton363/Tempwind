@@ -24,7 +24,7 @@ pub const MASK: u64 = 1023;
 /// Where tests put the state block and the stack.
 pub const STATE: u64 = 0x8_0000;
 pub const STACK: u64 = 0xf_0000;
-const MEMORY_PAGES: u64 = 32;
+pub const MEMORY_PAGES: u64 = 32;
 const _: () = assert!(SLOTS + (MASK + 1) * abi::LOOKUP_SLOT_SIZE <= MEMORY_PAGES << 16);
 
 pub fn hex(s: &str) -> Vec<u8> {
@@ -55,10 +55,18 @@ pub struct Process {
     pub depth: Global,
     lookup: Global,
     page_flags: Global,
+    /// Where the page-state table starts (the `page_flags` global).
+    flags_base: u64,
 }
 
 impl Process {
     pub fn new() -> Self {
+        Self::with_page_flags(PAGE_FLAGS, MEMORY_PAGES)
+    }
+
+    /// A process whose page-state table starts at `flags_base`, with a
+    /// memory of `pages` 64 KiB pages.
+    pub fn with_page_flags(flags_base: u64, pages: u64) -> Self {
         let mut config = Config::new();
         config.wasm_memory64(true);
         config.wasm_threads(true);
@@ -69,7 +77,7 @@ impl Process {
         let ty = MemoryType::builder()
             .memory64(true)
             .shared(true)
-            .min(MEMORY_PAGES)
+            .min(pages)
             .max(Some(abi::MAX_MEMORY_PAGES))
             .build()
             .unwrap();
@@ -86,7 +94,7 @@ impl Process {
         };
         let depth = global(&mut store, Val::I32(0), Mutability::Var);
         let lookup = global(&mut store, Val::I64(LOOKUP as i64), Mutability::Const);
-        let page_flags = global(&mut store, Val::I64(PAGE_FLAGS as i64), Mutability::Const);
+        let page_flags = global(&mut store, Val::I64(flags_base as i64), Mutability::Const);
         let p = Process {
             engine,
             store,
@@ -95,6 +103,7 @@ impl Process {
             depth,
             lookup,
             page_flags,
+            flags_base,
         };
         p.write_u64(LOOKUP + abi::LOOKUP_SLOTS, SLOTS);
         p.write_u64(LOOKUP + abi::LOOKUP_MASK, MASK);
@@ -138,7 +147,7 @@ impl Process {
     pub fn set_page_flags(&self, addr: u64, len: u64, flags: u8) {
         let shift = abi::PAGE_FLAGS_SHIFT;
         let n = ((addr + len - 1) >> shift) - (addr >> shift) + 1;
-        self.write(PAGE_FLAGS + (addr >> shift), &vec![flags; n as usize]);
+        self.write(self.flags_base + (addr >> shift), &vec![flags; n as usize]);
     }
 
     /// Writes a state block at [`STATE`] that returns to `SENTINEL_RET`
