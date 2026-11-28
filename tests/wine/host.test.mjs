@@ -22,6 +22,7 @@ import { installBootSet, parseBootSetManifest, BOOT_STOP_AT_ENTRY, PE_DIR } from
 import { parseCatalog, matchCatalog } from '../../runtime/src/wine/aot-catalog.mjs';
 import { loadWineInputs, wineDirs } from '../../runtime/src/wine/node-files.mjs';
 import { createWineProcess, unixExitCode } from '../../runtime/src/wine/wine-process.mjs';
+import { RuntimeTranslator } from '../../runtime/src/rt.mjs';
 
 const dirs = wineDirs();
 const inputs = await loadWineInputs(dirs);
@@ -185,6 +186,43 @@ test('catalog fallback: an image whose base differs is counted, tw_translate tra
   assert.equal(pageCode(proc, size - 1n + base), 0);
   // The program's module is elsewhere and stays.
   assert.equal(pageCode(proc, 0x1_4000_1000n), PAGE_CODE);
+});
+
+// wine-unix.md section 12: a translation with no block at rip fails without
+// linking its module or marking its pages (M4's known issue). The run-time
+// translator always gives the entry a block, so the test makes one that
+// doesn't: the translator, asked for rip, translates from the view's start.
+test('tw_translate: a translation with no block at rip links nothing and marks no page', async () => {
+  const json = structuredClone(inputs.catalog);
+  const nt = json.modules.find((m) => m.path === NTDLL);
+  nt.base = '0x' + (BigInt(nt.base) + 0x1_0000n).toString(16);
+  const { proc, stderr } = await bootToEntry(json);
+  const { stats, linker, table } = proc;
+  const rip = new DataView(proc.memory.buffer).getBigUint64(Number(proc.host.raw.tw_main_state()) + STATE_RIP, true);
+  const plan = JSON.parse(readFileSync(join(dirs.wine, 'catalog', nt.plan), 'utf8'));
+  const text = plan.sections.find((s) => s.name === '.text');
+  const base = BigInt(text.va), size = (BigInt(text.virtualSize) + 0xfffn) & ~0xfffn;
+  const slots = linker.sortedKeys().length, slotsUsed = table.length;
+
+  const translate = RuntimeTranslator.prototype.translate;
+  RuntimeTranslator.prototype.translate = function (req) { return translate.call(this, { ...req, entry: req.codeBase }); };
+  try {
+    assert.equal(proc.imports.tw_translate(rip, base, size), 1, stderr());
+  } finally {
+    RuntimeTranslator.prototype.translate = translate;
+  }
+  assert.match(stderr(), /tempwind: translate: 0x170[0-9a-f]+ the translation has no block for it/);
+  assert.deepEqual(stats.translations, []);
+  assert.equal(table.length, slotsUsed, 'no module instantiated into env.table');
+  assert.equal(linker.sortedKeys().length, slots, 'no block inserted');
+  assert.equal(linker.lookup(base), null);
+  assert.equal(pageCode(proc, base), 0);
+  assert.equal(pageCode(proc, rip), 0);
+
+  // The real translation then links as usual.
+  assert.equal(proc.imports.tw_translate(rip, base, size), 0, stderr());
+  assert.notEqual(linker.lookup(rip), null);
+  assert.equal(pageCode(proc, rip), PAGE_CODE);
 });
 
 // The exit code of native Wine's process for a Windows status:

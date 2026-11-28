@@ -19,7 +19,7 @@ import {
 } from '../abi.mjs';
 import { createMemory64 } from '../memory.mjs';
 import { GuestMemory } from '../guest-memory.mjs';
-import { Linker } from '../link.mjs';
+import { Linker, moduleBlocks } from '../link.mjs';
 import { loadFp } from '../fp.mjs';
 import { RuntimeTranslator, requestFlags } from '../rt.mjs';
 import { parsePlan } from '../plan.mjs';
@@ -187,10 +187,13 @@ export async function createWineProcess(opts) {
       try {
         const known = keysIn(l.sortedKeys(), base, base + size);
         const wasm = rt.translate({ codeBase: base, code: mem.read(base, Number(size)), entry: rip, known, flags: WINE_RT_FLAGS });
-        const r = l.linkSync(new WebAssembly.Module(wasm), { ranges: [[base, size]] });
+        const module = new WebAssembly.Module(wasm);
+        // Checked before linking: a translation with no block at rip links
+        // nothing and marks no page (wine-unix.md, section 12).
+        if (!moduleBlocks(module).blocks.some((b) => b.addr === rip)) throw new Error('the translation has no block for it');
+        const r = l.linkSync(module, { ranges: [[base, size]] });
         linked(r);
         stats.translations.push({ rip, base, size, blocks: r.blocks });
-        if (!l.lookup(rip)) throw new Error('the translation has no block for it');
         return 0;
       } catch (e) {
         say(`tempwind: translate: ${hex(rip)} ${e.message}`);
