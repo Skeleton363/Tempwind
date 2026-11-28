@@ -259,13 +259,39 @@ static const char *bad_id( void )
     return NULL;
 }
 
-/* A stub's wrapper stops loudly (section 11). Alone: it doesn't return. */
-static const char *stub_stops( void )
+/* The sentinel pKiUserExceptionDispatcher: nothing runs there. */
+#define EXC_DISPATCHER 0x7ffe1240
+
+/* What a stub's raise leaves (section 11, "Exceptions"): the dispatcher's
+ * new-context return to KiUserExceptionDispatcher, whose RSP holds the
+ * record EXCEPTION_WINE_STUB with the module and the stub's name (the
+ * record's offset 0x4f0 in exc_stack_layout, signal_x86_64.c L418-429). */
+static const char *expect_stub_raised( BYTE *state, int32_t ret, const char *module, const char *name )
+{
+    const EXCEPTION_RECORD *rec = (const EXCEPTION_RECORD *)(ULONG_PTR)(GPR( state, RSP ) + 0x4f0);
+
+    TW_EXPECT( ret == TW_STATUS_UNWIND );
+    TW_EXPECT( S64( state, TW_STATE_RIP ) == EXC_DISPATCHER );
+    TW_EXPECT( GPR( state, RSP ) < stack_top - 0x200 );
+    TW_EXPECT( rec->ExceptionCode == EXCEPTION_WINE_STUB && rec->NumberParameters == 2 );
+    TW_EXPECT( !strcmp( (const char *)rec->ExceptionInformation[0], module ) );
+    TW_EXPECT( !strcmp( (const char *)rec->ExceptionInformation[1], name ) );
+    return NULL;
+}
+
+/* A stub's wrapper raises Wine's stub exception (section 11), where until
+ * M5 it stopped loudly: it returns, through the new-context return. */
+static const char *stub_raises( void )
 {
     BYTE *state = new_state();
+    const char *err;
+    int32_t ret;
 
-    do_syscall( state, "NtTraceEvent", NULL, 0 );
-    return tw_fail( "NtTraceEvent returned" );
+    pKiUserExceptionDispatcher = (void *)EXC_DISPATCHER;
+    ret = do_syscall( state, "NtTraceEvent", NULL, 0 );
+    if ((err = expect_stub_raised( state, ret, "ntdll", "NtTraceEvent" ))) return err;
+    free( state );
+    return NULL;
 }
 
 /* An x87 register: significand, then sign and exponent. */
@@ -537,17 +563,22 @@ static const char *table1_after_init( void )
     return NULL;
 }
 
-/* A table-1 stub's wrapper stops loudly (section 11): NtBindCompositionSurface,
- * id 0x1000, once table 1 is registered. Alone. */
-static const char *table1_stub_stops( void )
+/* A table-1 stub's wrapper raises as table 0's does (section 11), where
+ * until M5 it stopped loudly: NtBindCompositionSurface, id 0x1000, once
+ * table 1 is registered (win32u_unix_call_init, before it). */
+static const char *table1_stub_raises( void )
 {
     BYTE *state = new_state();
+    const char *err;
+    int32_t ret;
 
-    if (win32u_unix_call( state, 0, NULL, THUNK_RET ) != TW_STATUS_RETURNED || GPR( state, RAX ))
-        return tw_fail( "win32u's init failed" );
+    TW_EXPECT( KeServiceDescriptorTable[1].ServiceLimit == tw_win32_syscall_count );
+    pKiUserExceptionDispatcher = (void *)EXC_DISPATCHER;
     setup_syscall( state, 0x1000, NULL, 0 );
-    tw_syscall_dispatcher( (uintptr_t)state, 0, THUNK_RET );
-    return tw_fail( "NtBindCompositionSurface returned" );
+    ret = tw_syscall_dispatcher( (uintptr_t)state, 0, THUNK_RET );
+    if ((err = expect_stub_raised( state, ret, "win32u", "NtBindCompositionSurface" ))) return err;
+    free( state );
+    return NULL;
 }
 
 /* A code past win32u's one unix call stops loudly. Alone. */
@@ -628,9 +659,9 @@ static const struct tw_check checks[] =
     { "table1_before_init", table1_before_init },
     { "win32u_unix_call_init", win32u_unix_call_init },
     { "table1_after_init", table1_after_init },
-    { "stub_stops", stub_stops, TW_ALONE },
+    { "stub_raises", stub_raises },
+    { "table1_stub_raises", table1_stub_raises },
     { "unix_call_bad_code", unix_call_bad_code, TW_ALONE },
-    { "table1_stub_stops", table1_stub_stops, TW_ALONE },
     { "win32u_unix_call_bad_code", win32u_unix_call_bad_code, TW_ALONE },
     { "abort_thread_exits", abort_thread_exits, TW_ALONE },
     { "terminate_reaches_exit_hook", terminate_reaches_exit_hook, TW_ALONE },

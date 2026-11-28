@@ -16,16 +16,20 @@ const start = (env = {}) => startHarness('syscall', { env, imports: true });
 
 // In the harness's order (it runs them in one instance). Then
 // table 1 before and after win32u's init registers it, and that init as a
-// unix call to win32u's table (section 10, "The M4 checks").
+// unix call to win32u's table (section 10, "The M4 checks"). Last, a table-0
+// and a table-1 stub, which raise from M5 where they stopped loudly before
+// (section 10, "The M5 checks").
 const CHECKS = ['dispatcher_page', 'stack_arguments', 'variant_entries', 'bad_id', 'nt_continue',
   'context_round_trip', 'unix_call', 'kuser_clock', 'syscall_trace',
-  'table1_before_init', 'win32u_unix_call_init', 'table1_after_init'];
+  'table1_before_init', 'win32u_unix_call_init', 'table1_after_init', 'stub_raises', 'table1_stub_raises'];
 
 test('syscall: the harness checks pass', async () => {
   const h = await start();
   await runChecks(h, CHECKS);
   const { out } = h;
   assert.ok(!/SysCall|SysRet/.test(out.stderr), 'no +syscall lines without WINEDEBUG');
+  // the stubs raise: no loud stop (section 11, "Exceptions")
+  assert.ok(!/^tempwind:/m.test(out.stderr), `stderr: ${out.stderr}`);
 });
 
 // Wine's +syscall format (unix/loader.c L636-664): "SysCall  NAME(ARGS)" and
@@ -39,13 +43,10 @@ test('syscall: +syscall lines in Wine\'s format', async () => {
 
 // Each loud stop alone, in a fresh instance (section 10).
 for (const [check, line] of [
-  ['stub_stops', 'tempwind: unsupported: syscall NtTraceEvent'],
   ['unix_call_bad_code', 'tempwind: unsupported: tw_unix_call_dispatcher: a code past ntdll\'s unix calls'],
   // Process exit's hook in NtTerminateProcess (section 8): outside boot it stops.
   ['terminate_reaches_exit_hook', 'tempwind: unsupported: tw_process_exit outside boot'],
-  // A table-1 stub once table 1 is registered, and a code past
-  // win32u's one unix call.
-  ['table1_stub_stops', 'tempwind: unsupported: win32u syscall NtBindCompositionSurface'],
+  // A code past win32u's one unix call.
   ['win32u_unix_call_bad_code', 'tempwind: unsupported: tw_unix_call_dispatcher: a code past the unix library\'s calls'],
 ]) {
   test(`syscall: ${check} stops loudly`, async () => {

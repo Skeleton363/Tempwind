@@ -19,9 +19,12 @@
  * - The context functions, with the FP conversion that agrees with the
  *   translator's fxsave (translator.md, "fxsave m512"); another
  *   thread's through the server, and the user APC's dispatch.
+ * - Exceptions (section 11, M5): tw_raise_exception for translated code's
+ *   faults, NtRaiseException's first chance (call_user_exception_dispatcher)
+ *   and the syscall stubs' raise (tw_stub_syscall).
  *
- * The rest stops loudly (wine-unix.md section 13: exceptions, user
- * callbacks). NtCurrentTeb() needs no entry here: thread.c's reads
+ * The rest stops loudly (wine-unix.md section 13: user callbacks,
+ * call_raise_user_exception_dispatcher). NtCurrentTeb() needs no entry here: thread.c's reads
  * teb_key on every machine. Line numbers are wine-11.0's
  * dlls/ntdll/unix/signal_x86_64.c unless another file is named.
  *
@@ -47,6 +50,7 @@
 #define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
+#include "ddk/wdm.h"
 #include "wine/unixlib.h"
 #include "unix_private.h"
 
@@ -65,6 +69,11 @@ static const WORD ds64_sel = 0x2b;
 /* The main thread's CPU state block (abi.md, "CPU state block"), in the host
  * heap; signal_start_thread fills it. */
 static BYTE *main_state;
+
+/* The xstate area's size below an exception's layout (L525): the header
+ * alone, unless KUSER's XState.Size is set (L2838). The profile has no
+ * OSXSAVE, so system.c never fills XState (L534-535). */
+static unsigned int xstate_size = sizeof(XSAVE_AREA_HEADER);
 
 /* The server's clock (server/fd.c L418-426): writes KUSER's time fields. */
 extern void set_current_time( void );
@@ -116,8 +125,9 @@ void signal_init_threading( void )
 {
 }
 
-/* No signal handlers: nothing faults, and the server's signals are handled
- * in-process (section 7). As signal_x86_64.c does (L2841-2846): the main
+/* No signal handlers: faults come back to the run loop as exit reasons
+ * (tw_raise_exception), and the server's signals are handled in-process
+ * (section 7). As signal_x86_64.c does (L2838-2846): xstate_size, the main
  * thread's frame record, and the page at 0x7ffe1000, which holds the syscall
  * dispatcher's address that every PE syscall thunk calls through. */
 void signal_init_process( void )
@@ -125,6 +135,7 @@ void signal_init_process( void )
     struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
     void *ptr = (char *)user_shared_data + page_size;
 
+    if (user_shared_data->XState.Size) xstate_size = user_shared_data->XState.Size - sizeof(XSAVE_FORMAT);
     if (!thread_data->syscall_frame &&
         !(thread_data->syscall_frame = calloc( 1, sizeof(struct syscall_frame) )))
         tw_unsupported( "signal_init_process: no host memory for the frame record" );
@@ -509,33 +520,10 @@ NTSTATUS signal_set_full_context( CONTEXT *context )
     return status;
 }
 
-/***********************************************************************
- *           NtSetContextThread  (L1116-1208)
- */
-NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+/* The fields flags names from the context into the state block, as
+ * NtSetContextThread writes them (L1116-1208). */
+static void context_to_state( BYTE *state, const CONTEXT *context, DWORD flags )
 {
-    DWORD flags = context->ContextFlags & ~CONTEXT_AMD64;
-    BOOL self = (handle == GetCurrentThread());
-    BYTE *state;
-
-    flags &= ~CONTEXT_XSTATE;  /* no extended features: the profile has no AVX */
-
-    /* Another thread's goes to the server, which keeps it for the
-     * thread's usr1_handler (L1145-1153); the server answers self for a
-     * real handle to this thread */
-    if (!self)
-    {
-        NTSTATUS ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
-
-        if (ret || !self) return ret;
-    }
-    state = context_state( "NtSetContextThread: outside a syscall" );
-
-    /* debug registers other than the cached ones, all 0, need the server */
-    if ((flags & CONTEXT_DEBUG_REGISTERS) &&
-        (context->Dr0 || context->Dr1 || context->Dr2 || context->Dr3 || context->Dr6 || context->Dr7))
-        tw_unsupported( "NtSetContextThread: nonzero debug registers (the server's set_thread_context)" );
-
     if (flags & CONTEXT_INTEGER)
     {
         GPR( state, RAX ) = context->Rax;
@@ -561,32 +549,12 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
         S64( state, TW_STATE_RFLAGS ) = context->EFlags;
     }
     if (flags & CONTEXT_FLOATING_POINT) fp_to_state( &context->FltSave, state );
-
-    get_syscall_frame()->restore_flags |= flags & ~CONTEXT_INTEGER;  /* L1206 */
-    return STATUS_SUCCESS;
 }
 
-/***********************************************************************
- *           NtGetContextThread  (L1215-1346)
- */
-NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+/* The fields needed_flags names from the state block into the context, as
+ * NtGetContextThread reads them (L1215-1346). */
+static void context_from_state( const BYTE *state, CONTEXT *context, DWORD needed_flags )
 {
-    DWORD needed_flags = context->ContextFlags & ~CONTEXT_AMD64;
-    BOOL self = (handle == GetCurrentThread());
-    const BYTE *state;
-
-    /* Another thread's comes from the server: the context the thread
-     * posted from usr1_handler's wait_suspend, after a wait for it when the
-     * thread hasn't stopped yet (get_thread_context, unix/thread.c); the
-     * server answers self for a real handle to this thread (L1224-1229) */
-    if (!self)
-    {
-        NTSTATUS ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
-
-        if (ret || !self) return ret;
-    }
-    state = context_state( "NtGetContextThread: outside a syscall" );
-
     if (needed_flags & CONTEXT_INTEGER)
     {
         context->Rax = GPR( state, RAX );
@@ -635,6 +603,59 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
         context->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
     }
     /* CONTEXT_XSTATE: none, the profile has no AVX */
+}
+
+/***********************************************************************
+ *           NtSetContextThread  (L1116-1208)
+ */
+NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+{
+    DWORD flags = context->ContextFlags & ~CONTEXT_AMD64;
+    BOOL self = (handle == GetCurrentThread());
+    BYTE *state;
+
+    flags &= ~CONTEXT_XSTATE;  /* no extended features: the profile has no AVX */
+
+    /* Another thread's goes to the server, which keeps it for the
+     * thread's usr1_handler (L1145-1153); the server answers self for a
+     * real handle to this thread */
+    if (!self)
+    {
+        NTSTATUS ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+
+        if (ret || !self) return ret;
+    }
+    state = context_state( "NtSetContextThread: outside a syscall" );
+
+    /* debug registers other than the cached ones, all 0, need the server */
+    if ((flags & CONTEXT_DEBUG_REGISTERS) &&
+        (context->Dr0 || context->Dr1 || context->Dr2 || context->Dr3 || context->Dr6 || context->Dr7))
+        tw_unsupported( "NtSetContextThread: nonzero debug registers (the server's set_thread_context)" );
+
+    context_to_state( state, context, flags );
+    get_syscall_frame()->restore_flags |= flags & ~CONTEXT_INTEGER;  /* L1206 */
+    return STATUS_SUCCESS;
+}
+
+/***********************************************************************
+ *           NtGetContextThread  (L1215-1346)
+ */
+NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+{
+    DWORD needed_flags = context->ContextFlags & ~CONTEXT_AMD64;
+    BOOL self = (handle == GetCurrentThread());
+
+    /* Another thread's comes from the server: the context the thread
+     * posted from usr1_handler's wait_suspend, after a wait for it when the
+     * thread hasn't stopped yet (get_thread_context, unix/thread.c); the
+     * server answers self for a real handle to this thread (L1224-1229) */
+    if (!self)
+    {
+        NTSTATUS ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+
+        if (ret || !self) return ret;
+    }
+    context_from_state( context_state( "NtGetContextThread: outside a syscall" ), context, needed_flags );
     set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
     return STATUS_SUCCESS;
 }
@@ -755,14 +776,180 @@ NTSTATUS call_user_apc_dispatcher( CONTEXT *context, unsigned int flags, ULONG_P
     return status;
 }
 
-NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context )
+/* ---- exceptions (section 11, "Exceptions") ---- */
+
+/* The stack KiUserExceptionDispatcher gets (L418-429). */
+struct exc_stack_layout
 {
-    tw_unsupported( "call_user_exception_dispatcher" );
+    CONTEXT              context;        /* 000 */
+    CONTEXT_EX           context_ex;     /* 4d0 */
+    EXCEPTION_RECORD     rec;            /* 4f0 */
+    ULONG64              align;          /* 588 */
+    struct machine_frame machine_frame;  /* 590 */
+    ULONG64              align2;         /* 5b8 */
+};
+C_ASSERT( offsetof(struct exc_stack_layout, context_ex) == 0x4d0 );
+C_ASSERT( offsetof(struct exc_stack_layout, rec) == 0x4f0 );
+C_ASSERT( offsetof(struct exc_stack_layout, machine_frame) == 0x590 );
+C_ASSERT( sizeof(struct exc_stack_layout) == 0x5c0 );
+
+/* context_init_xstate (L568-593), re-implemented since signal_x86_64.c
+ * isn't compiled: the CONTEXT_EX after the context, with an xstate buffer or
+ * without one. */
+static void context_init_xstate( CONTEXT *context, void *xstate_buffer )
+{
+    CONTEXT_EX *xctx = (CONTEXT_EX *)(context + 1);
+
+    xctx->Legacy.Length = sizeof(CONTEXT);
+    xctx->Legacy.Offset = -(LONG)sizeof(CONTEXT);
+    if (xstate_buffer)
+    {
+        xctx->XState.Length = xstate_size;
+        xctx->XState.Offset = (BYTE *)xstate_buffer - (BYTE *)xctx;
+        context->ContextFlags |= CONTEXT_XSTATE;
+        xctx->All.Length = sizeof(CONTEXT) + xctx->XState.Offset + xctx->XState.Length;
+    }
+    else
+    {
+        xctx->XState.Length = 25;
+        xctx->XState.Offset = 0;
+        xctx->All.Length = sizeof(CONTEXT) + 24;  /* sizeof(CONTEXT_EX) minus 8 alignment bytes on x64 */
+    }
+    xctx->All.Offset = -(LONG)sizeof(CONTEXT);
 }
 
+/***********************************************************************
+ *           tw_raise_exception
+ *
+ * A fault in translated code (section 11, "Exceptions"; the run loop's
+ * records, section 12): setup_raise_exception's steps (L1567-1638) against
+ * the state block. The context is save_context's (L970-1034): CONTEXT_ALL,
+ * from the state block through NtGetContextThread's conversion; run
+ * materialized RFLAGS on its exit. No Rip-- for EXCEPTION_BREAKPOINT
+ * (L1601-1602): the translator's RIP is already the int3's (translator.md,
+ * "Faults"). Then the state block enters KiUserExceptionDispatcher, as the
+ * dispatcher's new-context return does; the other registers stay.
+ */
+void tw_raise_exception( uint64_t state_addr, EXCEPTION_RECORD *rec )
+{
+    BYTE *state = (BYTE *)(ULONG_PTR)state_addr;
+    struct exc_stack_layout *stack;
+    CONTEXT context;
+    ULONG_PTR rsp;
+    size_t stack_size;
+    NTSTATUS status;
+
+    memset( &context, 0, sizeof(context) );
+    context.ContextFlags = CONTEXT_AMD64;
+    context_from_state( state, &context, CONTEXT_ALL & ~CONTEXT_AMD64 );
+
+    /* L1594-1599: a debugger's continue resumes the context, which it may
+     * have changed (restore_context) */
+    status = send_debug_event( rec, &context, TRUE, TRUE );
+    if (status == DBG_CONTINUE || status == DBG_EXCEPTION_HANDLED)
+    {
+        context_to_state( state, &context, context.ContextFlags & ~CONTEXT_AMD64 );
+        S32( state, TW_STATE_CC_OP ) = 0;
+        S64( state, TW_STATE_CC_A ) = S64( state, TW_STATE_RFLAGS );
+        return;
+    }
+
+    /* L1604-1611: the layout below the 16-byte aligned RSP, through
+     * virtual_setup_exception (unix/virtual.c L4601-4646) */
+    rsp = GPR( state, RSP ) & ~(ULONG_PTR)15;
+    stack_size = rsp - ((rsp - sizeof(*stack) - xstate_size) & ~(ULONG_PTR)63);
+    stack = virtual_setup_exception( (void *)rsp, stack_size, rec );
+    stack->rec               = *rec;
+    stack->context           = context;
+    stack->machine_frame.rip = context.Rip;
+    stack->machine_frame.rsp = context.Rsp;
+    /* L1613-1625: the context has no CONTEXT_XSTATE (the profile has no AVX) */
+    context_init_xstate( &stack->context, NULL );
+
+    /* L1627-1631: TF, DF and AC cleared; set_process_instrumentation_callback
+     * stops loudly, so there is no callback (L1632-1636). The lazy flags
+     * record from RFLAGS, as the dispatcher's new-context return leaves it. */
+    S64( state, TW_STATE_RIP ) = (ULONG_PTR)pKiUserExceptionDispatcher;
+    GPR( state, RSP ) = (ULONG_PTR)stack;
+    S64( state, TW_STATE_RFLAGS ) &= ~(UINT64)(0x100 | 0x400 | 0x40000);
+    S32( state, TW_STATE_CC_OP ) = 0;
+    S64( state, TW_STATE_CC_A ) = S64( state, TW_STATE_RFLAGS );
+}
+
+/***********************************************************************
+ *           call_user_exception_dispatcher  (L1720-1749)
+ *
+ * NtRaiseException's first chance (unix/thread.c L1616), against the frame
+ * record and the state block as call_user_apc_dispatcher does: the layout
+ * below the context's RSP, the state block entering KiUserExceptionDispatcher
+ * with RSP = the layout and RBP = the context's, and CONTEXT_CONTROL in
+ * restore_flags for the dispatcher's new-context return. The frame's xstate
+ * has no extended features (no AVX), so a context with CONTEXT_XSTATE gets
+ * a zero header.
+ */
+NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context )
+{
+    struct syscall_frame *frame = get_syscall_frame();
+    struct exc_stack_layout *stack;
+    NTSTATUS status = NtSetContextThread( GetCurrentThread(), context );
+    BYTE *state;
+
+    if (status) return status;
+    state = context_state( "call_user_exception_dispatcher: outside a syscall" );
+    stack = (struct exc_stack_layout *)((context->Rsp - sizeof(*stack) - xstate_size) & ~(ULONG_PTR)63);
+    memmove( &stack->context, context, sizeof(*context) );
+
+    if ((context->ContextFlags & CONTEXT_XSTATE) == CONTEXT_XSTATE)
+    {
+        XSAVE_AREA_HEADER *dst_xs = (XSAVE_AREA_HEADER *)(stack + 1);
+
+        context_init_xstate( &stack->context, dst_xs );
+        memset( dst_xs, 0, xstate_size );
+    }
+    else context_init_xstate( &stack->context, NULL );
+
+    stack->rec = *rec;
+    /* fix up instruction pointer in context for EXCEPTION_BREAKPOINT (L1740-1741) */
+    if (stack->rec.ExceptionCode == EXCEPTION_BREAKPOINT) stack->context.Rip--;
+    stack->machine_frame.rip = stack->context.Rip;
+    stack->machine_frame.rsp = stack->context.Rsp;
+    GPR( state, RBP ) = stack->context.Rbp;
+    GPR( state, RSP ) = (ULONG64)stack;
+    S64( state, TW_STATE_RIP ) = (ULONG64)pKiUserExceptionDispatcher;
+    frame->restore_flags |= CONTEXT_CONTROL;
+    return status;
+}
+
+/* Its only caller is NtClose of a bad handle under a debugger
+ * (unix/server.c L1952-1960): deferred (section 11). */
 void call_raise_user_exception_dispatcher( void )
 {
     tw_unsupported( "call_raise_user_exception_dispatcher" );
+}
+
+/***********************************************************************
+ *           tw_stub_syscall
+ *
+ * A stub's wrapper (gen-syscalls.mjs, section 11): stub_syscall's steps
+ * (unix/loader.c L115-135; win32u/syscall.c L39-59). module and name are
+ * the Unix side's static strings, which translated code reads as it reads
+ * any guest memory.
+ */
+void tw_stub_syscall( const char *module, const char *name )
+{
+    CONTEXT context = { .ContextFlags = CONTEXT_FULL };
+    EXCEPTION_RECORD rec =
+    {
+        .ExceptionCode = EXCEPTION_WINE_STUB,
+        .ExceptionFlags = EXCEPTION_NONCONTINUABLE,
+        .NumberParameters = 2,
+        .ExceptionInformation[0] = (ULONG_PTR)module,
+        .ExceptionInformation[1] = (ULONG_PTR)name,
+    };
+
+    NtGetContextThread( GetCurrentThread(), &context );
+    rec.ExceptionAddress = (void *)context.Rip;
+    NtRaiseException( &rec, &context, TRUE );
 }
 
 NTSTATUS WINAPI NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status )

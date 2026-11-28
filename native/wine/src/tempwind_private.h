@@ -181,6 +181,22 @@ void tw_run_loop( uint64_t state );
  * EXIT_HOST, before it returns STATUS_EXIT; the run loop needs a reason. */
 extern const char *tw_host_stop_reason;
 
+/* ---- Exceptions (section 11, "Exceptions") ---- */
+
+/* signal_wasm64.c: a fault in translated code, with the run loop's record
+ * (section 12, "The records"): setup_raise_exception's steps against the
+ * state block, which then enters PE KiUserExceptionDispatcher with RSP =
+ * Wine's exception layout below the guest's RSP. */
+struct _EXCEPTION_RECORD;
+void tw_raise_exception( uint64_t state, struct _EXCEPTION_RECORD *rec );
+
+/* signal_wasm64.c: a syscall stub's raise, stub_syscall's steps
+ * (unix/loader.c L115-135; win32u/syscall.c L39-59), with module "ntdll"
+ * or "win32u" and the stub's name. The generated stub wrappers call it,
+ * then return 0: the dispatcher's new-context return enters
+ * KiUserExceptionDispatcher. */
+void tw_stub_syscall( const char *module, const char *name );
+
 /* ---- Syscalls and unix calls ---- */
 
 /* unixlibs.c (section 2, patch 0107): the static unix library table, in

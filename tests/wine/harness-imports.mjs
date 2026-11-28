@@ -76,13 +76,14 @@ const compiled = new Map();
  * per NAME.
  * @param {string} name
  * @param {{ env?: object, imports?: boolean, dosdevices?: boolean,
- *   setup?: (host) => void }} [opts] env: the instance's environment;
+ *   setup?: (host) => void, run?: (state: bigint) => number }} [opts] env: the instance's environment;
  *   imports: with harnessImports(); dosdevices: the prefix's dosdevices
  *   directory (default true), else the prefix directory alone; setup: more
- *   MEMFS content, after the standard.
+ *   MEMFS content, after the standard; run: tw_run in place of the host's
+ *   default, which throws (no translated module).
  * @returns {Promise<{ host, out: {stdout: string, stderr: string}, harness: ReturnType<typeof harnessImports>|undefined }>}
  */
-export async function startHarness(name, { env = {}, imports = false, dosdevices = true, setup } = {}) {
+export async function startHarness(name, { env = {}, imports = false, dosdevices = true, setup, run } = {}) {
   if (!compiled.has(name)) {
     const { default: factory } = await import(new URL(`test-${name}.mjs`, unixDir));
     const wasm = new WebAssembly.Module(readFileSync(new URL(`test-${name}.wasm`, unixDir)));
@@ -98,6 +99,7 @@ export async function startHarness(name, { env = {}, imports = false, dosdevices
     stdout: (b) => { out.stdout += o(b); },
     stderr: (b) => { out.stderr += e(b); },
     ...(harness && { imports: harness.imports }),
+    ...(run && { run }),
   });
   harness?.attach(host);
   host.FS.mkdirTree(dosdevices ? `${DEFAULT_ENV.WINEPREFIX}/dosdevices` : DEFAULT_ENV.WINEPREFIX);
