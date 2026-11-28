@@ -104,7 +104,7 @@ fi
 # 5. Packaging for the Unix side.
 [ -s "$out/closure.json" ] || scripts/fetch-artifact.sh "$tag" closure.json "$out"
 tests/native/build.sh >/dev/null
-for p in hello l2_int l2_crt l2_float l2_threads l2_suspend; do cp "target/native/$p.exe" "$out/$p.exe"; done
+for p in hello l2_int l2_crt l2_float l2_threads l2_suspend l2_seh; do cp "target/native/$p.exe" "$out/$p.exe"; done
 tests/pe/build.sh >/dev/null
 cp target/pe/basic.exe "$out/basic.exe"
 # The target programs, from tests/targets/targets.lock's release

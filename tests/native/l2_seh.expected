@@ -1,0 +1,14 @@
+raise: hits=1 unwound=0 code=e0000001 flags=0 nparams=2 p0=11 p1=22
+raise: continued
+null read: hits=1 unwound=1 code=c0000005 flags=0 nparams=2 p0=0 p1==expected:1 addr==label:1
+null write: hits=1 unwound=1 code=c0000005 flags=0 nparams=2 p0=1 p1==expected:1 addr==label:1
+call null: hits=1 unwound=1 code=c0000005 flags=0 nparams=2 p0=8 p1==expected:1 addr==label:1
+divide by zero: hits=1 unwound=1 code=c0000094 flags=0 nparams=0 addr==label:1
+ud2: hits=1 unwound=1 code=c000001d flags=0 nparams=0 addr==label:1
+int3: hits=1 unwound=0 code=80000003 flags=0 nparams=1 p0=0 addr==label:1
+int3: continued
+store into text: hits=1 unwound=1 code=c0000005 flags=0 nparams=2 p0=1 p1==expected:1 addr==label:1
+deep fault: hits=1 unwound=1 code=c0000005 flags=0 nparams=2 p0=0 p1==expected:1
+deep fault: registers restored=1 termination handler ran=1
+raising unhandled 0x2a
+top filter: code=0000002a flags=0 nparams=0
