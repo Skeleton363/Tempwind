@@ -406,3 +406,66 @@ Trial 6's lead was applied again: three Explore runs read the sources, one Plan 
 - **A view of the session section in the guest's file views:** they are copies, so win32u would read stale bytes. The server's reservation is the one memory both sides read, as KUSER is.
 - **A ticker Worker for KUSER's time:** our syscall dispatcher refreshes KUSER's clock at every entry (`set_current_time`, `native/wine/src/signal_wasm64.c` L239), and QPC and `GetProcessTimes` are syscalls, so `7z b`'s `GetTickCount` reads a fresh clock. Only a loop that reads `GetTickCount` with no syscall in it would see a frozen one. Measured first: such a spin, if one turns up, gets the ticker.
 - **Running `wineboot --init` at boot** for services and the KnownDlls: deferred by the owner (services to Phase 4, `\KnownDlls` to M5 if conformance shows the difference).
+
+## 2026-11-28: Phase 2 M5, exceptions and conformance
+
+The M5 planning pass, in a fresh session. Sources:
+- the wine-11.0 tarball (dl.winehq.org, sha256 checked), unpacked in the scratchpad;
+- the MinGW-w64 headers of Ubuntu's `gcc-mingw-w64-x86-64` (`/usr/share/mingw-w64/include`);
+- Microsoft Learn (x64 exception handling, `EXCEPTION_RECORD`, `UnhandledExceptionFilter`), Emscripten's ChangeLog and Claude Code's changelog as single files, and Hacker News.
+
+Trial 6's lead was applied again: three Explore runs read the sources (Wine's dispatch path; Wine's consumers and tests; our fault and conformance code), one Plan run reviewed the draft against them, and the coordinator re-read only the lines a decision rests on. Line numbers are in the pristine tarball; `sx.c` is `dlls/ntdll/unix/signal_x86_64.c` and `pe-sx.c` is `dlls/ntdll/signal_x86_64.c`.
+
+### Wine 11.0
+- **A fault, on the Unix side:** the signal handlers map the trap to a record (`sx.c` L2411-2452, L2497-2506, L2518-2566). `setup_raise_exception` (L1567-1638) then:
+  - calls `send_debug_event`, which does nothing without a debugger (`unix/thread.c` L1550-1603);
+  - moves Rip back one byte for EXCEPTION_BREAKPOINT (L1601-1602);
+  - takes `rsp & ~15` and puts the `exc_stack_layout` (L418-429, 0x5c0 bytes: context 0x000, context_ex 0x4d0, rec 0x4f0, machine_frame 0x590) at `(rsp - size - xstate_size) & ~63`, through `virtual_setup_exception` (`unix/virtual.c` L4601-4646);
+  - copies the record, the context and the machine frame's rip and rsp, sets RIP = `pKiUserExceptionDispatcher` and RSP = the layout, and clears TF, DF and AC (L1627-1631).
+
+  `xstate_size` is never 0: 64 by default (L525), from KUSER otherwise (L2838). `context_init_xstate` is L568-593. The context is `CONTEXT_ALL` (`save_context`, L974 and L1009).
+- **`NtRaiseException`** (`unix/thread.c` L1609-1628): the first chance calls `call_user_exception_dispatcher` (`sx.c` L1720-1749), which writes the context to the syscall frame with `NtSetContextThread`, puts the same layout below `context->Rsp`, moves a BREAKPOINT's Rip back on the stack copy (L1740-1741), and sets the frame's rbp, rsp and rip with `restore_flags |= CONTEXT_CONTROL`. The second chance logs an ERR and calls `NtTerminateProcess(self, code)`. `call_raise_user_exception_dispatcher` is reached only from `NtClose` under a debugger (`unix/server.c` L1952-1960).
+- **The PE dispatcher:** `KiUserExceptionDispatcher` (`pe-sx.c` L341-376) calls `dispatch_exception` (`ntdll/exception.c` L192-257): vectored handlers, then `call_seh_handlers` (`pe-sx.c` L235-335: `RtlLookupFunctionEntry` and `RtlVirtualUnwind2` over `.pdata`, Wine's TEB-chain frames, the TEB's stack limits), then `NtContinue`, else `NtRaiseException(…, FALSE)`. `RtlRaiseException` (L825-848) dispatches in PE code, with no syscall, when no debugger is attached. Unwinding is `RtlUnwindEx` (L690-819) → `RtlRestoreContext` (L646-684) → `NtContinue`. `RtlCaptureContext` (L136-169) uses `pushfq`, `stmxcsr`, selector reads and `fxsave`; the review found every instruction on the path lowered.
+- **The records Wine gives:**
+  - access violation: [0] = `(err >> 1) & 9`, so 0 read, 1 write, 8 execute, and [1] = the address (L2431-2434). An execute fault stays 8 because DEP is on by default (`execute_flags`, `unix/process.c` L77; L2440-2447). ATL thunks are emulated there (L2446-2449);
+  - #DE: `EXCEPTION_INT_DIVIDE_BY_ZERO` for both causes, since Linux sends `FPE_INTDIV` (L2531-2532);
+  - #UD: `EXCEPTION_ILLEGAL_INSTRUCTION`, no parameters (L2411-2413);
+  - #GP from an instruction that isn't privileged: access violation, [0] = 0, [1] = ~0 (L2417-2428);
+  - int3: `EXCEPTION_BREAKPOINT`, one parameter, 0; the address and the context's Rip are the int3's (L2500-2506 with L1601-1602).
+- **Syscall stubs:** `stub_syscall` (`unix/loader.c` L115-135; `win32u/syscall.c` L39-59) raises `EXCEPTION_WINE_STUB`, noncontinuable, with the module and function names, the address from `NtGetContextThread` on the current thread, through `NtRaiseException(…, TRUE)`. The PE side prints "wine: Call from %p to unimplemented function %s.%s, aborting" (`exception.c` L199-208).
+- **Unhandled exceptions:** `RtlUserThreadStart`'s handler (`pe-sx.c` L988-998) calls kernel32's filter, kernelbase's `UnhandledExceptionFilter` (`kernelbase/debug.c` L752-788): the top filter first; then EXECUTE_HANDLER at once if the error mode has `SEM_NOGPFAULTERRORBOX` (L783-785); else `start_debugger_atomic`, which prints "…starting debugger..." (L547), builds "winedbg --auto %ld %ld" (L607, also `loader/wine.inf.in` L409-410) and calls `CreateProcessW` (L652). The process then ends with the exception code (`exception.c` L403-419).
+- **The test framework** (`include/wine/test.h`): it sets `SEM_NOGPFAULTERRORBOX` (L887), so a crashing unit never starts the debugger; its own exception filter is installed only on Windows (L886). Summary lines print with `WINETEST_DEBUG` (L781-794); the exit code is failures plus todo failures, capped at 255 (L797-799); there is no per-test timeout.
+- **The units:** 22 of the 59 test files start child processes (`winetest_get_mainargs`). Of `ntdll:exception`'s x86-64 tests, about 7 need only the basic raise path (`test_rtlraiseexception`, `test___C_specific_handler`, `test_prot_fault`, `test_copy_context`, `test_closehandle`, `test_vectored_continue_handler`, `test_raiseexception_regs`); the rest need debuggers, debug registers, single step, `int 2dh`, a raw `syscall`, or code rewritten in `code_mem`.
+- **Wine's own `__TRY`** on x86-64 PE code is a frame in the TEB's chain with `__wine_setjmpex` and `RtlUnwind` (`include/wine/exception.h` L142-281; `winecrt0/exception.c` L51-172). `IsBadReadPtr` and its siblings use it (`kernel32/virtual.c` L44-99).
+
+### MinGW-w64
+- `__try1`/`__except1` (`excpt.h` L110-122) register `__C_specific_handler` with fixed label names, so one per object file. Top-level asm with `.seh_proc`, `.seh_handler fn, @except` or `@unwind` and `.seh_endprologue`, calling a C function, with a C handler that calls `RtlUnwind`, assembles with Ubuntu's GCC 13 (checked by the review).
+- crt2.o wraps `main` in a `__C_specific_handler` scope with `_gnu_exception_handler`, which passes every exception on unless a `signal()` handler is set.
+
+### Official
+- **Microsoft Learn, x64 exception handling:** two phases; a frame with no `.pdata` entry is a leaf (RIP = [RSP], RSP + 8); `UNW_FLAG_EHANDLER` and `UNW_FLAG_UHANDLER`. **`EXCEPTION_RECORD`:** an access violation's [0] is 0 (read), 1 (write) or 8 (DEP), [1] the address. **`UnhandledExceptionFilter`:** with no debugger it returns EXECUTE_HANDLER. Wine's records agree.
+
+### Emscripten 6.0.12
+- 7.0.1 came out on 2026-11-21. Nothing in it touches pthreads, longjmp, memory64 or exception handling; `-sJSPI` (which we don't use) raises the default browser minimums. Decision: stay on 6.0.12.
+
+### Community
+- Hacker News has no hits on structured exception handling or Wine exceptions in WebAssembly.
+
+### Review
+- **A Plan-agent review of the draft** (17 min, read-only) found 6 blockers:
+  - crashing units would not be `unsupported`: `test.h` sets `SEM_NOGPFAULTERRORBOX` (L887), so kernelbase skips the debugger (L783-785) and the unit is `crashed`; the runner reads the full status from `run-wine.mjs --stats`, since the exit code keeps 8 bits;
+  - int3's address would have been moved back twice, since the translator's RIP is already the int3's;
+  - two work packages need the new fault kinds, so `abi.rs`, `abi.h` and `abi.mjs` change in the contracts commit;
+  - tests that pin today's loud stops and EXIT_UNSUPPORTED (`syscall.c`, `syscall.test.mjs`, `spike.rs`, `store_check.rs`) were outside the owners' file lists;
+  - CI would have measured the Unix side `wine-unix.lock` names, not the PR's: conformance runs as `wine-unix.yml` jobs after `build`;
+  - l2_seh's work package also needs `prepare.sh`'s copy line, the catalog and `ci.yml`'s census and artifact lists.
+- Its should-fix items are in the plan: `CONTEXT_ALL`; `xstate_size` and `context_init_xstate` re-implemented; the dispatcher slots' loud stop kept; one address rule for store faults in both directions; `--env` for every variable and a `--dir` per unit; the test exes' catalog entries and translation budget; which units the checks rate counts; the record job's permissions, concurrency and first run. It corrected 9 line ranges and checked about 40 citations.
+
+### Workflow
+- **Claude Code 2.1.331-2.1.332:** skills from MCP servers, compaction and hook fixes. Leads only: no measured problem of ours. Not adopted.
+- **Trial 6's lead, measured again:** at the plan's approval the session had cost $14.17, with 35.7M cache reads and 322k output; the four agents read 27.2M (the Plan review 18.9M). The coordinator's context was 396k (M4: 363k).
+
+### Not adopted
+- **A separate `conformance.yml`** (M4's status note): `prepare.sh --fetch` takes the Unix side from `wine-unix.lock`, so a PR would measure the last release, not its own build. Jobs in `wine-unix.yml` after `build` measure the PR's.
+- **Raising every store into code as an access violation** (M4's known issues): Windows allows stores into `PAGE_EXECUTE_READWRITE` memory, so only pages without write access raise. Writable code keeps its loud stop until Phase 4's invalidation.
+- **A read-only bit in the store check,** so that stores into read-only data raise: no target needs it yet. It is recorded with Phase 4's fault kinds.

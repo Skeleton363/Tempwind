@@ -1,10 +1,11 @@
 # Phase 2 status: Wine underneath
 
-**Phase 2 is planned (2026-11-06). M1, "Wine in CI, and the boundary spike", is done (2026-11-13, merged as skeleton363/tempwind#10 and #11). M2, "Wine's Unix side boots", is done (2026-11-14, merged as skeleton363/tempwind#12 and #13). M3, "Boot: hello.exe on Wine", is done (2026-11-21, merged as skeleton363/tempwind#16). M4, "Console programs on Wine", is done (2026-11-27); its draft PR is open. M5, "Exceptions and conformance tracked", is next.**
+**Phase 2 is planned (2026-11-06). M1, "Wine in CI, and the boundary spike", is done (2026-11-13, merged as skeleton363/tempwind#10 and #11). M2, "Wine's Unix side boots", is done (2026-11-14, merged as skeleton363/tempwind#12 and #13). M3, "Boot: hello.exe on Wine", is done (2026-11-21, merged as skeleton363/tempwind#16). M4, "Console programs on Wine", is done (2026-11-27, merged as skeleton363/tempwind#17). M5, "Exceptions and conformance tracked", is planned (2026-11-28) and in progress.**
 - M1: WP1 (the Wine CI build), WP2 (the census, fixtures and translation of Wine's DLL closure) and WP3 (the boundary spike) are done.
 - M2: WP0 to WP5 are merged and the close is under "M2" below.
 - M3: the decisions and the work packages are under "M3" below.
 - M4: the decisions, the work packages and the close are under "M4" below, and its pauses and resumes under "M4 progress".
+- M5: the decisions, the contracts to write and the work packages are under "M5" below.
 
 The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pass is in `docs/dev/research.md`, "2026-11-06: Phase 2, Wine underneath". A new session starts only with a new milestone (the owner, 2026-11-07).
 
@@ -15,6 +16,8 @@ The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pas
 - **The same session, resumed 2026-11-13:** WP2's review follow-up, then the M1 close.
 - **Session 2 (from 2026-11-13), M2 only:** the research pass and the plan (three Explore runs and a Plan-agent review), a compaction at the plan's approval (trial 6), then the contracts and the work packages.
 - **Session 3 (from 2026-11-14), M3 only:** the research pass (three Explore runs read the sources, trial 6's lead) and the plan (a Plan-agent review), then a compaction before the contracts.
+- **Session 4 (from 2026-11-21), M4 only:** under "M4".
+- **Session 5 (from 2026-11-28), M5 only:** the research pass (three Explore runs) and the plan (a Plan-agent review, 6 blockers folded in), then a compaction before the contracts.
 
 ## Decisions taken when planning (2026-11-06)
 
@@ -1277,6 +1280,61 @@ The owner paused M4 during the cleanup pass. Both cleanup agents had reported; n
   - Both bench jobs run their own `prepare.sh --fetch`, 1.5 to 3 minutes each.
 - **The lock bump:** `wine-unix.lock` = `wine-unix-2aee661`. `wine-unix.yml` run 41 published it from `2aee661`, green with its matrix job, in 5 min 22 s. In the main tree, `prepare.sh --fetch` passed: without `--all`, its catalog covers the test programs' 61 modules. `test:wine` passed 62 of 62 on it.
 
+## M5: Exceptions and conformance tracked (in progress)
+
+Session 5 started fresh from M4's hand-off, on `claude/stoic-ride-hyjt1a` from `main` = `7bae322` (PR #17 merged). The research pass is in `docs/dev/research.md`, "2026-11-28: Phase 2 M5, exceptions and conformance": three Explore runs read the sources, and a Plan review found 6 blockers in the draft, all folded in below. Done when: a basic raise path through Wine's own dispatcher; `l2_seh.exe` matches native; both test exes run in CI, with rates tracked against the baselines.
+
+### Decisions taken when planning M5 (2026-11-28)
+**The owner's:**
+- **Conformance fixes cover port defects only.** WP5 fixes what ends a unit early or hangs because our port is wrong on a path Phase 2 covers: a crash, a hang, a wrong loud stop, or a wrong result from a syscall we implement. Each fix starts from a failing check. `KeUserModeCallback` and `\KnownDlls` come in if a unit needs them (M4's decision). Units blocked by later-phase features (child processes, rewritten code, debug registers, raw `syscall`, guard pages) are recorded with their cause.
+
+**Ours** (each becomes a contract line with its Wine citation; `sx.c` is `dlls/ntdll/unix/signal_x86_64.c`):
+1. **One frame writer, two entries** (`signal_wasm64.c`):
+   - `tw_raise_exception(state, rec)`, for faults in translated code: the CONTEXT (`CONTEXT_ALL`, as `save_context` gives, sx.c L974 and L1009) from the state block through `NtGetContextThread`'s conversion; then `setup_raise_exception`'s steps (L1567-1638): the 0x5c0-byte `exc_stack_layout` (L418-429) at `((rsp & ~15) - size - xstate_size) & ~63` through `virtual_setup_exception` (virtual.c L4601-4646), as Wine calls it; the record, the context and the machine frame's rip and rsp; RIP = `pKiUserExceptionDispatcher`, RSP = the layout, TF, DF and AC cleared (L1627-1631), and the lazy flags record reset. `xstate_size` (64 by default, L525; from KUSER, L2838) and `context_init_xstate` (L568-593) are re-implemented, since `sx.c` isn't compiled. **No `Rip--`:** the translator's RIP is already the int3's.
+   - `call_user_exception_dispatcher(rec, context)`, `NtRaiseException`'s first chance (thread.c L1609-1628): Wine's L1720-1749 against the frame record, with its `Rip--` for BREAKPOINT (L1740-1741), returning by the dispatcher's new-context path as M4's APC dispatcher does.
+   - `call_raise_user_exception_dispatcher` stays a loud stop: its only caller is `NtClose` under a debugger (`unix/server.c` L1952-1960).
+2. **The run loop raises** (`run.c`):
+   - EXIT_FAULT by its kind: a NULL read or write → access violation, [0] = 0 or 1, [1] = the address (sx.c L2431-2434); #DE → `EXCEPTION_INT_DIVIDE_BY_ZERO` (Linux's `FPE_INTDIV` for both causes, L2531-2532); #UD → `EXCEPTION_ILLEGAL_INSTRUCTION` (L2411-2413); #GP → access violation, [0] = 0, [1] = ~0 (L2417-2428); int3 → `EXCEPTION_BREAKPOINT`, one parameter, 0 (L2500-2506).
+   - EXIT_LEFT_CODE with no executable run at rip → access violation, [0] = 8 (DEP is on: `execute_flags`, `unix/process.c` L77; sx.c L2440-2447), [1] = rip. The dispatcher slots 0x7ffe_1100 and 0x7ffe_1110 keep their loud stop (`abi.md`, "Addresses").
+   - A store-check fault → access violation, [0] = 1, when Wine's vprot for the page has neither `VPROT_WRITE` nor `VPROT_WRITECOPY` (image code, as on Windows). Otherwise the loud stop stays: writable code and write-watch pages wait for Phase 4.
+3. **The translator** (`abi.md` v5's M5 parts): `int3` lowers to `Term::Fault` with `FAULT_BREAKPOINT` = 7 and RIP at the int3, still outside scope S (no fixtures). Store-check hits become EXIT_FAULT with `FAULT_CODE_WRITE` = 8 (site kind 3) and the lowest address of the store's range on a marked page, in both directions, as the NULL check reports a range's low end (`spike.rs` L167-178); for DF = 1 that differs from the CPU. The `rep` page walk stops at the page-state table's end and faults there (M3's for M5). The contracts commit adds kinds 7 and 8 to `abi.rs`, the generated `abi.h` and `abi.mjs`.
+4. **Stubs raise as Wine's:** the 6 table-0 and 1,062 table-1 stub wrappers call `tw_stub_syscall(module, name)`, which takes the steps of `stub_syscall` (`unix/loader.c` L115-135; `win32u/syscall.c` L39-59): `EXCEPTION_WINE_STUB`, noncontinuable, the module and function names, the address from `NtGetContextThread`, `NtRaiseException(…, TRUE)`.
+5. **Unhandled exceptions end the process as on Wine.** Wine's `test.h` sets `SEM_NOGPFAULTERRORBOX` (L887), so kernelbase's `UnhandledExceptionFilter` returns EXECUTE_HANDLER before it would start winedbg (`kernelbase/debug.c` L783-785), and the process ends with the exception code (`ntdll/exception.c` L403-419): such a unit is `crashed`. A unit that reaches a Wine stub prints "wine: Call from … to unimplemented function" (exception.c L199-208) and ends with 0x80000100, as under native Wine. A program without that error mode would start winedbg through `CreateProcessW` and meet `NtCreateUserProcess`'s loud line; l2_seh sets a top filter.
+6. **Not raised in M5:** `int imm8` (29h, 2Ch, 2Dh), privileged instructions, raw `syscall`, TF single step and debug registers, and wasm out-of-bounds traps, which end the process. Not detected: stores to read-only data pages and reads of uncommitted pages. Also later: guard pages and stack overflow, ATL thunk emulation (sx.c L2446-2449), a `rep` store's partial progress, and RMW faults, which the NULL check reports as writes.
+7. **`l2_seh.exe`** (`tests/native/l2_seh.c`): top-level asm helpers with their own `.seh_proc` (one `.seh_handler … @except`, one `@unwind`) call each case; the non-static C handler prints the record and continues (`ExceptionContinueExecution`; int3 with Rip + 1) or unwinds to the helper with `RtlUnwind(frame, recover, rec, value)`. The cases: `RaiseException` with parameters (continue); a NULL read, a NULL write, a call through NULL, divide by zero, `ud2`, `int3` and a store into its own `.text`; a fault three frames deep, with nonvolatile registers checked after the unwind and a termination handler that runs; last, an unhandled `RaiseException(0x2A)` whose top filter returns EXECUTE_HANDLER, so the exit code is 42 on all three platforms. stdout is unbuffered. It prints only what windows-2025 and native Wine 11 agree on: no addresses, and no `INT_MIN / -1`, where Windows may report `INT_OVERFLOW`. BREAKPOINT's parameter count stays if windows-2025 agrees.
+8. **Conformance runs** (`wine-build.md`, "Conformance runs (M5)"):
+   - `tests/conformance/run-baseline.mjs --platform tempwind` runs each unit in its own `run-wine.mjs --stats` process with a fresh `--dir`, `--cwd C:\work`, and every variable through `--env`: the matrix's translated environment from one shared module (`TZ=UTC`, `WINEDEBUG=-all`; M4's lead) plus `WINETEST_DEBUG=1` and `WINETEST_PLATFORM=wine`. A unit is killed at 300 s (`timeout`); `--jobs N`. The full status from `--stats` feeds `parse.mjs`'s rules, since the exit code keeps 8 bits. An optional per-unit `cause` holds the exception code, a "wine: Call from" line or the first `tempwind:` line.
+   - The two test exes join the catalog explicitly (`catalog.mjs --tests`), since its `lib/` filter (L71) drops `tests/`. Budget: about 40 MB of wasm translated per run, and a 23 MB module compiled in each unit's process.
+   - **Rates,** per exe: units ok / units listed; checks (executed − failures) / executed, over every unit's summary lines whatever its status; and against each baseline, units ok in both / units ok in the baseline.
+   - **CI: jobs in `wine-unix.yml`,** after `build` and from its artifacts, as `sevenzip-matrix` does, so a PR measures its own Unix side; `prepare.sh --fetch` would take `wine-unix.lock`'s. PRs warn: a unit ok in `conformance-data`'s latest record and not ok here, or the checks rate down past a stated margin; with no record yet, nothing warns. Main pushes append to the orphan branch `conformance-data` from a `record` job with job-level `contents: write`, a concurrency group and push retries (`bench.yml` L149-192), with `wine-unix.yml`'s guard for `claude/` PRs (L82). The jobs fail only when the runner itself fails.
+   - `run-wine.mjs` reports Wine's own `exit()`/`_exit()` with its status (M3's for M5).
+9. **Leftovers:** the `rep` bound (WP2), `tw_translate`'s order (WP1, `wine-process.mjs` L184), `run-wine.mjs`'s exit (WP4). `sleep_ns`'s EINTR, SIGQUIT before `init_thread`, `times()` and SIGUSR1 on a unix call's frame only if a unit reaches them (WP5).
+
+### Contracts (the coordinator's, committed before any agent starts)
+- `wine-unix.md` v4: sections 10 (the `exception` checks, l2_seh), 11 ("Exceptions (M5)": decisions 1, 4 and 5), 12 (decision 2) and 13 (decision 6).
+- `abi.md` v5's M5 parts: fault kinds 7 and 8, store-check hits and int3 under "Exit reasons", "Settled in M5"; with `abi.rs`, the regenerated `abi.h` and `abi.mjs`.
+- `translator.md` (int3, the store fault and its address, the `rep` bound) and `instruction-scope.md` (int3 lowered as a fault, still outside S).
+- `wine-build.md`, "Conformance runs (M5)" (decision 8).
+
+### Work packages
+At most two deep-workers at once and three subagents in all. Each brief resets its worktree to the PR branch's head, names its files, contract sections, tests and WIP track `m5-wpN-wip`, and says to convert every test that pins today's behavior rather than delete it. This table is the only copy kept current.
+
+| WP | Agent | When | Owns | Done when |
+|---|---|---|---|---|
+| WP1: the raise path | deep-worker | after the contracts | decisions 1, 2 and 4, and `tw_translate`'s order: `signal_wasm64.c`, `run.c`, `gen-syscalls.mjs`, `tempwind_private.h`, `native/wine/tests/exception.c` (new) and `syscall.c` (`stub_stops` L262, `table1_stub_stops` L540), `tests/wine/exception.test.mjs` (new) and `syscall.test.mjs` (L42, L48), `runtime/src/wine/wine-process.mjs` (L184) | the `exception` checks: the layout's offsets, each kind's record, the first chance, a stub's record, the unhandled end with the code; the stub checks converted; `test:wine` green |
+| WP2: the translator | deep-worker | after the contracts, in parallel | decision 3: `crates/x64wasm/**` (`emit.rs`'s sites L853 and L896, `$fault` L759-786), `crates/x64wasm/tests/store_check.rs` (L92-214), `crates/testkit/tests/spike.rs` (L143, L182-195) | Rust tests for int3, the store fault's kind and address (single, straddling, `rep` in both directions) and the `rep` bound, failing on today's code; the old tests converted; L5 snapshots reviewed; replay 100 %; census `--check` |
+| WP3: l2_seh | builder | after the contracts, in parallel | decision 7: `tests/native/l2_seh.c`, `.expected`, `.exitcode`; `tests/native/build.sh` and its sha256 line; `ci.yml`'s census list (L94-97), `l2-exes` artifact (L196-201) and Windows loop (L259); `tests/wine/prepare.sh`'s copy line (L113); `catalog.mjs` PROGRAMS; `programs.test.mjs` (the entry joins when it passes) | the same stdout and exit code under native Wine 11 here and on windows-2025 in CI |
+| WP4: the conformance runner and CI | builder | after WP3 merges (they share `catalog.mjs` and `prepare.sh`) | decision 8: `tests/conformance/*`, the shared environment module with `tests/sevenzip/matrix.mjs`, `catalog.mjs --tests`, `prepare.sh`, `run-wine.mjs`'s exit, `wine-unix.yml`'s conformance and record jobs, unit tests in `tests/node/`, `docs/dev/commands.md` | a full local run of both exes on the port as it is (the "before" table and its times); the workflow steps run locally with stub tools; CI green |
+| WP5: triage | deep-worker | after WP1, WP2 and WP4 merge and the lock bump | the owner's decision: the first full table (status and cause per unit); fixes through `/diverge`, each from a failing check | the table in this note; each in-scope cause fixed or recorded with its reason |
+| Cleanup (trial 8) | `/simplify` reviewers, a builder | after WP5 | the milestone's added and changed code | each finding applied, or skipped with its reason |
+
+- **Hand-offs:** WP1 and WP4 may both touch `wine-process.mjs`; the coordinator resolves the merge. If WP1's checks need a fault program of their own, it is built through `prepare.sh` after WP3's merge.
+- **Order:** the contracts; WP1, WP2 and WP3 in parallel; WP4 after WP3's merge. After WP1-WP3 merge, the coordinator checks l2_seh on our Wine (a miss goes back to WP1 or to a `/diverge` run), pushes so `wine-unix.yml` publishes, and bumps `tests/targets/wine-unix.lock` after a whole green run. WP5's brief comes from the first full table. Then the cleanup pass (trial 8) and `/milestone-close`.
+- **Inputs** (a fresh container): as "Next step" lists them, plus `target/wine/pe/tests/` from `tests/wine/prepare.sh --fetch --all` for the test exes.
+
+### Checkpoints (trial 6)
+- **At the plan's approval:** 396k tokens; segment 0, 47 requests, mean 258k, max 396k, 11.8M cache reads. The planning stretch: $14.17 and 35.7M cache reads (`get_session`), 27.2M of them the four agents' (the Plan review 18.9M). A compaction is asked for at once.
+
 ## What works
 
 | Item | Evidence |
@@ -1422,6 +1480,8 @@ The owner paused M4 during the cleanup pass. Both cleanup agents had reported; n
   - calls and floating point are slow.
 
 ## Next step: M5, "Exceptions and conformance tracked", in a new session
+
+**M5 is in progress** (2026-11-28): its decisions, the contracts to write first and the work-package table are under "M5" above. The rest of this section is M4's hand-off.
 
 **M4 is done: the 7-Zip matrix gives 138 of 138 on Wine, CoreMark validates, both benchmarks are tracked on Wine, win32u loads, guest threads are green threads, and the shim is deleted.** Its draft PR, "[Phase 2] Console programs on Wine", waits for the owner's review and merge. It asks for a human review of `signal_wasm64.c`, `green.c` and `green_pthread.c`. M5 starts from `main` after it.
 
