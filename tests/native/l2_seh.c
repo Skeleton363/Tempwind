@@ -34,7 +34,8 @@ EXCEPTION_DISPOSITION seh_except_handler(EXCEPTION_RECORD *rec, void *frame, CON
     if (rec->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND)) return ExceptionContinueSearch;
     g_hits++;
     g_rec.code = rec->ExceptionCode;
-    g_rec.flags = rec->ExceptionFlags;
+    /* Windows sets 0x80 (software originated) on RaiseException's records; Wine doesn't. Not compared. */
+    g_rec.flags = rec->ExceptionFlags & ~0x80u;
     g_rec.nparams = rec->NumberParameters;
     memcpy(g_rec.params, rec->ExceptionInformation, sizeof g_rec.params);
     g_rec.addr = (ULONG_PTR)rec->ExceptionAddress;
@@ -201,7 +202,7 @@ static __attribute__((noinline)) void lvl1(void) {
 
 static LONG WINAPI top_filter(EXCEPTION_POINTERS *ep) {
     printf("top filter: code=%08lx flags=%lx nparams=%lu\n", (unsigned long)ep->ExceptionRecord->ExceptionCode,
-           (unsigned long)ep->ExceptionRecord->ExceptionFlags, (unsigned long)ep->ExceptionRecord->NumberParameters);
+           (unsigned long)(ep->ExceptionRecord->ExceptionFlags & ~0x80u), (unsigned long)ep->ExceptionRecord->NumberParameters);
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
