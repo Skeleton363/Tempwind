@@ -1334,6 +1334,31 @@ At most two deep-workers at once and three subagents in all. Each brief resets i
 
 ### Checkpoints (trial 6)
 - **At the plan's approval:** 396k tokens; segment 0, 47 requests, mean 258k, max 396k, 11.8M cache reads. The planning stretch: $14.17 and 35.7M cache reads (`get_session`), 27.2M of them the four agents' (the Plan review 18.9M). A compaction is asked for at once.
+- **Contracts pushed** (`3ecd685`, after the owner's `/compact`): 269k tokens, segment 1.
+
+### Decided while writing the contracts (2026-11-28)
+- **The store check's site:** site 2 of `$fault`'s status, which only the store checks use, now means `FAULT_CODE_WRITE` (the plan said "site kind 3"; the number is WP2's, the exit is the contract). `translator.md`, "Memory checks".
+- **The `rep` bound:** in a `rep` range's walk, pages at or above 16 GiB count as marked, so a range that reaches 16 GiB with no marked page below faults with `FAULT_CODE_WRITE` at max(low end, 16 GiB), and the run loop raises a write access violation there (Wine has no view). A single store's check stays as it is.
+- **The execute fault's [0]** is 8, or 0 when the process's execute flags lack `MEM_EXECUTE_OPTION_DISABLE`, queried as Wine does (`sx.c` L2440-2447).
+- **A stub's wrapper** returns 0 after `tw_stub_syscall`; the new-context return enters `KiUserExceptionDispatcher`.
+- **`tw_translate`'s fix** is stated as its outcome: a translation with no block at rip links nothing and marks no page.
+- **Conformance names** (`wine-build.md`, "Conformance runs (M5)"): the shared environment module `tests/wine/translated-env.mjs`; `prepare.sh --tests`; `tests/conformance/rates.mjs`; a 0.5-point margin for the checks-rate warning; `exit` −1 for a run with no status; `cause`'s rules; `conformance.jsonl` and `results/<sha7>/` on `conformance-data`, with the record line's fields.
+
+## M5 progress (paused 2026-11-28)
+**Committed and pushed** on `claude/stoic-ride-hyjt1a`:
+- `38fb21f`: the plan, the research pass (`docs/dev/research.md`, "2026-11-28") and the planning ledger lines;
+- `56a60e3`: `FAULT_BREAKPOINT` 7 and `FAULT_CODE_WRITE` 8 in `abi.rs`, the generated `abi.h` and `abi.mjs`, and `abi.md`'s M5 parts. Passing: `cargo test -p x64wasm --test c_header`, `node --test tests/node/abi-header.test.mjs`, `cargo fmt --all --check`;
+- `3ecd685`: the contracts. `wine-unix.md` v4 (section 10 "The M5 checks", section 11 "Exceptions", section 12 "The records", section 13 "Exceptions beyond M5's basic path"); `translator.md` ("Faults", "Memory checks"); `instruction-scope.md`; `wine-build.md` ("Conformance runs (M5)"); `guest-memory.md`; `ARCHITECTURE.md`.
+
+**In progress:** nothing. No agent was started, and the tree is clean. No code of M5 is written yet.
+
+**How to resume** (a fresh session, from `claude/stoic-ride-hyjt1a`'s head):
+1. Read this M5 section (decisions, "Decided while writing the contracts", the work-package table), then the contract sections each brief names. The approved plan's full text is this section; nothing else is needed.
+2. **Brief WP1, WP2 and WP3 in parallel** (at most two deep-workers), each from its row of the work-package table above. Each brief: first reset the worktree to the PR branch's head (`git fetch origin claude/stoic-ride-hyjt1a && git reset --hard FETCH_HEAD`); the files it owns; its contract sections; the tests that decide "done"; WIP track `m5-wpN-wip`; convert every test that pins the old behavior, never delete it; report in about 150 words.
+   - **WP1 (deep-worker), the raise path:** `wine-unix.md` v4 sections 10-13, `abi.md` "Exit reasons" and "Who calls whom". Build with `native/wine/build.sh` (Emscripten through Docker, about 15 s warm); test with `npm run test:wine` after `tests/wine/prepare.sh --fetch --all` has filled `target/wine` (then rebuild the Unix side into `target/wine-unix`). Wine 11's source is the dl.winehq.org tarball (`tests/targets/sources.json`), unpacked in the scratchpad, for the cited lines.
+   - **WP2 (deep-worker), the translator:** `translator.md` "Faults" and "Memory checks", `abi.md` "Exit reasons" and "CPU state block". Tests: new Rust tests that fail on today's code (int3; the store fault's kind and address: single, straddling, `rep` both directions; the bound), the converted `store_check.rs` and `spike.rs` tests, `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`, L5 snapshots reviewed, replay 100 %, census `--check`. The `int3` count in `instruction-scope.md`'s closure paragraph (12 unsupported sites) changes with it.
+   - **WP3 (builder), `l2_seh.exe`:** decision 7; `tests/native/build.sh`, native Wine 11 as `docs/dev/commands.md` runs `l2_threads`, and windows-2025 through `ci.yml`.
+3. WP4 after WP3's merge; then the checkpoint, WP5, the cleanup pass and `/milestone-close`, as "Order" above says. Log each finished agent run in `docs/dev/agent-runs.jsonl`.
 
 ## What works
 
@@ -1481,7 +1506,7 @@ At most two deep-workers at once and three subagents in all. Each brief resets i
 
 ## Next step: M5, "Exceptions and conformance tracked", in a new session
 
-**M5 is in progress** (2026-11-28): its decisions, the contracts to write first and the work-package table are under "M5" above. The rest of this section is M4's hand-off.
+**M5 is in progress, paused** (2026-11-28): its decisions and work-package table are under "M5" above, its contracts are committed, and "M5 progress (paused 2026-11-28)" says how to resume. The rest of this section is M4's hand-off.
 
 **M4 is done: the 7-Zip matrix gives 138 of 138 on Wine, CoreMark validates, both benchmarks are tracked on Wine, win32u loads, guest threads are green threads, and the shim is deleted.** Its draft PR, "[Phase 2] Console programs on Wine", waits for the owner's review and merge. It asks for a human review of `signal_wasm64.c`, `green.c` and `green_pthread.c`. M5 starts from `main` after it.
 
