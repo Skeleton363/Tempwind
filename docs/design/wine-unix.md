@@ -1,6 +1,6 @@
-# Wine's Unix side with Emscripten (v3, Phase 2 M4)
+# Wine's Unix side with Emscripten (v4, Phase 2 M5)
 
-Wine 11's ntdll Unix part, wineserver and win32u's Unix part, built with Emscripten as one wasm64 module that runs in the Windows process's Worker. This is the contract for M2's to M4's work packages and the base M5 builds on. The boundary to translated code is `abi.md` v5, "Wine boundary"; the address space is `guest-memory.md`; the Wine CI build, its published data and the packaging for this module are `wine-build.md`. The decisions behind it are in `docs/status/phase-2.md`, and the research in `docs/dev/research.md` (2026-11-06, 2026-11-13, 2026-11-14 and 2026-11-21).
+Wine 11's ntdll Unix part, wineserver and win32u's Unix part, built with Emscripten as one wasm64 module that runs in the Windows process's Worker. This is the contract for M2's to M5's work packages and the base M6 builds on. The boundary to translated code is `abi.md` v5, "Wine boundary"; the address space is `guest-memory.md`; the Wine CI build, its published data and the packaging for this module are `wine-build.md`. The decisions behind it are in `docs/status/phase-2.md`, and the research in `docs/dev/research.md` (2026-11-06, 2026-11-13, 2026-11-14, 2026-11-21 and 2026-11-28).
 
 - **v1 (M2)** booted to `LdrInitializeThunk`.
 - **v2 (M3)** runs guest code to process exit. It adds:
@@ -17,6 +17,11 @@ Wine 11's ntdll Unix part, wineserver and win32u's Unix part, built with Emscrip
   - win32u's Unix side, its static unix library table and syscall table 1 (sections 2 and 11);
   - the session's shared memory as one memory (section 7);
   - what is deferred, and to when (section 13).
+- **v4 (M5)** raises Windows exceptions through Wine's own dispatcher. It adds:
+  - the raise from translated code's faults, `NtRaiseException`'s first chance, and the syscall stubs of both tables raising as Wine's do (section 11, "Exceptions");
+  - the run loop's exception records, and the execute and store faults it raises (section 12);
+  - the `exception` checks and `l2_seh.exe` (section 10);
+  - what is still not raised, and to when (section 13).
 
 Line numbers refer to the pristine wine-11.0 tarball.
 
@@ -440,7 +445,16 @@ Line numbers are in `dlls/ntdll/unix/thread.c` unless another file is named; `sx
     - Without guest code, `pKiUserApcDispatcher` is a sentinel the harness sets: the check reads the `apc_stack_layout` that `call_user_apc_dispatcher` wrote below the thread's RSP, then does what PE `KiUserApcDispatcher` does after the APC, `NtContinueEx` with the layout's context and continue argument, and checks that the state block is back with RAX = `STATUS_USER_APC`.
   - `syscall` (WP2): a table-1 call through its wrapper before and after `KeAddSystemServiceTable` (`STATUS_INVALID_SYSTEM_SERVICE`, then the call); a table-1 stub's loud stop, alone; a unix call to win32u's table, and a code past it stopping loudly.
   - `session` (WP2): after the server has set the session up, `tw_session_view` reads the bytes the server wrote, at the start and in a grown block; a view past the cap and one before the setup stop loudly, each alone.
-- **Programs (M3, M4):** `tests/wine/programs.test.mjs` runs hello.exe, l2_int, l2_crt and l2_float, and from M4 `basic.exe` (exit 42), `l2_threads`, `l2_suspend` and CoreMark with a small fixed iteration count.
+- **The M5 checks:**
+  - `exception` (WP1), on synthetic state blocks with no guest code. `pKiUserExceptionDispatcher` is a sentinel the harness sets, as `signal`'s APC check does, so each check reads what the raise wrote: the layout below the guest's RSP and the state block that would enter PE `KiUserExceptionDispatcher` (section 11, "Exceptions").
+    - **The layout:** `exc_stack_layout`'s offsets and size (context 0x000, `CONTEXT_EX` 0x4d0, record 0x4f0, machine frame 0x590, 0x5c0 in all) and its address, `(rsp - 0x5c0 - 64) & ~63`, for an RSP on each 8-byte offset of a 64-byte line; the `CONTEXT_EX` of `context_init_xstate`'s branch without an xstate buffer; the machine frame's rip and rsp; and the state block after it: RIP = the sentinel, RSP = the layout, RBP unchanged, TF, DF and AC cleared, `cc_op` 0.
+    - **The context in the layout** is the state block's from before the fault: every GPR, RIP, RSP and EFlags, the segments of section 3, MXCSR, the x87 registers and tags and XMM0-15, with `ContextFlags` = `CONTEXT_ALL` and zero debug registers.
+    - **Each kind's record,** through the run loop's raise for each exit (section 12): the eight fault kinds, an execute fault at an address with no executable pages, and the DEP flag's two values for it. A store-check fault on a page Wine has writable, a kind the run loop doesn't know and the dispatcher addresses each stop loudly, alone.
+    - **The first chance:** `NtRaiseException(rec, context, TRUE)` through the syscall dispatcher, on a synthetic frame. The layout goes below the context's RSP (not the frame's), `EXCEPTION_BREAKPOINT` backs the layout's Rip up by one as Wine's does, RBP is the context's, and the dispatcher takes its new-context return to the sentinel.
+    - **The stubs:** a table-0 stub and a table-1 stub, through their wrappers, raise `EXCEPTION_WINE_STUB`, noncontinuable, with two parameters that point at `"ntdll"` or `"win32u"` and at the stub's name, and `ExceptionAddress` = the context's Rip.
+    - **The second chance,** alone: `NtRaiseException(…, FALSE)` ends the process with the exception code as its status, after Wine's `ERR` line and with no `tempwind:` line.
+  - `syscall`: M3's and M4's stub checks (`stub_stops`, `table1_stub_stops`) stopped loudly. They are converted, not deleted: each now asserts that the stub raises, through the dispatcher's new-context return, and no longer stops.
+- **Programs (M3 to M5):** `tests/wine/programs.test.mjs` runs hello.exe, l2_int, l2_crt and l2_float, from M4 `basic.exe` (exit 42), `l2_threads`, `l2_suspend` and CoreMark with a small fixed iteration count, and from M5 `l2_seh` (exit 42; its cases are in `docs/status/phase-2.md`, M5's decision 7).
   - Every image mapped links its AOT module (no image fallbacks; apisetschema is data), and the modules linked are the program's list in the test: the PE modules our boot maps for it. For hello, the L2 programs and CoreMark that is the five of `closure.json`; for basic.exe, its static closure: the exe, ntdll, kernelbase and kernel32. `closure.json`'s list can be longer than ours: its dynamic edges come from native runs, and basic.exe's caught a prefix's first boot, wineboot and services included (54 modules).
   - CoreMark passes with no `ERROR!` line other than its 10 s notice (no list, matrix or state CRC error), the seed CRC it prints for the standard seeds (`0x0 0x0 0x66`), 0xe9f5 as `tests/targets/smoke.sh` checks, and exit status 0. "Correct operation validated" needs a run of 10 s or more, which the benchmark makes (`runtime.md`, "Benchmarks").
   - 7zz.exe's test is the matrix (`tests/sevenzip/README.md`).
@@ -454,7 +468,7 @@ Line numbers are in `dlls/ntdll/unix/thread.c` unless another file is named; `sx
 - **`tests/wine/prepare.sh` (M3)** also builds the L2 programs, rebases the closure, and builds the catalog and the boot-set manifest (`wine-build.md`, "Packaging").
   - **From M4** it also fetches `7zz.exe` and `coremark.exe` from `targets.lock`'s release, takes `basic.exe` from `tests/pe`'s build, and builds `l2_threads` and `l2_suspend`, so the catalog covers every program the tests run (`wine-build.md`, "The catalog").
 
-## 11. Syscalls, unix calls and contexts (M3, M4)
+## 11. Syscalls, unix calls, contexts and exceptions (M3 to M5)
 `src/signal_wasm64.c` and the generated `DIR/gen/syscall_table.c`. The boundary (addresses, entry, frame record, returns) is `abi.md` v5, "Syscalls and unix calls". This section is the C behind it. Line numbers are in `dlls/ntdll/unix/signal_x86_64.c` unless another file is named.
 
 **The syscall table:**
@@ -468,10 +482,10 @@ Line numbers are in `dlls/ntdll/unix/thread.c` unless another file is named; `sx
   - every entry other than a stub has a prototype, and its parameter count equals `argbytes / 8`;
   - every parameter is a scalar or a pointer, except `NtSetLdtEntries`'s two `LDT_ENTRY`s, passed by value (`winternl.h` L4797). The wrapper copies each from its 8-byte argument;
   - every return type is `NTSTATUS`, except `NtGetCurrentProcessorNumber`'s `ULONG`, which the wrapper zero-extends.
-- **The six stubs:** `ALL_SYSCALL_STUBS` (`ntsyscalls.h` L531-537) are `static void name(void)` functions that raise a Wine stub exception (`unix/loader.c` L115-139). Their wrappers stop loudly with `tempwind: unsupported: syscall <name>` until M5.
+- **The six stubs:** `ALL_SYSCALL_STUBS` (`ntsyscalls.h` L531-537) are `static void name(void)` functions that raise a Wine stub exception (`unix/loader.c` L115-139). Until M5 their wrappers stopped loudly with `tempwind: unsupported: syscall <name>`. From M5 they raise as Wine's do ("Exceptions" below).
 - **Table 1, win32u's (M4):**
   - **Wine's:** win32u's unix call 0, `init`, registers its table with `KeAddSystemServiceTable(syscalls, NULL, ARRAY_SIZE(syscalls), arguments, 1)` (`win32u/syscall.c` L92-106; `unix/loader.c` L625-634). The table has 1,540 x86-64 entries, `SYSCALL_ENTRY(id, name, argbytes)` (`win32syscalls.h` L1545-3085).
-  - **1,062 of them are stubs** (`ALL_SYSCALL_STUBS`, `win32syscalls.h` L3089): `static void name(void)` functions that raise a Wine stub exception (`win32u/syscall.c` L39-61). Their wrappers stop loudly with `tempwind: unsupported: win32u syscall <name>` until M5, as table 0's six do.
+  - **1,062 of them are stubs** (`ALL_SYSCALL_STUBS`, `win32syscalls.h` L3089): `static void name(void)` functions that raise a Wine stub exception (`win32u/syscall.c` L39-61). Until M5 their wrappers stopped loudly with `tempwind: unsupported: win32u syscall <name>`, as table 0's six did. From M5 they raise as table 0's do.
   - **The other 478** have prototypes in `include/ntuser.h` and `include/ntgdi.h`, none with a struct or a float passed by value. The generator writes their wrappers as for table 0, with every return narrower than 64 bits zero-extended and a `void` return as 0, into a second table, `tw_win32_syscall_*`, in the same file.
   - **Gate 4 for table 1:** every entry is either a stub or has a prototype whose parameter count equals `argbytes / 8`, and every parameter is a scalar or a pointer. The generator prints the split, 1,062 and 478.
 - **Tables 2 and 3** stay empty. A call into one returns `STATUS_INVALID_SYSTEM_SERVICE` (step 3 below); a call into one that something registered stops loudly.
@@ -522,22 +536,64 @@ Line numbers are in `dlls/ntdll/unix/thread.c` unless another file is named; `sx
 - **Ours:** `NtGetContextThread` and `NtSetContextThread` on another thread take Wine's path for a handle that isn't the current thread (L1116-1208, L1215-1346): the server request, and the wait when the target hasn't stopped yet. The target stops at its next delivery point. A suspended start runs `wait_suspend` before the thread's first guest instruction (`sx.c` L2957; `unix/thread.c` L1532-1542).
 - **What the server keeps:** the context the target posted is the one its state block held at the delivery point, so another thread's Get and Set round-trip the target's registers.
 
+**Exceptions (M5, WP1):** `signal_wasm64.c`, with the run loop's records in section 12.
+- **Wine's path, natively.** A fault in guest code reaches a signal handler, which builds the `EXCEPTION_RECORD` from the trap, with `ExceptionAddress` = the faulting RIP (`segv_handler` L2394-2476, `trap_handler` L2484-2510, `fpe_handler` L2518-2566), and calls `setup_raise_exception` (L1567-1638):
+  1. `send_debug_event` (`unix/thread.c` L1550-1603), which returns 0 at once without a debugger (L1559);
+  2. for `EXCEPTION_BREAKPOINT`, `context->Rip--` (L1601-1602): the CPU left RIP after the `int3`, and `trap_handler` backed `ExceptionAddress` up over it (L2501), so both name the `int3`;
+  3. `rsp &= ~15`, and the `exc_stack_layout` (L418-429: the CONTEXT at 0x000, a `CONTEXT_EX` at 0x4d0, the record at 0x4f0, the machine frame at 0x590, 0x5c0 bytes) at `(rsp - 0x5c0 - xstate_size) & ~63`, through `virtual_setup_exception` (`unix/virtual.c` L4601-4646), which checks it against the thread's stack: outside the stack a WARN and on (L4606-4617), on the stack's last page `abort_thread(1)` (L4621-4628), below the stack limit a guard page grown into `STATUS_STACK_OVERFLOW` (L4629-4639);
+  4. the record, the context and the machine frame's rip and rsp copied (L1608-1611), and `context_init_xstate` (L568-593) on the copy; a context without `CONTEXT_XSTATE` takes its branch without a buffer (L584-590; `xstate_from_context` L560-566, L1613-1625);
+  5. the signal returns to RIP = `pKiUserExceptionDispatcher` with RSP = the layout, and TF, DF and AC cleared (L1627-1631). An instrumentation callback would come first (L1632-1636).
+
+  The context is `save_context`'s (L970-1034): `CONTROL | INTEGER | SEGMENTS | DEBUG_REGISTERS` (L974), and `FLOATING_POINT` (L1009), which is `CONTEXT_ALL`.
+- **`NtRaiseException`** (`unix/thread.c` L1609-1628, compiled as is): after `send_debug_event`, the first chance calls `call_user_exception_dispatcher` (L1616); the second prints an `ERR` line and calls `NtTerminateProcess(self, code)` (L1618-1626).
+- **The PE side** is unchanged Wine, translated: `KiUserExceptionDispatcher` (PE `signal_x86_64.c` L341-376) calls `dispatch_exception` (`dlls/ntdll/exception.c` L192-257): the vectored handlers, then `call_seh_handlers` (PE `signal_x86_64.c` L235-335) over the `.pdata` of each frame, then `NtContinue`, or else `NtRaiseException(…, FALSE)`. `RtlRaiseException` dispatches in PE code without a syscall when no debugger is attached (L825-848), so `RaiseException` never reaches the Unix side. An unwind ends in `RtlRestoreContext` and `NtContinue` (L646-684, L690-819).
+- **Ours, from translated code's faults: `tw_raise_exception(state, rec)`** (`tempwind_private.h`). The run loop calls it with the record of section 12 (`ExceptionAddress` = `state.rip`), and goes on running the state block. It takes `setup_raise_exception`'s steps against the state block:
+  1. the CONTEXT from the state block, with `NtGetContextThread`'s conversion (above) and `ContextFlags` = `CONTEXT_ALL`, as `save_context` gives; `run` has materialized RFLAGS on its exit;
+  2. `send_debug_event(rec, context, TRUE, TRUE)` as Wine calls it (L1594): `DBG_CONTINUE` or `DBG_EXCEPTION_HANDLED` would resume the context unchanged;
+  3. **no `Rip--`:** the translator's RIP is already the `int3`'s (`translator.md`, "Faults"), so `ExceptionAddress` and the context's Rip both name it, as on Wine;
+  4. the layout through `virtual_setup_exception`, as Wine calls it (L1604-1607), and steps 3 and 4 above. `xstate_size` and `context_init_xstate` are re-implemented, since `sx.c` isn't compiled: 64, `sizeof(XSAVE_AREA_HEADER)` (L525), unless KUSER's `XState.Size` is set (L2838). The profile has no OSXSAVE, so Wine never fills `XState` (`unix/system.c` L534-535) and the size stays 64. The context has no `CONTEXT_XSTATE`;
+  5. the state block's RIP = `pKiUserExceptionDispatcher`, RSP = the layout, RFLAGS with TF, DF and AC cleared, and the lazy flags record reset (`cc_op` 0, `cc_a` = RFLAGS), as the dispatcher's new-context return does. The other registers are left as they were. `set_process_instrumentation_callback` stops loudly, so there is no callback.
+- **Ours, the first chance: `call_user_exception_dispatcher(rec, context)`** takes Wine's steps (L1720-1749) against the frame record and the state block, as `call_user_apc_dispatcher` does: `NtSetContextThread` of the current thread with the context; the layout at `(context->Rsp - 0x5c0 - xstate_size) & ~63`; the context, the `CONTEXT_EX` and the record copied; `Rip--` on the layout's context for `EXCEPTION_BREAKPOINT` (L1740-1741, Wine's, kept); the machine frame; then RBP = the context's, RSP = the layout, RIP = `pKiUserExceptionDispatcher` and `restore_flags |= CONTEXT_CONTROL`, so the dispatcher takes its new-context return. It returns `NtSetContextThread`'s status.
+- **`call_raise_user_exception_dispatcher`** stays a loud stop: its only caller is `NtClose` of a bad handle under a debugger (`unix/server.c` L1952-1960).
+- **The stubs: `tw_stub_syscall(module, name)`,** which the 6 table-0 and the 1,062 table-1 stub wrappers call with `"ntdll"` or `"win32u"` and the stub's name. It takes `stub_syscall`'s steps (`unix/loader.c` L115-135; `win32u/syscall.c` L39-59): a record with `EXCEPTION_WINE_STUB`, `EXCEPTION_NONCONTINUABLE` and the two names as its parameters; the context from `NtGetContextThread` of the current thread with `CONTEXT_FULL`, and `ExceptionAddress` = its Rip; then `NtRaiseException(&rec, &context, TRUE)`. The wrapper then returns 0, and the dispatcher's new-context return enters `KiUserExceptionDispatcher`. The names are the Unix side's static strings, in the host region, which translated code reads as it reads any guest memory.
+- **What the guest sees:**
+  - A handler that continues resumes through `NtContinue` (M3).
+  - An unhandled exception reaches `RtlUserThreadStart`'s handler (PE `signal_x86_64.c` L988-998) and kernelbase's `UnhandledExceptionFilter` (`dlls/kernelbase/debug.c` L752-788): the top filter if one is set, then `EXCEPTION_EXECUTE_HANDLER` at once when the error mode has `SEM_NOGPFAULTERRORBOX` (L783-785), and the process ends with the exception code as its status (`dlls/ntdll/exception.c` L403-419). Wine's `test.h` sets that mode (L887), so a crashing conformance unit ends that way, never starting a debugger.
+  - Without that mode or a top filter, kernelbase starts `winedbg --auto` (debug.c L547-652) through `CreateProcessW`, which meets `NtCreateUserProcess`'s loud line (patch 0301): child processes are Phase 4's.
+  - A stub ends the process with 0x80000100 after PE `dispatch_exception` prints "wine: Call from … to unimplemented function …, aborting" (`dlls/ntdll/exception.c` L199-208), as under native Wine.
 - **Still stopping loudly:**
-  - the exception paths (`call_user_exception_dispatcher`, `NtRaiseException`): M5;
+  - `call_raise_user_exception_dispatcher` (above);
   - `KeUserModeCallback` and `NtCallbackReturn` (`sx.c` L1905-1931): deferred (section 13). win32u's first callback is in `register_builtins` (`win32u/class.c` L1225-1240), reached only through `get_desktop_window` (`winstation.c` L898) or a desktop-class window (`window.c` L5528); a console program's user32 attach reaches neither (`dlls/user32/user_main.c` L204-257).
 
-## 12. The run loop and translated code (M3)
+## 12. The run loop and translated code (M3, M5)
 `src/run.c` and `src/boot.c` in C, and the JS host in `runtime/src/wine/`. The boundary is `abi.md` v5, "Wine boundary".
 
 **`tw_run_loop(state)`** (`tempwind_private.h`):
 - It calls `tw_run(state)` until the thread ends, and acts on each exit reason:
   - **`EXIT_LEFT_CODE`:** it finds the run of committed, executable pages around `rip` inside its view (`tw_exec_range`, patch 0106: `VPROT_EXEC`, no guard pages), and calls `tw_translate(rip, base, size)` with it.
-    - With no such run, it stops loudly. On Windows that is an execute access violation, which M5 raises.
-    - If `tw_translate` fails, it stops loudly.
+    - With no such run, it raises an execute access violation (M5, "The records" below). Until M5 it stopped loudly.
+    - If `tw_translate` fails, it stops loudly. A translation with no block at rip fails without linking its module or marking its pages, so it leaves nothing behind (M4's known issue: the module and its `PAGE_CODE` stayed; fixed in M5).
   - **`EXIT_HOST`:** the host function that stopped recorded why in C, and the loop returns it to its caller. In M3 and M4 nothing stops that way (a thread ends by `pthread_exit`, section 9), so a thread's loop that returns stops loudly.
-  - **`EXIT_FAULT`:** stops loudly. M5 raises the exception through Wine's dispatcher.
-  - **`EXIT_UNSUPPORTED`:** stops loudly. That includes store-check hits.
-- **The loud stops** print `tempwind: unsupported: run <exit> rip=<hex>`, the fault address and kind, then the page-state byte and Wine's protection byte of one address, then `abort()`. That address is the fault address for `EXIT_FAULT`, and `rip` for any other exit: `EXIT_UNSUPPORTED` records no address, a store-check hit's included (`translator.md`, "Memory checks"), so `rip` is the store's.
+  - **`EXIT_FAULT`:** from M5 it raises the exception of "The records" below with `tw_raise_exception` (section 11, "Exceptions"), and the loop goes on at `KiUserExceptionDispatcher`. A fault it doesn't raise stops loudly. Until M5 every `EXIT_FAULT` stopped loudly.
+  - **`EXIT_UNSUPPORTED`:** stops loudly. Until M5 that included store-check hits and `int3`, which are `EXIT_FAULT` from M5 (`translator.md`, "Memory checks" and "Faults").
+- **The loud stops** print `tempwind: unsupported: run <exit> rip=<hex>`, the fault address and kind, then the page-state byte and Wine's protection byte of one address, then `abort()`. That address is the fault address for `EXIT_FAULT`, and `rip` for any other exit. Until M5 a store-check hit recorded no address, so `rip` was the store's; from M5 it has its fault address.
+
+**The records (M5, WP1).** Every record the run loop raises has `ExceptionFlags` 0 and `ExceptionAddress` = `state.rip`, the faulting instruction, as Wine's handlers take RIP (`segv_handler` L2400, `fpe_handler` L2521; `trap_handler` L2492 and L2501 for `int3`). Line numbers are in `dlls/ntdll/unix/signal_x86_64.c`.
+
+| Exit | The record | Wine's, natively |
+|---|---|---|
+| `FAULT_READ` (the NULL check) | `EXCEPTION_ACCESS_VIOLATION`, 2 parameters: [0] = 0 (read), [1] = the fault address | A page fault: [0] = `(err >> 1) & 9`, [1] = `si_addr` (L2431-2434). `virtual_handle_fault` finds no view below 0x10000 and keeps `STATUS_ACCESS_VIOLATION` (`virtual.c` L4538-4595). |
+| `FAULT_WRITE` (the NULL check) | the same with [0] = 1 (write) | The same. A read-modify-write is reported as a write, as on the CPU (`translator.md`). |
+| `FAULT_EXECUTE` | the same with [0] = 8, or 0 without DEP (as below) | Not emitted by translated code in a Wine process; handled as the execute fault below. |
+| `EXIT_LEFT_CODE` with no executable pages at rip | `EXCEPTION_ACCESS_VIOLATION`, [0] = 8 (`EXCEPTION_EXECUTE_FAULT`), [1] = rip. [0] is 0 when the process's execute flags lack `MEM_EXECUTE_OPTION_DISABLE`, queried with `NtQueryInformationProcess(ProcessExecuteFlags)` as Wine does (L2440-2447). Wine's default has it (`unix/process.c` L77). | The fetch's page fault. ATL thunk emulation (L2448-2449) isn't ported (section 13). |
+| `FAULT_DIVIDE` | `EXCEPTION_INT_DIVIDE_BY_ZERO`, no parameters | `FPE_INTDIV` (L2531-2532). Linux reports it for a zero divisor and for an overflowing quotient alike, and so do we. |
+| `FAULT_INVALID_OPCODE` | `EXCEPTION_ILLEGAL_INSTRUCTION`, no parameters | `TRAP_x86_PRIVINFLT` (L2411-2413). |
+| `FAULT_GENERAL_PROTECTION` | `EXCEPTION_ACCESS_VIOLATION`, [0] = 0, [1] = 0xffffffffffffffff | `TRAP_x86_PROTFLT` with error code 0, for an instruction that isn't privileged (L2417-2428). The translator's #GP sites are `ldmxcsr`'s reserved bits and alignment (`translator.md`). |
+| `FAULT_BREAKPOINT` (`int3`) | `EXCEPTION_BREAKPOINT`, 1 parameter: [0] = 0 | `TRAP_x86_BPTFLT` (L2500-2507). The address and the context's Rip are the `int3`'s (section 11). |
+| `FAULT_CODE_WRITE` (a store-check hit) | When Wine's protection of the fault address's page has neither `VPROT_WRITE` nor `VPROT_WRITECOPY` (`virtual.c` L135-141), as `FAULT_WRITE`: [0] = 1, [1] = the fault address. Otherwise it stops loudly. | Natively such a store faults, since the host page has no `PROT_WRITE` (`get_unix_prot`, `virtual.c` L1353-1366), and `virtual_handle_fault` keeps `STATUS_ACCESS_VIOLATION` (L4569-4595). This is image code, as on Windows. A store to code Wine has writable, or to a write-watched page, succeeds natively: those wait for Phase 4 (section 13). |
+
+- **Loud stops that stay:** a fault kind the loop doesn't know; `EXIT_LEFT_CODE` at a dispatcher address (`SYSCALL_DISPATCHER`, `UNIX_CALL_DISPATCHER`; `abi.md`, "Addresses"), which means the runtime lost a slot rather than that the guest jumped somewhere bad; `FAULT_CODE_WRITE` on a page Wine has writable.
+- **Then the raise:** `tw_raise_exception(state, &rec)` (section 11) writes the layout and points the state block at `KiUserExceptionDispatcher`, and the loop calls `tw_run` again. A fault inside the dispatch or a handler is raised the same way: Wine nests exceptions on the guest stack, and so do we.
 
 **One process, in order** (the JS host):
 1. Create the shared memory (4 GiB initial, 16 GiB maximum), `env.table` (at least `TW_TABLE_RESERVED` slots) and `env.depth` (0).
@@ -559,8 +615,8 @@ From then on JS links modules on demand: an AOT module through `tw_image_mapped`
 - **Run-time modules:** `tw_translate` reads the range's bytes from guest memory and calls the run-time translator with `null_check`, `store_check` and `shared_memory`. The known addresses it passes are the linked blocks inside the range.
 - **Both memory checks are on** in every module of a Wine process (`guest-memory.md`, "Phase 2 defaults"):
   - a NULL access exits with `EXIT_FAULT`;
-  - a store to a `PAGE_CODE` or `PAGE_WATCH` page exits with `EXIT_UNSUPPORTED`.
-  - Both stop loudly in M3.
+  - a store to a `PAGE_CODE` or `PAGE_WATCH` page exits with `EXIT_FAULT` and `FAULT_CODE_WRITE` from M5 (`EXIT_UNSUPPORTED` until then).
+  - Both stopped loudly until M5, which raises them ("The records" above).
 - **What the host reports at exit:** the AOT links, the fallbacks (images without an AOT module, and each run-time translation), and the bytes the lazy nodes loaded.
 
 **`depth`:**
@@ -574,7 +630,12 @@ From then on JS links modules on demand: an AOT module through `tw_image_mapped`
   - **`\KnownDlls`:** to M5, if conformance shows the difference. The loader then searches the load path (section 8). Creating them needs `wineboot`'s `create_known_dlls` (`programs/wineboot/wineboot.c` L997-1046) or our own copy of it, with ranged lazy reads so the sections don't load whole files.
   - **Services:** to Phase 4, with child processes. Natively a session's first process runs `wineboot --init` (`unix/env.c` L1539-1561), which starts services.exe (`wineboot.c` L1898-1906); our boot skips it (section 8). combase starts RpcSs only on `RPC_S_SERVER_UNAVAILABLE` (`dlls/combase/rpc.c` L185-206), which needs a child process.
   - **`KeUserModeCallback` and `NtCallbackReturn`:** to Phase 3's desktop, or to M5 if a conformance unit needs them first. Their loud stops stay (section 11).
-- **M5:** exceptions: the basic raise path. `EXIT_FAULT` raises, and the syscall stubs of both tables raise as Wine's do.
+- **Exceptions beyond M5's basic path** (sections 11 and 12 are what M5 raises):
+  - **Loud stops that stay:** `int imm8` (`int 29h`, Windows' `__fastfail`; `int 2ch` and `int 2dh`, the debug services), which stays `EXIT_UNSUPPORTED`; privileged instructions, for which Wine raises `EXCEPTION_PRIV_INSTRUCTION` (`is_privileged_instr`, `sx.c` L2421) and the translator has `EXIT_UNSUPPORTED`; a raw `syscall`; TF single step and debug registers (below); `call_raise_user_exception_dispatcher`.
+  - **No record at all:** a wasm out-of-bounds trap, an access at or above the memory's current size, ends the process.
+  - **Not detected:** a store to a read-only page with no translated code on it, and any access to a reserved or free page at or above 0x10000. No check covers them (`guest-memory.md`), so the access goes through.
+  - **Phase 4:** guard pages and stack overflow (`virtual_setup_exception` runs as Wine's, but nothing in translated code faults on a guard page); ATL thunk emulation (`sx.c` L2448-2449); a `rep` store's partial progress (`translator.md`, "Memory checks"); C++ exceptions across host frames.
+  - **Reported differently:** a read-modify-write's NULL fault is a write, as `translator.md` says x86 reports it; no test compares it with the CPU's error code. A `rep` store-check fault with DF = 1 names the range's lowest marked address (`translator.md`).
 - **Phase 4:**
   - a store to translated code invalidates and resumes;
   - a store-check hit on a write-watched page records the write;

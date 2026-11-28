@@ -79,6 +79,7 @@ The rule above decides which forms need fixtures. M4 adds forms by decision as w
    - nondeterministic instructions (`cpuid`, `rdtsc`, `rdtscp`, `rdrand`, `rdseed`), which get dedicated tests instead of recorded fixtures (`cpuid` must return the profile above).
    - debug traps: `int1` (ICEBP, `F1`), which raises #DB for a debugger. Decided at the M5 gate: it occurs in the targets only in gaps (data the sweep reads as code). The other gap-only forms stay in scope; they all have fixtures.
    - Phase 2 (M1): `int3` (#BP) joins the debug traps, and `int imm8` the privileged or system instructions (user mode may only use vector 3; Windows code uses 29h for `__fastfail` and 2Dh for the debug services). Neither can be recorded: the recorder treats a `SIGTRAP` other than its single step, and a #GP it didn't predict, as errors.
+   - Phase 2 (M5): `int3` is lowered, as a breakpoint fault (`EXIT_FAULT` with `FAULT_BREAKPOINT`; `translator.md`, "Faults"), and Wine's dispatcher raises it. It stays outside S, with no fixtures: a translator test and `l2_seh.exe` cover it. `int imm8` stays `EXIT_UNSUPPORTED`.
    - vendor-dependent forms: `movsxd` without REX.W (`Movsxd_r16_rm16`, `Movsxd_r32_rm32`). The SDM discourages it and the oracle's generator has excluded it since M3; it occurs only in data (Wine closure census, below).
 2. **Fixtures.** Every Code in S has recorded L1 fixtures in `crates/testkit/fixtures/l1/`:
    - covering each operand-kind combination (register or memory, every width the Code allows);

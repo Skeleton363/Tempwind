@@ -217,7 +217,7 @@ The condition is not met, so A stays.
   - Make both switchable so CoreMark and 7-Zip can measure them. Keep the explicit branches; a trap would lose the wasm locals.
 - The page-state table format (1 byte per 4 KiB page: committed, R/W/X, guard, code, write-watch) as a shared ABI with the Unix side, in the host region.
 - DEP: refuse to translate from non-executable pages and raise an execute access violation instead.
-- Code invalidation on a code-page store hit: invalidate the blocks for that page and resume. This moved to Phase 4: until then a hit stops loudly. From Phase 2's M3 the Unix side invalidates on unmap and remap (`wine-unix.md`, section 6).
+- Code invalidation on a code-page store hit: invalidate the blocks for that page and resume. This moved to Phase 4: until then a hit on a page Wine has writable stops loudly. From Phase 2's M3 the Unix side invalidates on unmap and remap (`wine-unix.md`, section 6). From M5 a hit on a page Wine has read-only, such as image code, raises a write access violation, as on Windows (`wine-unix.md` v4, section 12).
 - An AOT and translation cache keyed by (image hash, load base). Loading is deterministic, so the key is stable.
 - Recognition of the syscall thunk shape (`syscall` / `call *0x7ffe1000`) as an exit to the Unix side.
 

@@ -50,8 +50,8 @@ Translation is function-level: the translator discovers functions from the entry
 | Instruction scope and the "all fixtures pass" rule | `docs/design/instruction-scope.md` |
 | Load plan, Linker and run-time translator hosts, the spike hosts | `docs/design/runtime.md` |
 | Guest address map | `docs/design/guest-memory.md` |
-| Wine build, release layout, DLL closure, prefix, conformance baselines (Phase 2) | `docs/design/wine-build.md` |
-| Wine's Unix side with Emscripten: build, patches, memory backend, in-process server, startup, green threads (Phase 2) | `docs/design/wine-unix.md` |
+| Wine build, release layout, DLL closure, prefix, conformance baselines and runs (Phase 2) | `docs/design/wine-build.md` |
+| Wine's Unix side with Emscripten: build, patches, memory backend, in-process server, startup, green threads, exceptions (Phase 2) | `docs/design/wine-unix.md` |
 
 Contracts are committed before the code that uses them. The ABI is versioned; both Rust (`abi.rs`) and JS (`abi.mjs`) change with it, and from v5 the C header `native/wine/include/tempwind/abi.h`, which `x64wasm-cli gen-header` generates from `abi.rs`.
 
@@ -59,7 +59,7 @@ Contracts are committed before the code that uses them. The ABI is versioned; bo
 
 - L1: every instruction form, recorded on a real x86-64 CPU by `testkit record`, replayed in wasmtime.
 - L2: MinGW C programs (`tests/native`), translated against native output.
-- L3: Wine's conformance tests, with recorded baselines (later phases).
+- L3: Wine's conformance tests (`tests/conformance`): baselines recorded on windows-2025 and native Wine 11, and from Phase 2 M5 our port's runs, tracked in CI.
 - L4: headless Chrome with WebGPU (SwiftShader), pixel checks (later phases).
 - L5: IR and WAT snapshots (`crates/x64wasm/tests/snapshots`).
 - Program level: CoreMark validates; the 7-Zip matrix compares translated output to native byte for byte.
