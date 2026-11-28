@@ -44,6 +44,8 @@
 #define TW_FAULT_DIVIDE UINT32_C(0x4)
 #define TW_FAULT_INVALID_OPCODE UINT32_C(0x5)
 #define TW_FAULT_GENERAL_PROTECTION UINT32_C(0x6)
+#define TW_FAULT_BREAKPOINT UINT32_C(0x7)
+#define TW_FAULT_CODE_WRITE UINT32_C(0x8)
 
 /* Page-state table (abi.md, "Page-state table"): one byte per page. */
 #define TW_PAGE_CODE 1

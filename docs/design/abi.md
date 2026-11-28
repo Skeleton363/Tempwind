@@ -6,7 +6,7 @@ This is the contract between the translator (`crates/x64wasm`, `crates/x64wasm-r
 - **v2 (M1)** made one wasm function per guest function, with guest calls and returns mapped to wasm calls and returns. The design is in `translator.md`.
 - **v3 (M2)** links modules together. Several modules (the AOT translation of an image, and translations made at run time) share one funcref table, one call-depth counter and one block lookup table in guest memory, so control passes between them without leaving wasm. Host functions (the Win32 shim, `runtime.md`) sit in the same table and are called like guest functions. The state block, the statuses and the trampoline are as in v2.
 - **v4 (M4)** adds the floating-point helper module: translated modules import the soft-float functions they use from the `fp` namespace ("Floating-point helper module" below). Everything else is as in v3.
-- **v5 (Phase 2)** puts Wine's Unix side, an Emscripten wasm64 instance, on the other side of the host functions ("Wine boundary" below). M1's spike tested the draft. M2 fixed the C header generated from `abi.rs`, the Unix side's host entries, the owner of the host region and `depth` across nested runs (the one change to translated modules: `run` keeps the caller's `depth`). M3 makes it final: the dispatcher addresses, the bridge module, the host functions' new-context return, tombstones in the lookup table (code invalidation), the run-time translator's `shared_memory` flag and one initial FP state. Translated modules keep the v4 shape.
+- **v5 (Phase 2)** puts Wine's Unix side, an Emscripten wasm64 instance, on the other side of the host functions ("Wine boundary" below). M1's spike tested the draft. M2 fixed the C header generated from `abi.rs`, the Unix side's host entries, the owner of the host region and `depth` across nested runs (the one change to translated modules: `run` keeps the caller's `depth`). M3 makes it final: the dispatcher addresses, the bridge module, the host functions' new-context return, tombstones in the lookup table (code invalidation), the run-time translator's `shared_memory` flag and one initial FP state. M5 adds two fault kinds, `int3` and store-check hits as `EXIT_FAULT`, and the raise through Wine's dispatcher ("Settled in M3 to M5"). Translated modules keep the v4 shape.
 
 ## Module shape
 
@@ -175,7 +175,7 @@ All fields are little-endian. Size: `0x400` bytes. It must be 16-byte aligned; 6
 | `0x0b0` | 8 | FS base | Used by FS-relative addressing (M3). |
 | `0x0b8` | 8 | GS base | Used by GS-relative addressing (M3). The runtime sets it to the TEB. |
 | `0x0c0` | 8 | fault address | For `EXIT_FAULT`. |
-| `0x0c8` | 4 | fault kind | For `EXIT_FAULT`. Memory faults: `FAULT_READ` 1, `FAULT_WRITE` 2, `FAULT_EXECUTE` 3. Exceptions: `FAULT_DIVIDE` 4 (#DE), `FAULT_INVALID_OPCODE` 5 (#UD), `FAULT_GENERAL_PROTECTION` 6 (#GP). |
+| `0x0c8` | 4 | fault kind | For `EXIT_FAULT`. Memory faults: `FAULT_READ` 1, `FAULT_WRITE` 2, `FAULT_EXECUTE` 3. Exceptions: `FAULT_DIVIDE` 4 (#DE), `FAULT_INVALID_OPCODE` 5 (#UD), `FAULT_GENERAL_PROTECTION` 6 (#GP). From Phase 2 M5: `FAULT_BREAKPOINT` 7 (#BP, `int3`) and `FAULT_CODE_WRITE` 8 (a store-check hit). |
 | `0x0cc` | 0x34 | reserved, zero | |
 | `0x100` | 16 × 16 | XMM0-XMM15 | From M3, the XMM registers live here while translated code runs, read and written with `v128` loads and stores. M4 keeps them here; caching them in locals waits for M6's liveness work. |
 | `0x200` | 4 | MXCSR | Lives here from M3 (`ldmxcsr`, `stmxcsr`). From M4, SSE floating-point instructions read it and write its exception flags. |
@@ -205,8 +205,8 @@ Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
 | Value | Name | Meaning |
 |---|---|---|
 | 1 | `EXIT_LEFT_CODE` | Control reached a guest address with no block in the lookup table: a fall-through past the code, a target nothing translated yet, or a `ret` to an unknown address. `rip` holds that address. Hosts translate more code (run-time translation) or stop. |
-| 2 | `EXIT_UNSUPPORTED` | The instruction at `rip` is not supported yet. Registers hold the state before it. From M4 also a floating-point instruction that raises an unmasked exception (#XM and #MF wait for Windows exceptions in Phase 4). |
-| 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. RIP is the faulting instruction, and every register holds its value from before it. Translated code emits it from M3 for #DE (`div`, `idiv`), #UD (`ud2` and bytes that don't decode) and #GP, with fault address 0. An instruction that decodes but is outside the CPUID profile stays `EXIT_UNSUPPORTED`. M2's runtime raises it for execution outside executable sections. NULL and store checks come with M6. |
+| 2 | `EXIT_UNSUPPORTED` | The instruction at `rip` is not supported yet. Registers hold the state before it. From M4 also a floating-point instruction that raises an unmasked exception (#XM and #MF wait for Windows exceptions in Phase 4). Until Phase 2 M5 also `int3` and a store-check hit, which then become `EXIT_FAULT`. |
+| 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. RIP is the faulting instruction, and every register holds its value from before it. Translated code emits it from M3 for #DE (`div`, `idiv`), #UD (`ud2` and bytes that don't decode) and #GP, with fault address 0. An instruction that decodes but is outside the CPUID profile stays `EXIT_UNSUPPORTED`. M2's runtime raises it for execution outside executable sections. NULL and store checks come with M6. **From Phase 2 M5:** `int3` exits with `FAULT_BREAKPOINT`, fault address 0 and RIP at the `int3` itself (not after it, where the CPU leaves it). A store-check hit exits with `FAULT_CODE_WRITE` and the fault address of `translator.md`, "Memory checks": the lowest address of the store's range on a marked page. |
 | 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API. The host knows why. In a Wine process the Unix side keeps the reason in C (v5). |
 
 A test function returns to the host by `ret`ing to a sentinel return address that the host pushed (`SENTINEL_RET = 0x0000_7FFF_FFFF_0000`). The host then expects exit 1 with `rip == SENTINEL_RET`.
@@ -345,11 +345,13 @@ Status:
    ```
    for (;;) switch (tw_run(state)) {
      case EXIT_LEFT_CODE:   tw_translate(rip, base, size) or stop loudly; continue;  // the executable pages around rip
+                                                     // none (M5): raise an execute access violation; continue
      case EXIT_HOST:        return;                  // the host function recorded why, in C
-     case EXIT_FAULT:       stop loudly;             // M5 raises the exception
-     case EXIT_UNSUPPORTED: stop loudly;             // store-check hits included
+     case EXIT_FAULT:       raise the exception; continue;  // M5: through Wine's dispatcher
+     case EXIT_UNSUPPORTED: stop loudly;
    }
    ```
+   Until M5 an `EXIT_FAULT` stopped loudly, and `EXIT_UNSUPPORTED` included store-check hits. M5's raise (`wine-unix.md` v4, sections 11 and 12) rewrites the state block to enter PE `KiUserExceptionDispatcher`, and the loop goes on; a fault it doesn't raise still stops loudly.
    Phase 1's JS run loop (deleted in M4) never applied to Wine processes.
 3. **Translated code → Unix side.**
    - Host functions in `env.table` are **raw Unix-side exports** of the guest-function type `(state i64, entry i32, ret i64) -> i32`. They follow "Host functions" above: read the arguments, perform the guest's `ret`, return a status.
@@ -534,7 +536,7 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 
 The Emscripten runtime's own imports are listed, each with a reason, in `native/wine/imports.txt`; the build fails on any import not listed there.
 
-### Settled in M3 and M4, and what is left
+### Settled in M3 to M5, and what is left
 - **Settled:**
   - `env.depth` from C: the bridge's `depth_get` and `depth_set` ("The bridge");
   - the dispatcher addresses ("Syscalls and unix calls");
@@ -544,9 +546,13 @@ The Emscripten runtime's own imports are listed, each with a reason, in `native/
   - thread exit: a `longjmp` to `tw_thread_main`, not `EXIT_HOST` ("Green threads");
   - process exit from any thread ("Process exit");
   - APC delivery: `call_user_apc_dispatcher` through the dispatcher's new-context return (`wine-unix.md` v3, section 11).
+- **Settled in M5 (the basic raise path):**
+  - two fault kinds, `FAULT_BREAKPOINT` 7 and `FAULT_CODE_WRITE` 8, in `abi.rs`, the generated `abi.h` and `abi.mjs` ("CPU state block", "Exit reasons"); the module shape is v4's, unchanged;
+  - `EXIT_FAULT`, and `EXIT_LEFT_CODE` with no executable pages at rip, raise through Wine's own dispatcher: the run loop writes Wine's exception frame below the guest's RSP and enters PE `KiUserExceptionDispatcher`, wasm to wasm as any other guest code ("Who calls whom", item 2; `wine-unix.md` v4, sections 11 and 12);
+  - `NtRaiseException`'s first chance (syscall stubs, a second dispatch) returns through the dispatcher's new-context return, as APC delivery does.
 - **Later:**
   - **Callback return (deferred: Phase 3's desktop, or M5 if a conformance unit needs it):** `KeUserModeCallback`'s callee ends in `NtCallbackReturn`, a host function that returns `STATUS_EXIT` with a reason the nested loop knows ("Who calls whom", item 5).
-  - **Exceptions (M5):** `EXIT_FAULT` raises through Wine's own dispatcher.
+  - **Exceptions beyond the basic path (Phase 4):** guard pages and stack overflow, a store to translated or write-watched memory that resumes, single step and debug registers, `int imm8`, and C++ exceptions across host frames (`wine-unix.md` v4, section 13).
 
 ### The spike (M1)
 

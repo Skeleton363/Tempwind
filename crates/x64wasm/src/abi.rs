@@ -210,6 +210,12 @@ pub const FAULT_DIVIDE: u32 = 4;
 pub const FAULT_INVALID_OPCODE: u32 = 5;
 /// Fault kind: general protection (#GP).
 pub const FAULT_GENERAL_PROTECTION: u32 = 6;
+/// Fault kind: breakpoint (#BP), `int3`; RIP is the int3's address (M5).
+pub const FAULT_BREAKPOINT: u32 = 7;
+/// Fault kind: a store-check hit, a store into a page marked `PAGE_CODE` or
+/// `PAGE_WATCH`; the fault address is the lowest address of the store's range
+/// on a marked page (M5; `abi.md`, "Exit reasons").
+pub const FAULT_CODE_WRITE: u32 = 8;
 
 /// Lookup header field: guest address of the slot array (u64).
 pub const LOOKUP_SLOTS: u64 = 0;
@@ -458,6 +464,8 @@ pub fn c_header() -> String {
         ("DIVIDE", FAULT_DIVIDE),
         ("INVALID_OPCODE", FAULT_INVALID_OPCODE),
         ("GENERAL_PROTECTION", FAULT_GENERAL_PROTECTION),
+        ("BREAKPOINT", FAULT_BREAKPOINT),
+        ("CODE_WRITE", FAULT_CODE_WRITE),
     ] {
         out.push(format!("#define TW_FAULT_{name} {}", u32c(v)));
     }
