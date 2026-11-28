@@ -30,8 +30,7 @@
 
 #include "harness.h"
 #include "tempwind_private.h"
-
-#define MS 10000  /* ticks of 100 ns */
+#include "server.h"
 
 /* NtDelayExecution's non-alertable sleep counts its deadline with
  * NtQuerySystemTime, whose clock (Emscripten's Date.now) has a resolution of
@@ -42,27 +41,11 @@
  * block finishes well within it, one that blocks takes at least the time. */
 #define LONG_TIMEOUT (10000 * MS)
 
-static LONGLONG now( void )
-{
-    LARGE_INTEGER t;
-
-    NtQueryPerformanceCounter( &t, NULL );
-    return t.QuadPart;
-}
-
-static HANDLE new_event( BOOLEAN signaled )
-{
-    HANDLE event = 0;
-
-    if (NtCreateEvent( &event, EVENT_ALL_ACCESS, NULL, NotificationEvent, signaled )) return 0;
-    return event;
-}
-
 /* An event wait with a timeout returns STATUS_TIMEOUT after at least that time. */
 static const char *event_timeout( void )
 {
     LARGE_INTEGER timeout = { .QuadPart = -100 * MS };
-    HANDLE event = new_event( FALSE );
+    HANDLE event = new_event( NotificationEvent, FALSE );
     LONGLONG start, elapsed;
     NTSTATUS status;
 
@@ -80,7 +63,7 @@ static const char *event_timeout( void )
 static const char *event_signaled( void )
 {
     LARGE_INTEGER timeout = { .QuadPart = -LONG_TIMEOUT };
-    HANDLE event = new_event( FALSE );
+    HANDLE event = new_event( NotificationEvent, FALSE );
     LONGLONG start, elapsed;
     NTSTATUS status;
 
@@ -120,7 +103,7 @@ static const char *timer_fires( void )
 static const char *zero_timeout_polls( void )
 {
     LARGE_INTEGER zero = { .QuadPart = 0 };
-    HANDLE event = new_event( FALSE );
+    HANDLE event = new_event( NotificationEvent, FALSE );
     LONGLONG start, elapsed;
     NTSTATUS status, status2;
 
@@ -167,7 +150,7 @@ static const char *delay_alertable( void )
 /* Alone: a wait nothing can end stops loudly (the scheduler's deadlock). */
 static const char *wait_forever_stops( void )
 {
-    HANDLE event = new_event( FALSE );
+    HANDLE event = new_event( NotificationEvent, FALSE );
     NTSTATUS status;
 
     TW_EXPECT( event );
@@ -188,9 +171,6 @@ static const struct tw_check checks[] =
 
 int tw_test_main( void )
 {
-    virtual_init();
-    virtual_alloc_first_teb();
-    dbg_init();
-    server_init_process();
+    tw_server_start();
     return tw_run_checks( checks, sizeof(checks) / sizeof(checks[0]) );
 }

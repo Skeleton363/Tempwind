@@ -2,7 +2,10 @@
 // The 7-Zip command matrix (tests/sevenzip/README.md).
 //
 //   node tests/sevenzip/matrix.mjs --mode native|wine|translated --out OUT [--exe 7zz.exe]
-//        [--filter SUBSTRING] [--jobs N] [--wine CMD] [--aot-dir DIR] [--skip-translate] [--quiet]
+//        [--filter SUBSTRING] [--jobs N] [--wine CMD] [--quiet]
+//
+// Modes: native (Windows), wine (wine64), translated (7zz.exe on our Wine: runtime/src/wine/run-wine.mjs --dir
+// on the work directory, one process per step, inputs in TW_WINE_DIR/TW_WINE_UNIX_DIR).
 //
 // Steps come from steps.json and are grouped: a group is the steps of one archive (a, t, l, x), run in order in
 // its own work directory OUT/work/<group> that holds a fresh copy of the input tree (tree.mjs). Groups are
@@ -31,8 +34,6 @@ const { values } = parseArgs({
     filter: { type: 'string' },
     jobs: { type: 'string', default: '1' },
     wine: { type: 'string' },
-    'aot-dir': { type: 'string', default: join(root, 'target/sevenzip') },
-    'skip-translate': { type: 'boolean', default: false },
     quiet: { type: 'boolean', default: false },
   },
 });
@@ -61,7 +62,7 @@ const groups = new Map();
 for (const s of steps) groups.set(s.group, [...(groups.get(s.group) ?? []), s]);
 
 // The environment is the same in every mode: UTC (zip's DOS times are local time), no Wine noise.
-const env = { ...process.env, TZ: 'UTC', WINEDEBUG: '-all', TEMPWIND_TRACE: '' };
+const env = { ...process.env, TZ: 'UTC', WINEDEBUG: '-all' };
 let wine = null;
 if (mode === 'wine') {
   wine = values.wine ?? process.env.WINE ?? (spawnSync('which', ['wine64']).status === 0 ? 'wine64' : '/usr/lib/wine/wine64');
@@ -69,23 +70,12 @@ if (mode === 'wine') {
   const w = spawnSync(wine, [exe, 'i'], { env, timeout: 300000 });
   if (w.status !== 0) throw new Error(`wine warm-up failed (${w.status}): ${w.stderr}`);
 }
-if (mode === 'translated') {
-  const aot = resolve(values['aot-dir']);
-  if (!values['skip-translate']) {
-    const r = spawnSync('cargo', ['run', '-q', '-p', 'x64wasm-cli', '--release', '--', 'translate-pe', exe, '--out-dir', aot], { cwd: root, encoding: 'utf8' });
-    if (r.status !== 0) throw new Error(`translate-pe failed:\n${r.stderr}`);
-  }
-  values['aot-dir'] = aot;
-}
-const wasmDir = join(root, 'target/wasm32-unknown-unknown/release');
-
 /** Command and arguments of one step in the work directory. */
 function command(args, work) {
   if (mode === 'native') return [exe, args];
   if (mode === 'wine') return [wine, [exe, ...args]];
-  const a = values['aot-dir'];
-  return [process.execPath, [join(root, 'runtime/src/run-pe.mjs'), '--exe', exe, '--aot', join(a, '7zz.wasm'), '--plan', join(a, '7zz.plan.json'),
-    '--rt', join(wasmDir, 'x64wasm_rt.wasm'), '--fp', join(wasmDir, 'x64wasm_fp.wasm'), '--dir', work, '--', ...args]];
+  // translated: our Wine reads only the environment its host is given (wine-unix.md section 8), not this process's: pass WINEDEBUG on.
+  return [process.execPath, [join(root, 'runtime/src/wine/run-wine.mjs'), '--env', `WINEDEBUG=${env.WINEDEBUG}`, '--dir', work, exe, ...args]];
 }
 
 function run(cmd, args, cwd) {

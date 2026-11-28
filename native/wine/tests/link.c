@@ -159,7 +159,7 @@ static const char *once_keys_self( void )
 }
 
 /* Signalling a condition nobody waits on is a no-op; a wait goes through
- * green.c (WP3). */
+ * green.c. */
 static const char *cond_without_waiters( void )
 {
     pthread_condattr_t attr;
@@ -191,13 +191,13 @@ static const char *green_switch_resumes( void )
     return NULL;
 }
 
-/* Alone: pthread_create stops loudly until M4. */
-static const char *pthread_create_stops( void )
+/* Alone: the green layer stops loudly at pthread_join of the main thread,
+ * which Wine never does (pthread_id 0, unix/thread.c L1128, L1507;
+ * wine-unix.md v3, section 9). */
+static const char *pthread_join_main_stops( void )
 {
-    pthread_t t;
-
-    pthread_create( &t, NULL, NULL, NULL );
-    return tw_fail( "pthread_create returned" );
+    pthread_join( pthread_self(), NULL );
+    return tw_fail( "pthread_join of the main thread returned" );
 }
 
 /* Alone: suspending while holding a mutex is a bug, and green.c asserts. */
@@ -220,7 +220,7 @@ static const struct tw_check checks[] =
     { "once_keys_self", once_keys_self },
     { "cond_without_waiters", cond_without_waiters },
     { "green_switch_resumes", green_switch_resumes },
-    { "pthread_create_stops", pthread_create_stops, TW_ALONE },
+    { "pthread_join_main_stops", pthread_join_main_stops, TW_ALONE },
     { "suspend_holding_mutex", suspend_holding_mutex, TW_ALONE },
 };
 

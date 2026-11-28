@@ -59,7 +59,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/pe/build.sh
 
-      - name: Translate basic.exe (AOT, run-time translator)
+      - name: Build the run-time translator (x64wasm_rt.wasm)
         if: ${{ !cancelled() }}
         run: tests/pe/prepare.sh
 
@@ -94,10 +94,11 @@ jobs:
           --closure target/wine/closure.json --tree target/wine/pe
           target/pe/basic.exe target/targets/coremark.exe target/targets/7zz.exe target/native/hello.exe
           target/native/l2_int.exe target/native/l2_crt.exe target/native/l2_float.exe
+          target/native/l2_threads.exe target/native/l2_suspend.exe
           target/wine/pe/tests/kernel32_test.exe target/wine/pe/tests/ntdll_test.exe
           --json target/wine/census.json --md target/wine/census.md --check
 
-      - name: Translate the L2 programs and CoreMark (AOT), build x64wasm_fp.wasm, write its vectors
+      - name: Build x64wasm_fp.wasm and write its vectors
         if: ${{ !cancelled() }}
         run: tests/native/prepare.sh
 
@@ -121,22 +122,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run test:node
 
-      # The 7-Zip command matrix (tests/sevenzip/README.md): 7zz.exe translated, each step compared byte for
-      # byte with tests/sevenzip/expected/ (written from Wine, checked against real Windows in windows-x64).
-      - name: 7-Zip command matrix, translated in Node
-        if: ${{ !cancelled() }}
-        run: |
-          cargo run -q -p x64wasm-cli --release -- translate-pe target/targets/7zz.exe --out-dir target/sevenzip
-          node tests/sevenzip/matrix.mjs --mode translated --out target/sevenzip-out --skip-translate --jobs "$(nproc)" --quiet
-          node tests/sevenzip/compare.mjs target/sevenzip-out tests/sevenzip/expected
-
-      - name: Upload the 7-Zip matrix results
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: sevenzip-translated
-          path: target/sevenzip-out/results
-          if-no-files-found: ignore
+      # The 7-Zip command matrix on our Wine is the sevenzip-matrix job of wine-unix.yml; on real Windows, windows-x64 below.
 
       # Tests use Playwright's pinned Chromium unless the CHROME_PATH repository
       # variable names another browser binary on the runner.
@@ -211,6 +197,8 @@ jobs:
             target/native/l2_int.exe
             target/native/l2_crt.exe
             target/native/l2_float.exe
+            target/native/l2_threads.exe
+            target/native/l2_suspend.exe
             target/native/exes.sha256
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
@@ -268,7 +256,7 @@ jobs:
       - name: Run the L2 programs natively and compare
         run: |
           # msvcrt's stdout is in text mode: the raw output is the expected text with CRLF line ends.
-          for name in l2_int l2_crt l2_float; do
+          for name in l2_int l2_crt l2_float l2_threads l2_suspend; do
             code=0
             ./l2-exes/$name.exe > $name.actual || code=$?
             tr -d '\r' < tests/native/$name.expected | sed 's/$/\r/' > $name.expected

@@ -9,54 +9,22 @@
 // and tests/wine/prepare.sh's target/wine (or TW_WINE_DIR) for l_intl.nls.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-import { createUnixHost, DEFAULT_ENV } from '../../runtime/src/wine/unix-host.mjs';
-import { m3Imports } from './m3-imports.mjs';
+import { startHarness, runChecks } from './harness-imports.mjs';
 
-const root = new URL('../../', import.meta.url);
-const dirUrl = (env, fallback) => (process.env[env]
-  ? pathToFileURL(process.env[env].replace(/\/?$/, '/'))
-  : new URL(fallback, root));
-const unixDir = dirUrl('TW_WINE_UNIX_DIR', 'target/wine-unix/');
-const wineDir = dirUrl('TW_WINE_DIR', 'target/wine/');
+/** A fresh instance of test-syscall. */
+const start = (env = {}) => startHarness('syscall', { env, imports: true });
 
-const NLS_DIR = '/wine/share/wine/nls';
-const intl = readFileSync(new URL('native/opt/wine-11.0/share/wine/nls/l_intl.nls', wineDir));
-
-const { default: factory } = await import(new URL('test-syscall.mjs', unixDir));
-const wasm = new WebAssembly.Module(readFileSync(new URL('test-syscall.wasm', unixDir)));
-
-async function start(env = {}) {
-  const out = { stdout: '', stderr: '' };
-  const dec = () => { const d = new TextDecoder(); return (b) => d.decode(b, { stream: true }); };
-  const o = dec(), e = dec();
-  const m3 = m3Imports();
-  const host = await createUnixHost({
-    factory, wasm, env,
-    stdout: (b) => { out.stdout += o(b); },
-    stderr: (b) => { out.stderr += e(b); },
-    imports: m3.imports,
-  });
-  m3.attach(host);
-  host.FS.mkdirTree(`${DEFAULT_ENV.WINEPREFIX}/dosdevices`);
-  host.FS.mkdirTree(NLS_DIR);
-  host.FS.writeFile(`${NLS_DIR}/l_intl.nls`, intl);
-  return { host, out };
-}
-
-// In the harness's order (it runs them in one instance).
+// In the harness's order (it runs them in one instance). Then
+// table 1 before and after win32u's init registers it, and that init as a
+// unix call to win32u's table (section 10, "The M4 checks").
 const CHECKS = ['dispatcher_page', 'stack_arguments', 'variant_entries', 'bad_id', 'nt_continue',
-  'context_round_trip', 'unix_call', 'kuser_clock', 'syscall_trace'];
+  'context_round_trip', 'unix_call', 'kuser_clock', 'syscall_trace',
+  'table1_before_init', 'win32u_unix_call_init', 'table1_after_init'];
 
 test('syscall: the harness checks pass', async () => {
-  const { host, out } = await start();
-  const ret = await host.call('tw_test_main');
-  const lines = out.stdout.trim().split('\n');
-  assert.deepEqual(lines.filter((l) => l.startsWith('not ok')), [], out.stdout + out.stderr);
-  assert.deepEqual(lines.filter((l) => l.startsWith('ok ')).map((l) => l.slice(3)), CHECKS);
-  assert.equal(lines.at(-1), `done ${CHECKS.length}/${CHECKS.length}`);
-  assert.equal(ret, 0);
+  const h = await start();
+  await runChecks(h, CHECKS);
+  const { out } = h;
   assert.ok(!/SysCall|SysRet/.test(out.stderr), 'no +syscall lines without WINEDEBUG');
 });
 
@@ -75,6 +43,10 @@ for (const [check, line] of [
   ['unix_call_bad_code', 'tempwind: unsupported: tw_unix_call_dispatcher: a code past ntdll\'s unix calls'],
   // Process exit's hook in NtTerminateProcess (section 8): outside boot it stops.
   ['terminate_reaches_exit_hook', 'tempwind: unsupported: tw_process_exit outside boot'],
+  // A table-1 stub once table 1 is registered, and a code past
+  // win32u's one unix call.
+  ['table1_stub_stops', 'tempwind: unsupported: win32u syscall NtBindCompositionSurface'],
+  ['win32u_unix_call_bad_code', 'tempwind: unsupported: tw_unix_call_dispatcher: a code past the unix library\'s calls'],
 ]) {
   test(`syscall: ${check} stops loudly`, async () => {
     const { host, out } = await start({ TW_TEST_ONLY: check });

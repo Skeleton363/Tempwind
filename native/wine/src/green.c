@@ -5,7 +5,9 @@
  * green_switch is the only switch point. Above it: waits on wake queues with
  * an optional deadline, sleeping, yielding, the scheduler's entries, and the
  * libc calls Wine blocks in (select, poll, usleep, nanosleep, sched_yield),
- * which this file defines in place of libc's.
+ * which this file defines in place of libc's. Signals: a signal
+ * sent to a green thread is pending until a delivery point (section 9,
+ * "Signals"); a wait it ends returns as an interrupted call.
  *
  * Copyright 2026 the Tempwind authors
  *
@@ -19,6 +21,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +40,8 @@ void set_current_time( void );
 int64_t inproc_server_next_timeout( void );
 void inproc_server_run_timeouts( void );
 
-enum waiter_state { WAITING, WOKEN, TIMED_OUT };
+/* SIGNALED: a signal ended the wait (section 9, delivery point 1). */
+enum waiter_state { WAITING, WOKEN, TIMED_OUT, SIGNALED };
 
 /* A green thread waiting: on a queue, until a deadline, or both. */
 struct green_waiter
@@ -53,7 +57,9 @@ struct green_waiter
 };
 
 static struct green_waiter *waiters;  /* every thread that waits */
-static int runnable;                  /* threads woken and not yet resumed */
+static int runnable;                  /* threads woken and not yet resumed, and
+                                         spawned ones that have yet to start */
+struct green_thread *green_parked;    /* the main thread, once pthread_exit parked it */
 
 static int64_t monotonic_ns( void )
 {
@@ -66,7 +72,7 @@ static int64_t monotonic_ns( void )
 /* Blocks the current green thread in green_block and returns the value JS
  * resumes it with. Around the call it saves and restores the spike's save
  * set: the stack pointer and limits, errno and the current thread, since
- * other green threads run on their own stacks meanwhile; and from M3
+ * other green threads run on their own stacks meanwhile; and
  * env.depth, the running thread's count of guest frames, through the
  * bridge (abi.md v5, "Green threads"), restored here in C on the resumed
  * stack, never in green_block's JS continuation. */
@@ -116,8 +122,60 @@ static void wake_waiter( struct green_waiter *w, enum waiter_state state )
     green_wake( w->thread->id );
 }
 
+/* Spawned threads count as runnable until tw_thread_main starts them
+ * (green_pthread.c), so a yield lets them start first. */
+void green_runnable_add( int count )
+{
+    runnable += count;
+}
+
+/* The running thread's signals that its mask doesn't block (SIGQUIT never
+ * is: it isn't in server_block_set, unix/server.c L1626-1633). */
+static uint64_t deliverable( const struct green_thread *thread )
+{
+    return thread->sig_pending & ~(thread->sig_blocked & ~SIG_BIT( SIGQUIT ));
+}
+
+/* Handles the running thread's deliverable pending signals, lowest first.
+ * Called only at the delivery points (section 9): after a wait or yield has
+ * resumed and unlinked its waiter, from tw_pthread_sigmask when it unblocks
+ * one (green_pthread.c), and before a dispatcher returns to guest code.
+ * Returns 1 when a handler ran and
+ * returned; SIGQUIT's never returns. */
+int green_deliver_signals( void )
+{
+    struct green_thread *self = green_current;
+    uint64_t ready;
+    int handled = 0;
+
+    while ((ready = deliverable( self )))
+    {
+        int sig = __builtin_ctzll( ready ) + 1;
+
+        self->sig_pending &= ~SIG_BIT( sig );
+        tw_handle_signal( sig );
+        handled = 1;
+    }
+    return handled;
+}
+
+/* send_thread_signal's end (patch 0201, section 7): marks sig pending on the
+ * green thread whose id is tid and, if it waits and doesn't block sig, ends
+ * its wait. 1, or 0 when no such green thread is alive (tkill's ESRCH). */
+int inproc_thread_signal( int tid, int sig )
+{
+    struct green_thread *thread = green_thread_by_id( tid );
+
+    if (!thread || sig < 1 || sig > 64) return 0;
+    thread->sig_pending |= SIG_BIT( sig );
+    if (thread->waiter && thread->waiter->state == WAITING && (deliverable( thread ) & SIG_BIT( sig )))
+        wake_waiter( thread->waiter, SIGNALED );
+    return 1;
+}
+
 /* Waits on queue (or none) until woken or until deadline (monotonic ns, or
- * -1 for none); 0 or ETIMEDOUT. A deadline that has passed returns at once. */
+ * -1 for none); 0, ETIMEDOUT, or EINTR when a signal handler ran (or a signal
+ * ended the wait). A deadline that has passed returns at once. */
 static int wait_until( struct green_queue *queue, int64_t deadline, const char *what )
 {
     struct green_waiter w = { .queue = queue, .thread = green_current, .deadline = deadline,
@@ -135,17 +193,24 @@ static int wait_until( struct green_queue *queue, int64_t deadline, const char *
     w.wnext = waiters;
     if (waiters) waiters->wprev = &w;
     waiters = &w;
+    w.thread->waiter = &w;
 
     while (w.state == WAITING) green_switch();
+    w.thread->waiter = NULL;
     if (w.counted) runnable--;
+    /* delivery point 1: the waiter is unlinked, so a handler that never
+     * returns (SIGQUIT's) leaves no list pointing into this frame */
+    if (green_deliver_signals() || w.state == SIGNALED) return EINTR;
     return w.state == TIMED_OUT ? ETIMEDOUT : 0;
 }
 
 /* Waits on queue until woken or until abs_deadline (on clock); 0 or
- * ETIMEDOUT. */
+ * ETIMEDOUT. A wait a signal interrupted returns 0, a spurious wakeup: the
+ * caller rechecks its condition (section 9). */
 int green_wait( struct green_queue *queue, const struct timespec *abs_deadline, int clock )
 {
     int64_t deadline = -1;
+    int ret;
 
     if (abs_deadline)
     {
@@ -158,7 +223,8 @@ int green_wait( struct green_queue *queue, const struct timespec *abs_deadline, 
         if (rel <= 0) return ETIMEDOUT;
         deadline = monotonic_ns() + rel;
     }
-    return wait_until( queue, deadline, queue->what ? queue->what : "a condition variable" );
+    ret = wait_until( queue, deadline, queue->what ? queue->what : "a condition variable" );
+    return ret == EINTR ? 0 : ret;
 }
 
 /* Wakes the first waiter of queue, or all. */
@@ -171,10 +237,24 @@ void green_wake_queue( struct green_queue *queue, int all )
     }
 }
 
-/* Sleeps for ns (> 0). */
-static void sleep_ns( int64_t ns, const char *what )
+/* Sleeps for ns (> 0); 0, or -1 with errno EINTR when a signal interrupted
+ * it, and then *left_ns (if not NULL) is the time left. */
+static int sleep_ns( int64_t ns, const char *what, int64_t *left_ns )
 {
-    wait_until( NULL, monotonic_ns() + ns, what );
+    int64_t deadline = monotonic_ns() + ns, now;
+
+    if (wait_until( NULL, deadline, what ) != EINTR) return 0;
+    if (left_ns) *left_ns = (now = monotonic_ns()) < deadline ? deadline - now : 0;
+    errno = EINTR;
+    return -1;
+}
+
+/* A wait nothing but a signal can end; 0, or -1 with errno EINTR. */
+static int sleep_forever( const char *what )
+{
+    wait_until( NULL, -1, what );
+    errno = EINTR;
+    return -1;
 }
 
 /* Lets the runnable green threads run first; with none, returns at once. */
@@ -191,6 +271,7 @@ static void yield( void )
     green_wake( w.thread->id );
     green_switch();
     runnable--;
+    green_deliver_signals();  /* delivery point 1; sched_yield has no EINTR */
 }
 
 /* ---- the scheduler's entries (abi.md v5, "Host entries of the Unix side") ---- */
@@ -219,6 +300,8 @@ int64_t tw_next_timeout( void )
         for (w = waiters; w; w = w->wnext)
             fprintf( stderr, "tempwind: green: thread %d waits on %s with no deadline\n",
                      w->thread->id, w->what );
+        if (green_parked)
+            fprintf( stderr, "tempwind: green: thread %d has exited (parked)\n", green_parked->id );
     }
     return ms;
 }
@@ -243,19 +326,28 @@ void tw_run_timeouts( void )
 
 int usleep( useconds_t usec )
 {
-    if (usec) sleep_ns( (int64_t)usec * 1000, "usleep" );
-    return 0;
+    return usec ? sleep_ns( (int64_t)usec * 1000, "usleep", NULL ) : 0;
 }
 
 int nanosleep( const struct timespec *req, struct timespec *rem )
 {
+    int64_t left;
+
     if (req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec >= 1000000000)
     {
         errno = EINVAL;
         return -1;
     }
-    if (req->tv_sec || req->tv_nsec)
-        sleep_ns( (int64_t)req->tv_sec * 1000000000 + req->tv_nsec, "nanosleep" );
+    if ((req->tv_sec || req->tv_nsec) &&
+        sleep_ns( (int64_t)req->tv_sec * 1000000000 + req->tv_nsec, "nanosleep", &left ))
+    {
+        if (rem)
+        {
+            rem->tv_sec = left / 1000000000;
+            rem->tv_nsec = left % 1000000000;
+        }
+        return -1;
+    }
     if (rem) rem->tv_sec = rem->tv_nsec = 0;
     return 0;
 }
@@ -264,18 +356,14 @@ int select( int n, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv 
 {
     if (n > 0 && (rfds || wfds || efds))
         tw_unsupported( "select on fds (green.c handles select with no fds, a sleep)" );
-    if (!tv)
-    {
-        wait_until( NULL, -1, "select with no fds and no timeout (a sleep forever)" );
-        return 0;  /* not reached: nothing can end that wait */
-    }
+    if (!tv) return sleep_forever( "select with no fds and no timeout (a sleep forever)" );
     if (tv->tv_sec < 0 || tv->tv_usec < 0)
     {
         errno = EINVAL;
         return -1;
     }
     if (tv->tv_sec || tv->tv_usec)
-        sleep_ns( (int64_t)tv->tv_sec * 1000000000 + (int64_t)tv->tv_usec * 1000, "select (a sleep)" );
+        return sleep_ns( (int64_t)tv->tv_sec * 1000000000 + (int64_t)tv->tv_usec * 1000, "select (a sleep)", NULL );
     return 0;
 }
 
@@ -290,9 +378,8 @@ int poll( struct pollfd *fds, nfds_t n, int timeout )
     }
     if (ret || !timeout) return ret;
     if (n) tw_unsupported( "poll that would block on fds (green.c handles a zero timeout or no fds)" );
-    if (timeout < 0) wait_until( NULL, -1, "poll with no fds and no timeout (a sleep forever)" );
-    else sleep_ns( (int64_t)timeout * 1000000, "poll with no fds (a sleep)" );
-    return 0;
+    if (timeout < 0) return sleep_forever( "poll with no fds and no timeout (a sleep forever)" );
+    return sleep_ns( (int64_t)timeout * 1000000, "poll with no fds (a sleep)", NULL );
 }
 
 int sched_yield( void )

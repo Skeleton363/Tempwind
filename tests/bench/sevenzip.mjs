@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 // 7-Zip benchmark (tests/sevenzip/README.md, "7z b"): `7zz.exe b 2 -mmt1 -md18` (two passes, single thread,
-// 256 KiB dictionary: about 17 s natively) translated and run in Node, and natively under wine64. Prints one
+// 256 KiB dictionary: about 17 s natively) translated and run on our Wine in Node, and natively under wine64. Prints one
 // JSON line: commit, date, Node version, CPU model, the "Tot:" rating (MIPS, compressing and decompressing
 // combined) translated and native (medians of --runs runs, default 3) and their ratio. A run without a
 // "Tot:" line, or one that reports an error, fails the script.
 //
-//   node tests/bench/sevenzip.mjs [--exe target/targets/7zz.exe] [--runs 3] [--wine CMD] [--skip-native] [--aot-dir DIR]
+//   node tests/bench/sevenzip.mjs [--exe target/targets/7zz.exe] [--runs 3] [--wine CMD] [--skip-native]
 //
-// Needs x64wasm_fp.wasm and x64wasm_rt.wasm (cargo build -p x64wasm-fp -p x64wasm-rt --release --target
-// wasm32-unknown-unknown) and, unless --aot-dir holds 7zz.wasm and 7zz.plan.json, the translator CLI.
+// The translated side runs on our Wine (runtime/src/wine/run-wine.mjs), so the JSON line carries "host": "wine".
+// Needs target/wine and target/wine-unix (tests/wine/prepare.sh, TW_WINE_DIR and TW_WINE_UNIX_DIR) with
+// 7zz.exe in the catalog.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { cpus, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { cpus } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -22,7 +22,6 @@ const { values } = parseArgs({
     exe: { type: 'string', default: `${root}target/targets/7zz.exe` },
     runs: { type: 'string', default: '3' },
     wine: { type: 'string' },
-    'aot-dir': { type: 'string' },
     'skip-native': { type: 'boolean', default: false },
   },
 });
@@ -45,28 +44,14 @@ function parse(r, what) {
   return Number(m[3]);
 }
 
-// --- translated
-let aotDir = values['aot-dir'];
-let tmp = null;
-if (!aotDir) {
-  tmp = mkdtempSync(join(tmpdir(), 'sevenzip-'));
-  aotDir = tmp;
-}
+// --- translated: on our Wine, through the Wine host (run-wine.mjs). The program is the catalog's 7zz.exe
+// (target/wine, tests/wine/prepare.sh): the catalog matches an image by its sha256, so --exe must be those bytes.
 const translated = [];
-try {
-  if (!existsSync(`${aotDir}/7zz.wasm`)) {
-    const r = sh('cargo', ['run', '-q', '-p', 'x64wasm-cli', '--release', '--', 'translate-pe', exe, '--out-dir', aotDir], { cwd: root, encoding: 'utf8' });
-    if (r.status !== 0) throw new Error(`translate-pe failed:\n${r.stderr}`);
-  }
-  const wasm = `${root}target/wasm32-unknown-unknown/release`;
-  for (let i = 0; i < runs; i++) {
-    const a = ['--exe', exe, '--aot', `${aotDir}/7zz.wasm`, '--plan', `${aotDir}/7zz.plan.json`, '--rt', `${wasm}/x64wasm_rt.wasm`, '--fp', `${wasm}/x64wasm_fp.wasm`];
-    const r = sh(process.execPath, [`${root}runtime/src/run-pe.mjs`, ...a, '--', ...ARGS], { encoding: 'utf8', env: { ...process.env, TEMPWIND_TRACE: '' } });
-    translated.push(parse(r, `translated run ${i + 1}`));
-    process.stderr.write(`translated ${i + 1}/${runs}: Tot rating ${translated[i]} MIPS\n`);
-  }
-} finally {
-  if (tmp) rmSync(tmp, { recursive: true, force: true });
+for (let i = 0; i < runs; i++) {
+  // Our Wine reads only the environment its host is given (wine-unix.md section 8): WINEDEBUG=-all, as for native.
+  const r = sh(process.execPath, [`${root}runtime/src/wine/run-wine.mjs`, '--env', 'WINEDEBUG=-all', exe, ...ARGS], { encoding: 'utf8' });
+  translated.push(parse(r, `translated run ${i + 1}`));
+  process.stderr.write(`translated ${i + 1}/${runs}: Tot rating ${translated[i]} MIPS\n`);
 }
 
 // --- native under wine64
@@ -87,6 +72,7 @@ console.log(JSON.stringify({
   date: new Date().toISOString(),
   node: process.version,
   cpu: cpus()[0]?.model ?? null,
+  host: 'wine',
   runs,
   args: ARGS.join(' '),
   translated_mips: t,

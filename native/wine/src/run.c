@@ -7,11 +7,11 @@
  *   rip's view (virtual.c's pages_vprot, VPROT_EXEC: tw_exec_range, patch
  *   0106), goes to tw_translate, and the loop goes on. With no such run, or
  *   when tw_translate fails, it stops loudly: on Windows the first is an
- *   execute access violation, which M5 raises.
+ *   execute access violation, which wine-unix.md section 13 defers (exceptions).
  * - EXIT_HOST: the host function that stopped recorded why in
  *   tw_host_stop_reason, and the loop returns to its caller.
  * - EXIT_FAULT and EXIT_UNSUPPORTED (store-check hits included) stop loudly
- *   until M5 and Phase 4.
+ *   (wine-unix.md section 13).
  *
  * Process exit never comes back here: the exit hook (patch 0302) longjmps
  * to boot through the translated frames.

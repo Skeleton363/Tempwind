@@ -149,6 +149,9 @@ test('wine-unix.yml runs on every file the Wine build and tests read', () => {
   const need = (p, why) => { if (!needed.has(p)) needed.set(p, why); };
   for (const p of importClosure(entries)) need(p, 'imported by the Wine host or its tests');
   for (const dir of crateClosure()) need(`${dir}/Cargo.toml`, `crate ${dir}, built by tests/wine/prepare.sh`);
+  // What cargo builds those crates with: the workspace's members and dependency versions, the locked
+  // versions, the toolchain. A dependency bump changes the translator's output (M4's close).
+  for (const p of ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml']) if (isFile(join(root, p))) need(p, 'cargo builds the crates with it');
   const named = [
     ['tests/wine/prepare.sh', namedFiles(join(root, 'tests/wine/prepare.sh'))],
     ['native/wine/build.sh', namedFiles(join(root, 'native/wine/build.sh'))],

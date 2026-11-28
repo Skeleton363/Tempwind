@@ -4,7 +4,7 @@ Runs unmodified 64-bit Windows programs in the browser: x86-64 to WebAssembly tr
 
 ## Layout
 - crates/: x64wasm (the translator), x64wasm-cli, x64wasm-rt (the translator for wasm32, run-time translation), x64wasm-fp (soft float), testkit (instruction oracle, fixtures, replay)
-- runtime/: JS runtime (Node and browser hosts, the Win32 shim); native/: Wine's Unix side with Emscripten (Phase 2+); web/: desktop shell (Phase 3+)
+- runtime/: JS runtime (the Wine host, the Linker, the spike hosts); native/: Wine's Unix side with Emscripten (Phase 2+); web/: desktop shell (Phase 3+)
 - tests/: program, Wine and browser tests; docs/: plan, status, design
 
 ## Commands
@@ -47,6 +47,6 @@ Quality first: rework is the most expensive waste. Cut the rest:
 - Contracts and tests before code: design notes and ABI changes are committed before agents start; fixtures or a failing test come before a fix. Once the plan is approved, the status note's work-package table is the only copy kept current.
 - Read narrowly: Grep, then Read with offset/limit. Never read fixtures, `census.json`, snapshots or CI logs whole; save logs to a file and grep them. Keep command output short (`cargo test -q`, `| tail -n 40`) except while diagnosing.
 - Split work into agents only along artifact boundaries (fixtures, ABI, separate files); never chain agents through summaries; small or tightly coupled work stays in the main loop.
-- Delegate large, self-contained work, not lookups one Grep answers. The brief names the files, the contract and the tests that decide "done"; agents report in about 150 words; the coordinator reviews diffs, not whole files. At a merge, the coordinator checks what the report says the code does against the contract sections the brief names; a difference gets a doc commit before the merge.
+- Delegate large, self-contained work, not lookups one Grep answers. The brief names the files, the contract and the tests that decide "done", and its first step resets the agent's worktree to the PR branch's head (an isolated worktree starts from `main`); agents report in about 150 words; the coordinator reviews diffs, not whole files. At a merge, the coordinator checks what the report says the code does against the contract sections the brief names; a difference gets a doc commit before the merge.
 - Verify before pushing, including CI scripts that can run in the session. Wait for PR events instead of polling CI.
-- Context: read it with `node scripts/context-usage.mjs` (exact, from the session transcript) at each checkpoint (plan approved, contracts pushed, each work package merged, before `/milestone-close`, after its reviews) and at each commit during a long stretch in the main loop. Above 300k tokens, and always between planning and execution, ask the owner to run `/compact` with a ready focus line, once the state is in files (trial 6, `docs/dev/agent-runs.md`).
+- Context: read it with `node scripts/context-usage.mjs` (exact, from the session transcript) at each checkpoint (plan approved, contracts pushed, each work package merged, before `/milestone-close`, after its reviews) and at each commit or batch of review findings during a long stretch in the main loop. Above 300k tokens, and always between planning and execution, put the state in files at once (a commit, or a scratchpad note for work in progress such as a review's triage) and ask the owner to run `/compact` with a ready focus line; don't wait for the next checkpoint (trial 6, `docs/dev/agent-runs.md`).

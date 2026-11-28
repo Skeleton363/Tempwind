@@ -4,7 +4,7 @@
  * and NtMapViewOfSection (section 4): at the preferred base, in a ranges64
  * slot when the base is taken, then a search in the image range, all against
  * TW_IMAGE_RANGE_END. A writable shared file view written back (section 6).
- * M3: the top-down ceiling (section 4) and tw_image_mapped (section 6).
+ * The top-down ceiling (section 4) and tw_image_mapped (section 6).
  *
  * The setup runs before the checks, as start_main_thread does it (loader.c):
  * virtual_init, the first TEB, dbg_init, the configuration directory (the
@@ -39,6 +39,7 @@
 #include "harness.h"
 #include "tempwind/abi.h"
 #include "tempwind_private.h"
+#include "server.h"
 
 #define WASM_PAGE        0x10000ull
 #define IMAGE_RANGE      0x100000000ull  /* the server's ranges64 (section 4), to TW_IMAGE_RANGE_END */
@@ -274,10 +275,6 @@ static const struct tw_check checks[] =
 
 int tw_test_main( void )
 {
-    virtual_init();
-    virtual_alloc_first_teb();
-    dbg_init();
-    config_dir = getenv( "WINEPREFIX" );  /* what set_config_dir does (loader.c) */
-    server_init_process();
+    tw_server_start();
     return tw_run_checks( checks, sizeof(checks) / sizeof(checks[0]) );
 }

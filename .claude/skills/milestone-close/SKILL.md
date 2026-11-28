@@ -7,6 +7,7 @@ description: Close a milestone - run the full verification, review the diff in t
 Never merge. The user merges.
 
 ## 1. Verify (record the commands and results)
+- Before the verification, the cleanup pass (trial 8, `docs/dev/agent-runs.md`): `/simplify` over the files the milestone adds or modifies, not the fixtures or the docs. Check each finding against the code before applying it, keep the triage in a scratchpad file as it goes, and commit by kind, each commit verified.
 - First, free disk (`df -h .`; M2's run stalled at 2.9 GB, so delete merged agent worktrees' `target/`) and, on a fresh checkout, build the inputs the tests read: `tests/pe/build.sh`, `tests/native/build.sh` and `native/spike/boundary/build.sh`.
 - `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 - `cargo clippy -p x64wasm-fp --target wasm32-unknown-unknown -- -D warnings`

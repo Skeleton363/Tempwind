@@ -335,3 +335,74 @@ Trial 6's lead was applied: three Explore runs read the sources, one Plan run re
 - **Translating each closure DLL at the base it lands on in each program** (`translate-pe --base`): the slot depends on the load order, so every program would need its own modules. Rebasing once at packaging gives one module per file.
 - **Packing the rebased DLLs from 0x1_8000_0000 up** (the status note's earlier idea): that is MSVC's default for users' DLLs, which would then collide with Wine's.
 - **`FS.createLazyFile`:** it fails Wine's stat-before-read, above.
+
+## 2026-11-21: Phase 2 M4, console programs
+
+The M4 planning pass, in a fresh session. Sources:
+- the wine-11.0 tarball (dl.winehq.org, sha256 checked), unpacked in the scratchpad; `wine-4c6ec0d`'s `closure.json`;
+- 7-Zip 25.01's source (`Bench.cpp`, `MyString.h`, `MyString.cpp`) from our `src-7zip-25.01` mirror, and CoreMark's port (`tests/targets/coremark/port/core_portme.c`);
+- Emscripten's ChangeLog and Claude Code's changelog, as single files;
+- Microsoft Learn (the DLL search order), wine-gitlab's merge requests 3103 and 7610 (session shared memory), Node's and Mozilla's JSPI notes, and Hacker News.
+
+Trial 6's lead was applied again: three Explore runs read the sources, one Plan run reviewed the draft against them, and the coordinator re-read only the lines a decision rests on. Line numbers are in the pristine tarball; `t.c` is `dlls/ntdll/unix/thread.c` and `sx.c` is `dlls/ntdll/unix/signal_x86_64.c`.
+
+### Wine 11.0
+- **Thread create:** the creator runs `new_thread`, then `pthread_create(start_thread, teb)`, with the stack from `pthread_attr_setstack(kernel_stack, 0x100000)` and guard 0 (`t.c` L1396-1410, L1445-1450). The new thread runs `server_init_thread` → `signal_start_thread` (L1121-1132; `sx.c` L2985-3020). A suspended start runs `wait_suspend` (`sx.c` L2957; `t.c` L1532-1542). win32u starts no threads.
+- **Thread exit:**
+  - `exit_thread` joins the previous exiting thread and frees its TEB and stacks (`t.c` L1494-1514); `pthread_exit_wrapper` closes the thread's fds (L1103-1111); `abort_thread` ends the process if it was the last thread (L1474-1479).
+  - `kill_thread` wakes a thread waiting in the server with cookie 0, and sends SIGQUIT to any other (`server/thread.c` L1608-1631). That includes a non-alertable `Sleep`, which sleeps in `select`.
+  - `process_sigkill` runs only from the process-destroy path (`server/process.c` L623-650, L1003).
+- **APCs:**
+  - Alertable waits return `STATUS_USER_APC` (`server/thread.c` L1189; `unix/server.c` L719-818). `call_user_apc_dispatcher` sets the frame's rip to `pKiUserApcDispatcher` (`sx.c` L1661-1705), which calls the APC and then `NtContinueEx` (PE `signal_x86_64.c` L382-415).
+  - Inside one process the only system APC that can arise is `APC_ASYNC_IO` (`server/async.c` L264-284). A system APC queued to a thread that isn't waiting sends it SIGUSR1 (`server/thread.c` L1464-1467).
+- **User callbacks:** `KeUserModeCallback` and `NtCallbackReturn` are at `sx.c` L1905-1931, the PE dispatcher at L421-448. win32u has 27 call sites. The first is in `register_builtins` (`win32u/class.c` L1225-1240), reached only through `get_desktop_window` (`winstation.c` L898) or a desktop-class window (`window.c` L5528).
+- **Suspension and another thread's context:** the server's `suspend_thread` and `get_thread_context` call `stop_thread`, which sends SIGUSR1 (`server/thread.c` L955-971, L2199-2230); a thread suspending itself gets the same. `usr1_handler`'s in-syscall branch takes the context, runs `wait_suspend` and puts the context back (`sx.c` L2626-2669). SIGUSR1 is in `server_block_set` (`unix/server.c` L1631).
+- **Timing:** `GetTickCount` reads only KUSER (`kernel32/sync.c` L85-105), which only the server's `set_current_time` writes (`server/fd.c` L380-426). QPC is a syscall (`ntdll/time.c` L383-388 → `unix/sync.c` L2473-2478); this tree has no QPC bypass. `GetProcessTimes` uses `times()` (`unix/process.c` L1231-1262).
+- **win32u, loading:** its DllMain runs `__wine_init_unix_call` → `NtQueryVirtualMemory(MemoryWineUnixFuncs)` (`winecrt0/unix_lib.c` L92-96). That reaches `get_builtin_unix_funcs`, whose only caller is `unix/virtual.c` L6113; it does `dlopen(unix_path)` and `dlsym("__wine_unix_call_funcs")` (L837-863). `find_builtin_dll` records `unix_path` without checking that the file exists (`unix/loader.c` L1358-1363).
+- **win32u, table 1:** Unix call 0, `init`, runs `KeAddSystemServiceTable(…, 1)` (`win32u/syscall.c` L92-111; `unix/loader.c` L625-634). The table has 1,540 x86-64 entries (`win32syscalls.h` L1545-3085). 1,062 of them are `SYSCALL_STUB`s, `static void name(void)` that raise (`syscall.c` L60-61); the other 478 have prototypes in `ntuser.h` and `ntgdi.h`, with no struct or float passed by value. A bad id returns `STATUS_INVALID_SYSTEM_SERVICE` (`sx.c` L3325).
+- **win32u, build:** 46 Unix files (`Makefile.in` L11-58). FreeType, fontconfig, Vulkan and EGL are optional through `SONAME_*` (`freetype.c` L74 and L1458, `vulkan.c` L3004, `opengl.c` L874); with none of them, `font_init` returns with no fonts (`font.c` L6742).
+- **user32's attach** (`user_main.c` L204-257):
+  - `DllMain` loads imm32 (L238). `process_attach` → `winproc_init` → `NtUserInitializeClientPfnArrays` (`winproc.c` L1140), which runs `init_user`: `shared_session_init`, `gdi_init`, `sysparams_init`, `winstation_init`, and only the desktop and message classes (`class.c` L248-280, L1254-1258).
+  - Nothing on that path reaches `get_desktop_window`, which would start `explorer.exe /desktop` (`winstation.c` L791-881).
+  - The volatile sysparams key is new at every boot of our in-process server, so the default entries are written at every boot (`sysparams.c` ~L5898): a boot cost.
+  - Thread detach makes table-1 syscalls on every thread's exit (`user_main.c` L216-228 → `sysparams.c` L7417-7433).
+- **Session shared memory:**
+  - The server `mmap`s `\KernelObjects\__wine_session` with `MAP_SHARED` and grows it by further mmaps of the same fd (`server/mapping.c` L1341-1402). Callers: `set_session_mapping` ← `directory.c` L501-502; `grow_session_mapping` ← `find_free_session_block` (`mapping.c` L1408-1416).
+  - win32u maps the section read-only (`map_shared_session_block`, `winstation.c` L106-144): it rounds the offset down to 64 KiB, maps with size 0 (to the section's end), and caches blocks with a strict `<` (L114, L129-130, L157). Its callers: `find_shared_session_block` ← `shared_session_init` (L192-201) and `find_shared_session_object`. It reads under a seqlock (L82-92). Only win32u's Unix side reads the section.
+  - Our file views are copies, so a client view would read stale bytes.
+- **KnownDlls and services:** natively a session's first process runs `wineboot --init` (`unix/env.c` L1539-1561), which starts services.exe and creates the KnownDlls (`wineboot.c` L1898-1906, L997-1046). Our boot skips wineboot (M2), so neither exists. A missing `\KnownDlls` isn't fatal: `open_known_dll` fails and `find_dll_file` searches the load path (`loader.c` L2747-2758, L3293-3298). combase starts RpcSs only on `RPC_S_SERVER_UNAVAILABLE` (`combase/rpc.c` L185-206).
+
+### 7-Zip and CoreMark
+- CoreMark's port times with QPC (`core_portme.c` L20-27).
+- `7z b` times with QPC (`Bench.cpp` L394-410). Its `CUserTime` reads `GetTickCount` with `GetProcessTimes`, a syscall (L499-520).
+- 7zz's console build calls only `CharUpperW`, `CharLowerW` and `CharNextA` from user32 (`MyString.h` L178 and L197, `MyString.cpp` L26), which Wine forwards to kernelbase (`user32.spec` L269-285).
+- With no arguments its output is deterministic: `ShowProgInfo` is empty on `_WIN32`.
+
+### Emscripten 6.0.12
+- 6.0.13 and 7.0.0 are as recorded in M3; 7.0.1 is unreleased. Nothing new touches pthreads, JSPI, longjmp or memory64. Decision: stay on 6.0.12.
+
+### Official
+- **Microsoft Learn:** the KnownDLLs come before the application folder in the standard DLL search order, so a program can't override them; under our boot the load path finds the same files.
+- **JSPI:** Node 24.20 enables it, and Firefox 153 intends to ship it (for Phase 3).
+- **Session shared memory** comes from the Proton series upstreamed through merge requests 3103 and 7610; their descriptions match the code above.
+
+### Community
+- Hacker News's only hit for Wine in WebAssembly with threads is Theseus, which is on our clean-room list: we read its title only.
+
+### Review
+- **A Plan-agent review of the draft** (18 min, read-only) found 4 blockers:
+  - signal delivery at `green_block`'s return leaves the thread's stack waiter linked when SIGQUIT's `abort_thread` longjmps out, and SIGUSR1's nested `server_select` adds a second waiter;
+  - a parked main thread meets the next exiting thread's `pthread_join` in `exit_thread`;
+  - process exit from a second thread let queued threads run guest code after `ExitProcess`, and a pending `Sleep` timer kept Node alive;
+  - table 1's 1,062 stubs would trap through a typed `call_indirect`.
+- Its should-fix items: count a spawned thread as runnable, the session view's size and cap, patch 0107 decided now, per-thread state blocks and frame records, and user32's thread detach. Three citations were corrected (services start at every session's first process, user32's attach path, 27 call sites) and five line numbers fixed. Its work-package findings (the catalog's order, the lock bump, bench ratios per host, patch numbering, splitting WP1, the matrix's own job) and the shim's dependents are in the plan. Each one is in the plan and the contracts.
+
+### Workflow
+- **Claude Code 2.1.326-2.1.330:** compaction and subagent fixes. Leads only: no measured problem of ours. Not adopted.
+- **Trial 6's lead, measured again:** the planning stretch cost $14.48 and 45.8M cache reads at the plan's approval; the four agents read 35.8M (the Plan review 20.9M). The coordinator's transcript: 51 requests and 11.3M cache reads to the approval, 363k context at its end (M3: 8.7M and 374k). The owner's `/compact` between planning and execution took it to 110k.
+
+### Not adopted
+- **libc's `dlopen` for win32u's Unix library:** its `dlerror` reaches `__get_tp`, which stops loudly (`stubs.c` L36-43). A static table behind `get_builtin_unix_funcs` (patch 0107) does the same job.
+- **A view of the session section in the guest's file views:** they are copies, so win32u would read stale bytes. The server's reservation is the one memory both sides read, as KUSER is.
+- **A ticker Worker for KUSER's time:** our syscall dispatcher refreshes KUSER's clock at every entry (`set_current_time`, `native/wine/src/signal_wasm64.c` L239), and QPC and `GetProcessTimes` are syscalls, so `7z b`'s `GetTickCount` reads a fresh clock. Only a loop that reads `GetTickCount` with no syscall in it would see a frozen one. Measured first: such a spin, if one turns up, gets the ticker.
+- **Running `wineboot --init` at boot** for services and the KnownDlls: deferred by the owner (services to Phase 4, `\KnownDlls` to M5 if conformance shows the difference).

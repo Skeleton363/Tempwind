@@ -14,7 +14,6 @@
  *
  * build.sh force-includes this file (-include) and writes the tree's
  * include/config.h as a forwarder, so `#include "config.h"` finds it too.
- * Later packages append lines here, each with its reason.
  */
 #ifndef __WINE_CONFIG_H
 #define __WINE_CONFIG_H
@@ -102,5 +101,21 @@
 
 /* Builtins. */
 #define HAVE___BUILTIN_POPCOUNT 1
+
+/* ---- Green threads and signals ---- */
+
+/* wine-unix.md v3, section 7, "Which green thread": get_unix_tid
+ * (unix/server.c L1527-1549) returns the green thread's id, which
+ * native/wine/src/green_pthread.c defines; FreeBSD's <pthread_np.h> would
+ * declare it, and no such header exists here. */
+#define HAVE_PTHREAD_GETTHREADID_NP 1
+int pthread_getthreadid_np( void );
+
+/* wine-unix.md v3, section 9, "The mask": ntdll's pthread_sigmask
+ * calls (unix/server.c, unix/thread.c) reach the per-green-thread mask in
+ * native/wine/src/green_pthread.c. libc's pthread_sigmask stays in the link
+ * (Emscripten's raise takes __sig_is_blocked from the same file), and
+ * libc's sigprocmask stays the in-process server's own mask. */
+#define pthread_sigmask tw_pthread_sigmask
 
 #endif /* __WINE_CONFIG_H */

@@ -125,7 +125,7 @@ A caller that gets a status other than 0 from a call stores nothing further and 
    - `STATUS_EXIT`: the reason is in `state.exit`.
 3. Materialize RFLAGS: `rflags = (rflags & !STATUS) | flags(cc_op, cc_a, cc_b, cc_r)`. Set `depth = d0`, store the exit reason in `state.exit` and return it.
 
-A `run` that ends by a trap or by an import that throws restores nothing: the exception leaves `depth` at the inner value. The host that catches it restores `depth` to its own entry value, as `runtime/src/process.mjs`'s `callNested` does in its `finally`. A host that keeps running after a top-level trap sets `depth` back to 0. The Unix side follows the same rule: `boot` sets `depth` to 0 after a `longjmp` out of guest code ("Wine boundary", "Process exit"). This was found by M2's code review: today a trap ends the process, so nothing reaches the stale value.
+A `run` that ends by a trap or by an import that throws restores nothing: the exception leaves `depth` at the inner value. The host that catches it restores `depth` to its own entry value, as Phase 1's `callNested` (deleted in M4) did in its `finally`. A host that keeps running after a top-level trap sets `depth` back to 0. The Unix side follows the same rule: `boot` sets `depth` to 0 after a `longjmp` out of guest code ("Wine boundary", "Process exit"). This was found by M2's code review: today a trap ends the process, so nothing reaches the stale value.
 
 **`depth` across nested runs (v5).** A host starts `depth` at 0, so a top-level `run` behaves as in v4. A `run` entered from a host function while guest frames are live (a nested guest call: "Wine boundary", "Who calls whom", item 5) counts on from the outer frames, so the depth guard bounds the wasm stack across all nested runs, and the outer guest code continues with its own count when the nested `run` returns.
 
@@ -207,7 +207,7 @@ Hosts allocate `STATE_SIZE` bytes and zero the reserved fields.
 | 1 | `EXIT_LEFT_CODE` | Control reached a guest address with no block in the lookup table: a fall-through past the code, a target nothing translated yet, or a `ret` to an unknown address. `rip` holds that address. Hosts translate more code (run-time translation) or stop. |
 | 2 | `EXIT_UNSUPPORTED` | The instruction at `rip` is not supported yet. Registers hold the state before it. From M4 also a floating-point instruction that raises an unmasked exception (#XM and #MF wait for Windows exceptions in Phase 4). |
 | 3 | `EXIT_FAULT` | A guest fault: fault address and kind in the state block. RIP is the faulting instruction, and every register holds its value from before it. Translated code emits it from M3 for #DE (`div`, `idiv`), #UD (`ud2` and bytes that don't decode) and #GP, with fault address 0. An instruction that decodes but is outside the CPUID profile stays `EXIT_UNSUPPORTED`. M2's runtime raises it for execution outside executable sections. NULL and store checks come with M6. |
-| 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API, a shim error. The host knows why. In a Wine process the Unix side keeps the reason in C (v5). |
+| 4 | `EXIT_HOST` | A host function stopped execution: process exit, an unimplemented API. The host knows why. In a Wine process the Unix side keeps the reason in C (v5). |
 
 A test function returns to the host by `ret`ing to a sentinel return address that the host pushed (`SENTINEL_RET = 0x0000_7FFF_FFFF_0000`). The host then expects exit 1 with `rip == SENTINEL_RET`.
 
@@ -321,6 +321,7 @@ Status:
   - `depth` in C;
   - process exit;
   - the new imports (`wine-unix.md` v2, sections 11 and 12).
+- **M4 adds** green threads beyond the main one (`tw_thread_main`, `green_spawn`, the scheduler's stack), process exit from any thread, and `tw_exit_status` (`wine-unix.md` v3, sections 8 and 9).
 
 ### Instances
 - **Shared per Windows process:**
@@ -339,7 +340,7 @@ Status:
 - **The bridge** (M3) is one small module emitted by `x64wasm` (below). JS instantiates it before the Unix side, which imports its functions.
 
 ### Who calls whom
-1. **JS → Unix side.** Only through `WebAssembly.promising` around a raw export: `boot`, and `thread_main` once per green thread. JS may call a raw export directly only if it never blocks (queries such as reading the exit code).
+1. **JS → Unix side.** Only through `WebAssembly.promising` around a raw export: `boot`, and `tw_thread_main` once per green thread (M4). JS may call a raw export directly only if it never blocks (queries such as `tw_exit_status`), and only on the scheduler's stack ("Green threads").
 2. **Unix side → translated code.** The Unix side imports `tw_run: (state i64) -> i32`, the bridge's `run`, wasm to wasm. The run loop is C (`wine-unix.md`, section 12):
    ```
    for (;;) switch (tw_run(state)) {
@@ -349,7 +350,7 @@ Status:
      case EXIT_UNSUPPORTED: stop loudly;             // store-check hits included
    }
    ```
-   Phase 1's JS run loop (`process.mjs`) doesn't apply to Wine processes.
+   Phase 1's JS run loop (deleted in M4) never applied to Wine processes.
 3. **Translated code → Unix side.**
    - Host functions in `env.table` are **raw Unix-side exports** of the guest-function type `(state i64, entry i32, ret i64) -> i32`. They follow "Host functions" above: read the arguments, perform the guest's `ret`, return a status.
    - JS installs them with `table.set(i, instance.exports.f)`. An Emscripten JS wrapper (memory64 BigInt conversion) must never go there: it would be a JS frame.
@@ -360,7 +361,7 @@ Status:
    - Plain imports for work that returns without blocking: translate and link (`tw_translate`), image mapped (`tw_image_mapped`), invalidate (`tw_invalidate`), output, memory growth.
    - `Suspending` imports for the only blocking point, `green_block`.
    - The bridge's functions are imports too, but they are wasm, not JS.
-5. **Nested guest calls** (`KeUserModeCallback`, later APCs) run the same C loop recursively, after saving the caller's registers. The callee ends through a host function that returns `STATUS_EXIT` with a reason the loop knows. No JS is involved.
+5. **Nested guest calls** (`KeUserModeCallback`, deferred: `wine-unix.md` v3, section 13) would run the same C loop recursively, after saving the caller's registers. The callee ends through a host function that returns `STATUS_EXIT` with a reason the loop knows. No JS is involved. User APCs don't nest: the dispatcher's new-context return enters `KiUserApcDispatcher`, which resumes the interrupted context with `NtContinueEx` (M4, `wine-unix.md` v3, section 11).
 
 **The rule:** no JS frame between a `promising` entry and a `Suspending` import. V8 cannot suspend JS frames. A plain import that has returned before the suspension is not on the stack, so it is fine.
 - **Observed (the spike's negative test):** a JS function in `env.table` that calls the raw host function makes the `Suspending` call throw `WebAssembly.SuspendError: trying to suspend JS frames`, which unwinds the thread's wasm stack and rejects its `promising` Promise. Node 24.22 (V8 13.6) first calls the import's JS function and drops the Promise it returns; Chromium 153 throws before calling it. So a blocking import must not commit side effects that only make sense if the suspension happens.
@@ -420,7 +421,7 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 **`tw_unix_call_dispatcher`** is Wine's `__wine_unix_call_dispatcher` (L3352-3464).
 - **Entry:** RCX = the handle, EDX = the code (an `unsigned int`, `include/wine/unixlib.h` L275), R8 = the argument pointer (L3353, L3424-3425).
 - **The frame record:** it pops the return address `t` into the frame's `rip` unadjusted (L3356) and sets `restore_flags` = 0x20000 (L3359). It doesn't materialize the flags: the frame is incomplete, as Wine marks it.
-- **The call:** only ntdll's `unix_call_funcs` are reachable, through the handle the Unix side stored. An unknown handle or a code past the table stops loudly. Wine checks neither.
+- **The call:** ntdll's `unix_call_funcs` and, from M4, win32u's `__wine_unix_call_funcs` are reachable, through the handles the Unix side stored (`tw_unixlib_count`, `native/wine/src/unixlibs.c`; `wine-unix.md` section 2). An unknown handle or a code past its table stops loudly. Wine checks neither.
 
 **Return,** for both, by the frame's `restore_flags` (Wine's return path, L3191-3276; for a unix call, L3438):
 - **CONTROL (0x1) or INTEGER (0x2):** the new-context return ("Host functions"). The frame's RIP, RSP and EFLAGS are the context's, since Wine resumes with `iretq` (L3256-3276).
@@ -445,17 +446,23 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
   - `boot` sets `depth` to 0 and returns the status.
   - The `longjmp` unwinds the translated frames on the wasm stack as a wasm exception (`-sSUPPORT_LONGJMP=wasm`).
 - **Other ends:** any other `exit()` or `_exit()` still rejects `boot`'s promise. That includes `abort_process` reached from `abort_thread` (`thread.c` L1477), Wine's end for server errors and killed threads (`wine-unix.md`, section 8).
+- **From any thread (M4):** on a thread other than the main one, the hook records the status and `longjmp`s to that thread's `tw_thread_main`, which returns `TW_THREAD_PROCESS_EXIT` (1); JS then reads the status with `tw_exit_status()`. `boot`'s promise never settles in that case. An `exit()` or `_exit()` on any thread rejects that thread's promise.
+- **The host settles the process once,** with the first of `boot`'s return, a `TW_THREAD_PROCESS_EXIT`, or a rejection of any entry's promise. Then it clears its timers and never resumes a `green_block` or starts a thread again (`wine-unix.md` v3, section 8).
 - **One process per instance:** after the process exits, the instance is finished. A program runs in a fresh instance.
 
 ### Green threads
-- **What one is:** a `promising` entry (`thread_main`), a CPU state block, and a region for the Emscripten shadow stack (Wine's kernel stack for that thread).
+- **What one is:** a `promising` entry (`boot` for the main thread, `tw_thread_main` for the others, M4), a CPU state block, and a region for the Emscripten shadow stack: Emscripten's own stack for the main thread, and for the others Wine's kernel stack for that thread, a 1 MiB guest view below 4 GiB that Wine allocates and frees (`wine-unix.md` v3, section 9).
 - **`green_block` is the only switch point.** The suspending thread saves, and after resuming restores, in C around the call:
   - `__stack_pointer`, plus the stack base and end;
   - `errno`, which is one global without pthreads;
   - the current state-block pointer;
   - `depth` (`env.depth`), from M3, read and written through the bridge's `depth_get` and `depth_set` (the imports `tw_depth_get`, `tw_depth_set`). It counts the running thread's guest frames, so a value another thread left behind moves the depth guard: it unwinds too early or too late. It is restored in C after `green_block` returns, on the resumed stack like the rest, never in `green_block`'s JS continuation, which can run before another woken thread resumes. A new thread starts with 0. M4's test with two threads checks it (found by M2's WP0).
-- **A new thread's stack pointer and limits** are set by JS through the exported stack functions, immediately before its `promising` entry. `thread_main` itself must not run on another thread's stack region.
-  - The region comes from the raw `malloc` export (the spike: 64 KiB). Then `emscripten_stack_set_limits(top, bottom)` (Emscripten's names: base = the high end, end = the low end) and `_emscripten_stack_restore(top)`, both raw exports of compiler-rt's stack functions, which use no shadow stack themselves. A C wrapper that sets them would have its own frame and restore the old pointer on return.
+- **Spawning (M4):** C's `pthread_create` makes the green thread and calls the plain import `green_spawn(id, top, bottom)` with its stack region. JS starts it after the current call into the module returns, in order with the wakes: deterministic FIFO.
+- **A new thread's stack pointer and limits** are set by JS through the exported stack functions, immediately before its `promising` entry. `tw_thread_main` itself must not run on another thread's stack region.
+  - The region is the one `green_spawn` named (the spike's came from the raw `malloc` export: 64 KiB). JS calls `emscripten_stack_set_limits(top, bottom)` (Emscripten's names: base = the high end, end = the low end) and `_emscripten_stack_restore(top)`, both raw exports of compiler-rt's stack functions, which use no shadow stack themselves. A C wrapper that sets them would have its own frame and restore the old pointer on return.
+  - **The overflow check's limits (M4):** the build's `-sSTACK_OVERFLOW_CHECK=2` (`wine-unix.md`, section 2) makes binaryen's StackCheck pass check every write of the stack pointer, `_emscripten_stack_restore`'s included, against two limits of its own, which only its export `__set_stack_limits(base, end)` sets (Emscripten's glue calls it once, for the main stack); `emscripten_stack_set_limits` doesn't change them, and C can't call the export. So JS calls `__set_stack_limits` with a thread's region before it starts the thread, before it resumes a blocked thread (the region JS recorded for it: `green_spawn`'s, or for the main thread Emscripten's own stack, read once before any entry), and with the scheduler's region before each of its direct raw calls. C's restore in `green_switch` then passes the check. Found by WP1: without it the first restore on a new thread's stack aborts with Emscripten's "stack overflow".
+- **`tw_thread_main(id)`** returns 0 when the thread has ended (`pthread_exit`, which `longjmp`s to it) and `TW_THREAD_PROCESS_EXIT` when the process exited on it ("Process exit"). A thread's exit is not an exit reason: `EXIT_HOST` stays unused.
+- **The scheduler's stack (M4):** JS's direct raw calls (`tw_next_timeout`, `tw_run_timeouts`, `tw_exit_status`) run only while no thread runs, on a 64 KiB region JS takes from the raw `malloc` before `boot`: JS sets the limits and the pointer to it before each such call. A thread that has ended leaves the stack pointer in its own region, which Wine frees and may map again; a suspended thread restores its own stack when it resumes.
   - The save in C: `emscripten_stack_get_current`, `emscripten_stack_get_base` and `emscripten_stack_get_end` before `green_block`; after it, `emscripten_stack_set_limits` and `_emscripten_stack_restore` with the saved values, then `errno` and the current-thread pointer. The spike checks that the save set is needed: without the restores, the first thread resumes on the second thread's stack pointer with its `errno` and state pointer.
 - **The green library provides the pthread functions:** mutexes, condition variables, `pthread_once` and keys. With `-sSHARED_MEMORY` and no `-pthread`, Emscripten links the `-ww` libc, which has no pthread functions at all, not even stubs (`wine-unix.md`, section 9). A thread that suspends while holding a mutex is a bug, and the library asserts on it.
 
@@ -468,7 +475,7 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 
 ### The host region (M2)
 - **[0x8000_0000, 0x1_0000_0000) belongs to the Unix side's allocator:** Emscripten's static data from `GLOBAL_BASE`, the 1 MiB stack, then the heap.
-- **JS allocates the runtime's data there through the raw `malloc` export:** state blocks, the lookup header and slots, and green-thread stacks (M4). The Unix side allocates the page-state table itself (`tw_page_flags()`).
+- **JS allocates the runtime's data there through the raw `malloc` export:** the lookup header and slots, and the scheduler's stack (M4). The Unix side allocates the page-state table and the threads' state blocks itself (`tw_page_flags()`, `wine-unix.md` v3, section 9). Green threads' shadow stacks are Wine's kernel stacks, in the guest region below 4 GiB.
 - **Nothing maps guest memory there.** Wine reports the range as reserved (`wine-unix.md`, section 4).
 
 ### The C header (`x64wasm-cli gen-header`, M2)
@@ -501,17 +508,22 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 | `tw_main_state` | `() -> i64` | The main thread's state block, once `boot` has stopped at the entry. |
 | `tw_next_timeout` | `() -> i64` | Milliseconds until the earliest thread wait or server timer, rounded up; 0 if one is due; -1 if there is none. It ignores the server's KUSER tick and its registry save. When it returns -1, it prints each waiting thread's wait on stderr, for the scheduler's deadlock report (`wine-unix.md`, section 9). |
 | `tw_run_timeouts` | `() -> ()` | Runs the expired server timeouts and wakes the threads whose deadline has passed. |
-| `emscripten_stack_set_limits`, `_emscripten_stack_restore` | as in the spike | A new green thread's stack (M4). |
+| `emscripten_stack_set_limits`, `_emscripten_stack_restore` | as in the spike | A new green thread's stack, and the scheduler's (M4, "Green threads"). |
+| `emscripten_stack_get_base`, `emscripten_stack_get_end` | `() -> i64` | M4. The main thread's stack region, Emscripten's own stack, read once when the scheduler starts ("Green threads"). |
+| `__set_stack_limits` | `(base i64, end i64) -> ()` | M4. Added by `-sSTACK_OVERFLOW_CHECK=2`: the limits its check uses, set by JS for the thread it starts or resumes and for the scheduler's stack ("Green threads"). |
+| `tw_thread_main` | `(id i32) -> i32` | M4. Entered through `promising` once per spawned green thread, on its own stack. Returns 0 when the thread ended, `TW_THREAD_PROCESS_EXIT` (1) when the process exited on it (`wine-unix.md` v3, section 9). |
+| `tw_exit_status` | `() -> i32` | M4. The full Windows exit status recorded by process exit on a thread other than the main one. Stops loudly before one. |
 | `tw_test_main` | `() -> i32` | Harness modules only (`wine-unix.md`, section 10), entered through `promising`. |
 
-`tw_next_timeout`, `tw_run_timeouts` and the queries never block, so JS calls them directly. While a thread is suspended, they run on the shadow stack below its frames and return before it resumes.
+`tw_next_timeout`, `tw_run_timeouts` and the queries never block, so JS calls them directly, on the scheduler's stack from M4 ("Green threads"). In M2 and M3 they ran on the shadow stack below the suspended thread's frames.
 
 **Imports** (`env`), declared in `native/wine/src/library.js`:
 
 | Import | Type | Use |
 |---|---|---|
 | `green_block` | `(thread i32) -> i64` | `WebAssembly.Suspending`, the only switch point. It resumes with the value JS passes (0 in M2), or throws the scheduler's deadlock error. |
-| `green_wake` | `(thread i32) -> ()` | Plain. C has made the thread runnable; JS resumes its `green_block` after the current call into the module returns. |
+| `green_wake` | `(thread i32) -> ()` | Plain. C has made the thread runnable; JS resumes its `green_block` after the current call into the module returns. Idempotent: a second wake before the resume changes nothing (M4). |
+| `green_spawn` | `(thread i32, top i64, bottom i64) -> ()` | Plain (M4). C has made a green thread with its stack region `[bottom, top)`; JS starts it with `tw_thread_main(thread)` after the current call into the module returns, in order with the wakes. |
 | `memory_grown` | `() -> ()` | Plain, as in the spike. |
 | `tw_run` | `(state i64) -> i32` | The bridge's `run` (M3). In M2 a JS stub that stopped loudly. |
 | `tw_depth_get`, `tw_depth_set` | `() -> i32`, `(i32) -> ()` | The bridge's `depth_get` and `depth_set` (M3). |
@@ -522,16 +534,18 @@ The two dispatchers are host functions: raw exports of the Unix side that Wine's
 
 The Emscripten runtime's own imports are listed, each with a reason, in `native/wine/imports.txt`; the build fails on any import not listed there.
 
-### Settled in M3, and what is left
+### Settled in M3 and M4, and what is left
 - **Settled:**
   - `env.depth` from C: the bridge's `depth_get` and `depth_set` ("The bridge");
   - the dispatcher addresses ("Syscalls and unix calls");
   - a raw `syscall` instruction: `EXIT_UNSUPPORTED`;
   - process exit: a `longjmp` to `boot`, not an exit reason ("Process exit").
+- **Settled in M4:**
+  - thread exit: a `longjmp` to `tw_thread_main`, not `EXIT_HOST` ("Green threads");
+  - process exit from any thread ("Process exit");
+  - APC delivery: `call_user_apc_dispatcher` through the dispatcher's new-context return (`wine-unix.md` v3, section 11).
 - **Later:**
-  - **Thread exit (M4):** `EXIT_HOST`, with the reason kept in C.
-  - **Callback return (M4):** `KeUserModeCallback`'s callee ends in `NtCallbackReturn`, a host function that returns `STATUS_EXIT` with a reason the nested loop knows ("Who calls whom", item 5).
-  - **APC delivery (M4):** `call_user_apc_dispatcher`.
+  - **Callback return (deferred: Phase 3's desktop, or M5 if a conformance unit needs it):** `KeUserModeCallback`'s callee ends in `NtCallbackReturn`, a host function that returns `STATUS_EXIT` with a reason the nested loop knows ("Who calls whom", item 5).
   - **Exceptions (M5):** `EXIT_FAULT` raises through Wine's own dispatcher.
 
 ### The spike (M1)

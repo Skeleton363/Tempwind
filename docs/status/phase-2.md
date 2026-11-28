@@ -1,9 +1,10 @@
 # Phase 2 status: Wine underneath
 
-**Phase 2 is planned (2026-11-06). M1, "Wine in CI, and the boundary spike", is done (2026-11-13, merged as skeleton363/tempwind#10 and #11). M2, "Wine's Unix side boots", is done (2026-11-14, merged as skeleton363/tempwind#12 and #13). M3, "Boot: hello.exe on Wine", is done (2026-11-21); its draft PR is open. M4, "Console programs on Wine", is next.**
+**Phase 2 is planned (2026-11-06). M1, "Wine in CI, and the boundary spike", is done (2026-11-13, merged as skeleton363/tempwind#10 and #11). M2, "Wine's Unix side boots", is done (2026-11-14, merged as skeleton363/tempwind#12 and #13). M3, "Boot: hello.exe on Wine", is done (2026-11-21, merged as skeleton363/tempwind#16). M4, "Console programs on Wine", is done (2026-11-27); its draft PR is open. M5, "Exceptions and conformance tracked", is next.**
 - M1: WP1 (the Wine CI build), WP2 (the census, fixtures and translation of Wine's DLL closure) and WP3 (the boundary spike) are done.
 - M2: WP0 to WP5 are merged and the close is under "M2" below.
 - M3: the decisions and the work packages are under "M3" below.
+- M4: the decisions, the work packages and the close are under "M4" below, and its pauses and resumes under "M4 progress".
 
 The milestones are in `docs/plan.md`, "Phase 2 milestones", and the research pass is in `docs/dev/research.md`, "2026-11-06: Phase 2, Wine underneath". A new session starts only with a new milestone (the owner, 2026-11-07).
 
@@ -820,6 +821,462 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
     The main tree now has the spike, `pe`, `native` and `wine-spike` inputs, built while WP6 ran.
 - **Next:** `/milestone-close`, once CI is green on `f2c2c80`.
 
+## M4: Console programs on Wine (done 2026-11-27)
+
+Session 4 started fresh from M3's hand-off, on `claude/brave-lovelace-hurayr` from `main` = `c9a3b35` (PR #16 merged). The research pass is in `docs/dev/research.md`, "2026-11-21: Phase 2 M4, console programs". Done when: green threads; win32u loads; CoreMark validates and the 7-Zip matrix gives 138/138 on Wine; both benchmarks are tracked on Wine; the JS shim is deleted.
+
+### Decisions taken when planning M4 (2026-11-21)
+**The owner's:**
+- **Deferred:** services to Phase 4 (with child processes); `\KnownDlls` to M5, if conformance shows the difference, with ranged lazy reads; `KeUserModeCallback` to Phase 3's desktop, or to M5 if a conformance unit needs it first. Their loud stops stay.
+- **Phase 1's loader and run loop go with the shim:** `process.mjs`, `run-pe.mjs`, `hostcall.mjs`, `threads.mjs` and `vfs-host.mjs`, with `runtime/src/win32/`.
+
+**Ours** (each is a contract line in `wine-unix.md` v3, with its Wine citation):
+1. **Green threads in C:** `pthread_create` records the routine, takes Wine's 1 MiB kernel stack from `pthread_attr_setstack`, counts the thread runnable and calls the import `green_spawn`; JS starts it with the raw export `tw_thread_main` after the current call returns. `pthread_exit` `longjmp`s to `tw_thread_main`; `pthread_join` waits for the end. Each thread gets its frame record and state block. The main thread parks when it exits with others alive. The schedule stays deterministic FIFO; `green_wake` is idempotent.
+2. **Process exit from any thread:** on the main thread, the M3 `longjmp` to `boot`; on another, a `longjmp` to its `tw_thread_main`, which returns `TW_THREAD_PROCESS_EXIT`, and JS settles with `tw_exit_status()`, clears its timers and resumes nothing. A rejection of any thread's promise settles the process too.
+3. **Signals, delivered at the wait:** `send_thread_signal` marks the signal pending and wakes the target, which handles it once its waiter is unlinked, at an unblock, or before the dispatcher returns. SIGQUIT → `abort_thread(0)`; SIGUSR1 → `usr1_handler`'s in-syscall branch (suspension, another thread's context, the system-APC kick). Masks per green thread.
+4. **User APCs:** `call_user_apc_dispatcher` ported against the frame record, returning by the new-context path.
+5. **win32u's Unix side** in the same module, without FreeType, fontconfig, Vulkan or EGL; patch 0107's static unix library table in place of `dlopen`; the unix-call dispatcher accepts win32u's table; table 1's 478 prototyped entries get typed wrappers and its 1,062 stubs loud stops; table 1 is served once `KeAddSystemServiceTable` registers it.
+6. **Session shared memory = one memory:** the server's session blocks are ranges of one 16 MiB host-heap reservation (patch 0203); win32u's `map_shared_session_block` takes `tw_session_view`. No guest view.
+7. **Timing:** no ticker Worker. Every syscall refreshes KUSER's clock, and QPC and `GetProcessTimes` are syscalls. WP5 checks for a `GetTickCount` spin.
+8. **Host files:** `createWineProcess` takes `files` and offers `collect(dir)`; `run-wine.mjs --dir HOST` mounts HOST at `C:\work`, as Phase 1's `--dir`. The matrix's `translated` mode means our Wine.
+9. **Programs:** `prepare.sh` fetches 7zz.exe and coremark.exe; the catalog adds them, basic.exe, `l2_threads` and `l2_suspend`; `programs.test.mjs` adds basic.exe, the two new L2 programs and CoreMark with a small fixed count. 7zz's test is the matrix.
+10. **Benchmarks on Wine:** `coremark.mjs` and `sevenzip.mjs` through the Wine host with Phase 1's arguments; `bench.yml` prepares `target/wine` and records `"host": "wine"`; ratio warnings compare lines of the same host.
+11. **The shim's deletion** comes last (WP6), with Wine-level replacements or named coverage for the translator features its tests covered (`memory-checks`, `pe`, `l2`, `guestcall`).
+12. **Deferred** as the owner decided (above); `wine-unix.md` section 13 records each.
+13. **Leftovers:** `depth` across a switch (WP1's test); `process_sigkill` unreachable (WP1's test); `get_image_map_address` under the mutex stays harmless.
+
+### Decided while writing the contracts (2026-11-23)
+The contracts are `wine-unix.md` v3, `abi.md` v5's M4 parts, `runtime.md` (the shim's removal, benchmarks on Wine), `wine-build.md` ("The catalog", "Where it is built") and `tests/sevenzip/README.md`. Each Wine line they cite was read again in the tarball first. Writing them settled these details:
+- **WP1 delivers SIGQUIT,** not WP4. `ExitProcess` with another thread alive kills it through the server, and a thread outside a server wait (a non-alertable `Sleep`, which sleeps in `select`) gets SIGQUIT (`server/thread.c` L1608-1631). Today that is `exit(0)`, so neither process exit nor a thread's kill works without it. WP4 keeps SIGUSR1 and the masks.
+- **Wine never joins the main thread:** its `pthread_id` stays 0, since only `start_thread` sets it (`unix/thread.c` L1128), and `exit_thread` skips the join for 0 (L1507). The planned "join of a parked main returns at once" isn't needed; such a join stops loudly instead.
+- **The scheduler gets its own stack:** a thread that ended leaves the stack pointer in its region, which Wine frees and may map again. JS's direct raw calls (`tw_next_timeout`, `tw_run_timeouts`, `tw_exit_status`) run on a 64 KiB region JS takes from `malloc`.
+- **The programs' expected AOT links** are the modules our boot maps, not `closure.json`'s lists: basic.exe's native trace caught a prefix's first boot (54 modules, wineboot and services among them).
+- **Interrupted waits return as interrupted calls** (`EINTR`, or a spurious condition wakeup), and Wine's loops carry on (`unix/sync.c` L2463, `unix/server.c` L377). Re-arming a condition wait inside a handler could lose a signal.
+- **`tw_unixlib_count`** joins `tw_unixlib_funcs`, so the unix-call dispatcher can check a code against win32u's table.
+- **Declared before the agents start:** `green_spawn` (`library.js`, `imports.txt`), and `tw_thread_main`, `tw_exit_status`, `TW_THREAD_PROCESS_EXIT`, `tw_unixlib_funcs`, `tw_unixlib_count`, `tw_session_view` and `TW_SESSION_CAP` (`tempwind_private.h`).
+
+### Work packages
+At most two deep-workers at once and three subagents in all. Each brief names its files, contract sections, tests and WIP track `m4-wpN-wip`, and asks the agent to check its worktree base first. This table is the only copy kept current.
+
+| WP | Agent | When | Owns | Done when |
+|---|---|---|---|---|
+| WP1: threads (merged, `0e28fbe`) | deep-worker | after the contracts | decisions 1, 2 and 13, and SIGQUIT's delivery: `green.c`, `green_pthread.c`, `boot.c`, `signal_wasm64.c`'s thread setup, 0201's `send_thread_signal` hunk (SIGQUIT), the `unix-host.mjs` scheduler (spawn, scheduler stack, settling), `native/wine/tests/thread.c` and `tests/wine/thread.test.mjs` | `wine-unix.md` section 10's `thread` checks; `l2_threads` matches native on Wine |
+| WP2: win32u (merged, `bfea4ee`; the coordinator's doc fix `55dacfb`) | deep-worker | after the contracts, in parallel | decisions 5 and 6: `build.sh`, `config.h`, `rename-win32u.h`, `gen-syscalls.mjs` (table 1), `src/unixlibs.c`, the dispatchers' table-1 and unix-call parts, patches 0107, 0203 and 04xx, the `syscall` and `session` checks | the gates clean; section 10's WP2 checks; 7zz.exe with no arguments on Wine (`prepare.sh --all`) prints native Wine 11's text, exits 0, every image linked, no `tempwind:` line |
+| WP3: tests and CI (merged, `23b8688`; the coordinator's fixes `e26abb1`) | builder | after the contracts, in parallel | decisions 8, 9 and 10: host files (`wine-process.mjs`, `run-wine.mjs --dir`), the matrix's and the benches' Wine mode, `catalog.mjs` and `prepare.sh`, `programs.test.mjs`, `tests/native/l2_threads.c` and `l2_suspend.c` with `.expected` (deterministic, checked under native Wine 11 here and on Windows in CI), `wine-unix.yml` (a separate matrix job), `bench.yml`, `commands.md` | unit tests for copy-in, collect and mtimes; the runner and the benches run end to end on today's programs; CI wired (red until WP5) |
+| WP4: signals and APCs (merged, `1b5049d`) | deep-worker | after WP1 merges | decisions 3 (SIGUSR1, masks) and 4: 0201's hunk (SIGUSR1), `signal_wasm64.c`'s APC, suspension and other-thread context parts, `pthread_sigmask`, the `signal` checks | section 10's `signal` checks; `l2_suspend` matches native |
+| WP5: first light and the matrix (merged, `f28b6b0`; the coordinator's doc commit `8a9c75e`) | deep-worker | after WP2 and WP4 merge, and the `wine-unix.lock` bump | integration in `native/wine/**` and `runtime/src/wine/**` with `/diverge`; translator defects go to the coordinator, fixtures first. First check: user32's thread detach on 7zz's second thread | 138/138; CoreMark validated; `7z b` completes; times measured; the `GetTickCount` check |
+| WP6: delete the shim (merged, `1e155d6`; the coordinator's review fixes `b4a012d`) | builder | after WP5 | decision 11 | every suite and CI green with no shim; each removed test accounted for |
+| Cleanup: labels and headers (merged, `04e3126`; the coordinator's review fixes `ca65786`) | builder | after WP6 | the owner's cleanup pass: work-package and milestone labels out of the comments of `native/wine/`, `runtime/src/wine/` and `tests/wine/` (not the `thread` and `signal` checks); `tempwind_private.h` and `config.h` regrouped by topic | the label grep clean; the gates, `test:wine`, `test:browser:wine` and the matrix pass |
+| Cleanup: the `thread` and `signal` checks (merged, `42101fa`; the coordinator's review fix `59db8a0`) | deep-worker | after WP6, in parallel | `native/wine/tests/thread.c` and `signal.c` and their `tests/wine/*.test.mjs`: waits for a condition in place of fixed sleeps; visible behavior in place of scheduler fields, where something outside shows it | only the sleeps a check is about remain; `test:wine` 62 of 62 three times in a row; run times before and after |
+| Cleanup: `/simplify` (merged, `e282218`: `7a6900c`, the harness setup `b734af3`, the fixes `3bdee53` and the follow-ups `1850e90`) | four read-only reviewers, a builder, the coordinator | after the two tracks above | the milestone's added and changed code (59 files): reuse, simplification, efficiency and altitude, and the dead code the shim's deletion left | each finding applied, or skipped with its reason; the gates, `test:wine` three times, `test:browser:wine`, `test:node`, cargo and the matrix pass |
+
+- **Hand-offs:** `library.js`, `imports.txt`, `config.h`, `stubs.c`, `tempwind_private.h` and the rename headers take appended lines from any package, each with its reason. 0201's `send_thread_signal` hunk passes from WP1 to WP4 at WP1's merge.
+- **The coordinator** reviews each diff, checks each report against its contract sections, merges each track into the PR branch and reads the context after each merge. After WP2 and WP4 merge it pushes so `wine-unix.yml` publishes a release, then bumps `tests/targets/wine-unix.lock`.
+- **Settled in the briefs (2026-11-23):**
+  - WP2 also adds `7zz.exe` and `coremark.exe` to `catalog.mjs`'s `PROGRAMS` and their fetch to `prepare.sh`, since its first light needs 7zz's AOT module; WP3 adds `basic.exe`, `l2_threads.exe` and `l2_suspend.exe` to the same list. The coordinator resolves the merge.
+  - `l2_threads` and `l2_suspend` join `programs.test.mjs` when they pass, by WP1 and WP4; WP3 writes them and their `.expected`, checked under native Wine 11 and in `ci.yml`'s Windows job.
+  - The matrix keeps Phase 1's run as `--mode shim` until WP6, so `ci.yml`'s Linux matrix job stays green; `--mode translated` is our Wine, in its own `wine-unix.yml` job, red until WP5.
+  - **The worktree tool makes agents' worktrees from `main`, not from the branch head.** WP1 and WP2 stopped at their base check (`c9a3b35`); the coordinator fast-forwarded WP2's worktree and resumed it, and relaunched WP1 (its empty worktree had been cleaned up). Later briefs carry the fast-forward step.
+
+### Checkpoints (trial 6)
+- **At the plan's approval:** 363k tokens (51 requests, 11.3M cache reads for the coordinator). The planning stretch: $14.48 and 45.8M cache reads, 35.8M of them the four agents'.
+- **After the compaction:** 110k tokens (2026-11-23).
+- **After the contracts and the first three briefs:** 369k tokens; segment 1 so far 101 requests, mean 253k, 25.3M cache reads. Writing the contracts again took the most, as in M3. A compaction was asked for, with WP1-WP3 running.
+- **After the second compaction:** 106k tokens. Segment 1 closed at 116 requests, mean 271k, max 414k, 31.1M cache reads.
+- **At the pause:** 163k tokens; segment 2, 25 requests, mean 136k, 3.3M cache reads.
+- **At WP3's merge:** 270k tokens; segment 2, 81 requests, mean 200k, 15.9M cache reads. Most of it went to reading WP3's diff in plan mode and verifying the merge.
+- **After the third compaction:** 116k tokens. Segment 2 closed at 86 requests, mean 204k, max 274k, 17.3M cache reads.
+- **At WP1's and WP2's merges (WP4 briefed):** 258k tokens; segment 3, 44 requests, mean 197k, 8.5M cache reads. The two reviews read about 2,400 diff lines.
+- **At the second pause:** 283k tokens.
+- **Segments 3-7 closed at** 69, 102, 76, 67 and 111 requests; means 228k, 199k, 216k, 217k and 300k; maxima 316k, 279k, 294k, 295k and 447k; 15.2M, 20.1M, 16.2M, 14.2M and 32.6M cache reads (`scripts/context-usage.mjs`). Segment 7 held the simplify pass, whose 40 or so findings were checked against the code in the main loop, then the fourth pause and the resume's planning. The compaction was asked for at 416k, once the pause had put the state in files.
+- **After the eighth compaction:** 119k tokens (2026-11-27).
+- **After the close's reviews:** 316k tokens. The compaction waited for this section, so that the close's state is in the note.
+
+### The close (2026-11-27)
+- **Verification** (`/milestone-close` step 1, in the main tree at `4b64fe1`; logs in the session's scratchpad): every step passed.
+  - fmt; clippy, on the workspace and on `x64wasm-fp` for wasm32;
+  - `cargo test --workspace`: 256 passed, 8 ignored;
+  - `record --check`: all 80 files reproduce, 60,752 cases;
+  - census `--check`: 798 of 798 forms. Distinct codes: basic 23, coremark 220, 7zz 436, hello 197, l2_int 234, l2_crt 202, l2_float 302, l2_threads 194, l2_suspend 194, kernel32_test 272, ntdll_test 267; with the closure, 3,796,458 instructions and 663 codes;
+  - `tests/wine/prepare.sh --fetch --all` on `wine-unix-2aee661`, then `catalog.mjs --check --all`: 82 modules compile in V8, 198.1 MiB;
+  - `test:node` 66 of 66, `test:browser` 5 of 5, `test:wine` 62 of 62, `test:browser:wine` 1 of 1;
+  - the 7-Zip matrix in translated mode: 138 of 138, identical to `tests/sevenzip/expected`;
+  - both benchmarks, against the `wine.lock` tree's `bin/wine` (no system `wine64` here): CoreMark validated in all six runs, and `7z b` completed ("Measurements").
+- **The spec review** (step 2.1, a general-purpose agent, read-only, over `main...4b64fe1`) found no code that departs from the contracts in behavior. It listed 3 contract defects, 4 wording items, 6 extras that no contract stated, 2 numbers that tests pin, and 3 wrong Wine lines of about 40 it checked. Each was checked against the code and fixed in `3765bba`:
+  - `abi.md` said only ntdll's unix calls are reachable; win32u's are too, through `tw_unixlib_count`;
+  - `wine-unix.md` section 10 kept M3's link count and compare rule, which basic.exe breaks (four links; its stdout is compared as written, with `tests/pe/basic.expected`);
+  - two documents still pointed at the deleted `images.mjs`;
+  - the extras are now contract lines: the loud stops for a detached `pthread_create`, a mutex another green thread holds and a registered syscall table 2 or 3; `pthread_exit` running key destructors; `tw_thread_start_hook`; a host file over an existing prefix path refused;
+  - the one code change: `unix-host.mjs` called `__set_stack_limits` through `?.`, which would skip it silently. It now calls it directly, so a module without it stops loudly, and `link.test.mjs` checks the M4 raw exports `abi.md` lists.
+- **The code review** (step 2.2, `/code-review medium`) found 5 issues.
+  - **Fixed** (`494c0ff`): `wine-unix.yml` didn't run on `Cargo.toml`, `Cargo.lock` or `rust-toolchain.toml`, so a dependency or toolchain bump that changes the translator's output skipped the 7-Zip matrix, which `ci.yml` stopped running when the shim went. `workflow-paths.test.mjs` now requires the three: it failed naming them, then passed.
+  - **Fixed** (`494c0ff`): the benchmarks' translated runs had Wine's default `WINEDEBUG`, the native runs `-all`. Our Wine printed 1 debug line on CoreMark and 4 on `7z b 1`, and none with `--env WINEDEBUG=-all`.
+  - **Already fixed** in `3765bba`: the translator bench README's `images.mjs` entry.
+  - **Skipped:** `pthread_sigmask` with `set` and `old` pointing at the same sigset. POSIX declares both `restrict`, and no Wine caller passes the same set twice (`unix/server.c` L308, L331, L740; `unix/thread.c` L1419, L1561).
+  - **Recorded** under "Known issues and risks": `sleep_ns`'s EINTR after a timed-out wait.
+- **The reruns after the fixes:**
+  - at `3765bba`: `prepare.sh --all`, with gates 1-3 clean and the catalog's 82 modules; `test:wine` 62, `test:browser:wine` 1, `test:node` 66, and the matrix 138 of 138;
+  - at `494c0ff`: `test:node` 66, and one translated run of each benchmark.
+- **The lock stays at `wine-unix-2aee661`.** The close's changes to `native/wine` are comments: two patch headers and `session.c`.
+- **The ledger:** the two reviews' lines. The retro counts each work package's findings.
+
+## M4 progress (paused 2026-11-25)
+The owner paused M4 again at about 15:25 UTC on 2026-11-25. WP1, WP2 and WP3 are merged; WP4 had run for about 15 minutes. Every agent is stopped and every track is pushed; nothing is uncommitted. The briefs come from this note's M4 section: the decisions, the work-package table, "Decided while writing the contracts" and "Settled in the briefs". The contracts are `wine-unix.md` v3 and `abi.md` v5.
+
+**Committed** (the PR branch `claude/brave-lovelace-hurayr`, this pause's commit after `38b723c`):
+- **Merged:** WP3 as `23b8688` (the coordinator's fixes are `e26abb1`), WP1 as `0e28fbe` and WP2 as `bfea4ee` (the coordinator's doc fix is `55dacfb`). "Resumed (2026-11-25)" below lists what passes at each merge. At `bfea4ee`:
+  - `test:wine` passes 60 of 60, `test:node` 268 of 268 and `test:browser:wine` 1 of 1;
+  - 7zz.exe with no arguments prints native Wine 11's text and exits 0.
+- **CI:**
+  - `ci.yml` is green at `b2a3333` (dispatched). Its Windows job checks `l2_threads` and `l2_suspend` on real Windows.
+  - `wine-unix.yml` at `bfea4ee`: the build, `test:wine`, `test:browser:wine` and the release `wine-unix-bfea4ee` passed.
+  - Its matrix job is red, as planned until WP5. Its log and the `sevenzip-wine` artifact show how far 7zz.exe gets.
+- **`tests/targets/wine-unix.lock` still names `wine-unix-d9fa567`.** That release lacks the new harnesses (`test-thread`, `test-session`), so `prepare.sh --fetch` at the PR head fails in `test:wine`. Build with `prepare.sh --all` until the lock is bumped after WP4's merge.
+
+**In progress** (at the pause; WP4 merged as `1b5049d` after the resume, "Resumed again (2026-11-25, 18:35 UTC)"):
+- **WP4, signals and APCs:** `m4-wp4-wip` at `f94387f`, based on `bfea4ee`.
+  - `83f3b5a` is its contract commit, not reviewed yet. It adds to `wine-unix.md`: the per-thread mask's details, SIGUSR1 on a unix call's frame, and the `signal` checks' setup.
+  - `f94387f` (WIP) holds:
+    - `config.h`, 0201's `send_thread_signal` hunk (SIGUSR1) and `tempwind_private.h`;
+    - `green_pthread.c` (the masks) and `signal_wasm64.c` (SIGUSR1's handler, the suspended start, user APCs);
+    - `l2_suspend` in `programs.test.mjs`;
+    - `native/wine/tests/signal.c` and `tests/wine/signal.test.mjs`.
+
+    It was stopped before its first build. Nothing in it is checked.
+  - **Its brief (2026-11-25):**
+    - its table row and decisions 3 and 4;
+    - the contract sections: `wine-unix.md` v3, section 7 ("Signals to threads", "Which green thread"), section 9 ("Signals"), section 10 (the `signal` checks), section 11 (signals at the dispatcher's return, user APCs, suspension and another thread's context) and section 13; `abi.md` v5 ("Green threads", "Syscalls and unix calls");
+    - what WP1 left in `green.c`: `sig_pending`, `sig_blocked`, `green_deliver_signals`, `inproc_thread_signal` and the SIGNALED state;
+    - WP1's open point (a SIGQUIT before `init_thread`), fixed only if a check reaches it;
+    - the scheduler is not its to change unless a check proves a defect, and the translator is not its to change at all.
+  - **Left:** the build, then its done-when:
+    - `prepare.sh --all`;
+    - `test:wine` with no skips: the 60 tests at `bfea4ee`, the `signal` checks and `l2_suspend`;
+    - `test:browser:wine`;
+    - no `tempwind:` line.
+
+    The coordinator runs `test:node` at the merge.
+- **The ledger** has WP4's stopped run. If WP4 is resumed in this session, its finished run gets a cumulative line that replaces the stopped one.
+
+**How to resume** (a new session; done on 2026-11-25, "Resumed again (2026-11-25, 18:35 UTC)"):
+1. **Read:**
+   - `docs/plan.md` ("Phase 2 milestones", M4);
+   - this note's M4 section and this section;
+   - `ARCHITECTURE.md`;
+   - `docs/design/wine-unix.md` v3 (sections 7-11 and 13);
+   - `abi.md` v5 ("Green threads", "Syscalls and unix calls").
+
+   Wine's source for the citations is the wine-11.0 tarball (dl.winehq.org), or `target/wine-unix/src/` after a build.
+2. **Relaunch WP4** (deep-worker) from its track, with the brief above.
+   - The worktree tool makes agents' worktrees from `main`, so the brief starts with `git fetch origin m4-wp4-wip && git checkout -B <branch> origin/m4-wp4-wip`, and a check that the log holds `f94387f`. The track's head is newer if WP4 pushed WIP after its resume.
+   - While this session lives, a message to the stopped agent resumes it with its context.
+3. **Merge WP4:**
+   - review its diff against its contract sections and `83f3b5a`;
+   - verify `prepare.sh --all`, `test:wine` and `test:browser:wine`, and `test:node` in a tree that has `target/spike` and the prepared programs;
+   - push.
+4. **Bump the lock** to the `wine-unix-<sha7>` release that `wine-unix.yml` publishes from WP4's merge. Check it with `prepare.sh --fetch` and `test:wine`.
+5. **Then:**
+   - WP5 (its table row). Its first check is user32's thread detach on 7zz.exe's second thread, and the matrix job's latest log is the starting point.
+   - WP6, then `/milestone-close`.
+
+### The first pause (2026-11-23)
+The owner paused M4 at 03:28 UTC on 2026-11-23, about 20 minutes into the first three work packages. Every agent is stopped and every track is pushed; nothing is uncommitted. The briefs come from this note's M4 section: the decisions, the work-package table, "Decided while writing the contracts" and "Settled in the briefs". The contracts are `wine-unix.md` v3 and `abi.md` v5.
+
+**Committed** (the PR branch `claude/brave-lovelace-hurayr`, on `main` = `c9a3b35`):
+- `55f2743`, the research pass; `d9fa567`, the contracts and declarations; `7724c98`, the briefs' settled points; then this pause.
+- No code is merged yet. `wine-unix.yml` published `wine-unix-d9fa567` from `d9fa567`, so its build and `test:wine` passed there.
+
+**In progress** (every track is based on `d9fa567`):
+- **WP1, threads:** `m4-wp1-wip` at `5b2e41a`.
+  - `939b58a` is its contract commit, not reviewed yet. It adds to `wine-unix.md` v3: `send_thread_signal` finds the green thread by `unix_tid`, which is the green id, and a thread's end is the server's hang-up.
+  - `5b2e41a` (WIP) holds:
+    - `green.c`, `green_pthread.c`, `boot.c` and `signal_wasm64.c`;
+    - 0201's hunk, `config.h`, `build.sh` and `tempwind_private.h`;
+    - the `unix-host.mjs` scheduler;
+    - `native/wine/tests/thread.c` and `tests/wine/thread.test.mjs`.
+
+    It was stopped while writing the Node test. Nothing in it is checked.
+  - **Left:** the `thread` checks pass. Then `l2_threads` joins `programs.test.mjs`. That needs WP3's `tests/native/l2_threads.c`: merge `m4-wp3-wip`, or the PR branch once WP3 is in.
+- **WP2, win32u:** `m4-wp2-wip` at `44c97f8`.
+  - `2909eb6` is its contract commit, not reviewed yet. It adds to `wine-unix.md` section 2: win32u's widl-generated headers come from `wine.lock`'s native tree.
+  - `584ebe2` (WIP), by its message, builds and links win32u's Unix side, with gates 1-4 clean. It holds table 1 (`gen-syscalls.mjs`), `src/unixlibs.c`, patches 0107, 0203 and 0401, and `rename-win32u.h`.
+  - `44c97f8` (WIP) holds:
+    - the `syscall` and `session` checks (`native/wine/tests/syscall.c`, `session.c` and their Node tests);
+    - `7zz.exe` and `coremark.exe` in `catalog.mjs` and `prepare.sh`.
+
+    It was stopped while writing `session.test.mjs`. Nothing in it is checked.
+  - **Left:** its done-when in the table, ending with 7zz.exe's first light.
+- **WP3, tests and CI: done** at `59d7b64` on `m4-wp3-wip` (six commits).
+  - **Its report:**
+    - `test:wine` 49 of 49, with a local, uncommitted change that added `coremark.exe`;
+    - `test:node` 268 of 268 after `testkit spike`;
+    - `test:browser:wine` passes;
+    - `l2_threads` (exit 3) and `l2_suspend` (exit 0) match under native Wine 11, the same over 6 and 8 runs;
+    - CoreMark runs on our Wine at 8,459 iterations/s (`--runs 1 --skip-native`);
+    - 7zz.exe stops at `__get_tp (dlerror)`, which WP2's 0107 removes.
+  - **The review** had read the catalog, `prepare.sh` and `programs.test.mjs` parts of the diff when the pause came. The rest is still to read.
+  - **Before or at its merge:**
+    - **CoreMark's test needs WP2's catalog part.** `programs.test.mjs`'s CoreMark test needs `coremark.exe` in `target/wine` and the catalog, which WP2's `44c97f8` adds. Merge WP3 with that part or after it; merged alone, the PR branch's `test:wine` fails.
+    - **`tests/targets/wine-unix.lock` is stale.** It still names `b2d6c58`, and `prepare.sh --fetch` fails at `test-syscall` on `d9fa567`'s tree. WP3 used `wine-unix-d9fa567` by hand. `bench.yml` now runs `prepare.sh --fetch`, so the lock must name a release built from the PR branch before that job runs.
+    - **The census list** doesn't include `l2_threads` or `l2_suspend`. Decide whether they join.
+- **The ledger** has WP3's run and WP1's and WP2's stopped runs. If a stopped agent is resumed in this session, its finished run gets a cumulative line that replaces the stopped one.
+
+**How to resume** (a new session; done on 2026-11-25, "Resumed (2026-11-25)"):
+1. **Read:**
+   - `docs/plan.md` ("Phase 2 milestones", M4);
+   - this note's M4 section and this section;
+   - `ARCHITECTURE.md`;
+   - `docs/design/wine-unix.md` v3 (sections 7-11 and 13);
+   - `abi.md` v5 ("Green threads", "Process exit").
+
+   Unpack the wine-11.0 tarball (dl.winehq.org) in the scratchpad for the citations.
+2. **Review WP3:** `git fetch origin m4-wp1-wip m4-wp2-wip m4-wp3-wip`, then `git diff d9fa567 origin/m4-wp3-wip`. Check it against `wine-unix.md` section 8 ("Host files") and section 10, `runtime.md` ("Benchmarks") and `tests/sevenzip/README.md`.
+3. **Relaunch WP1 and WP2 from their tracks.** Each brief is its table row plus the parts named above.
+   - The worktree tool makes agents' worktrees from `main`, so each brief starts with `git checkout -B <branch> origin/m4-wpN-wip` and a check of the base.
+   - While this session lives, a message to each stopped agent resumes it with its context.
+4. **Then the table's order:**
+   - merge WP1, then run WP4;
+   - after WP2 and WP4 merge, push and bump the lock;
+   - then WP5, WP6 and `/milestone-close`.
+
+### Resumed (2026-11-25)
+The owner resumed M4 on 2026-11-25 (`continue`). The container had survived: the worktrees, the agents' transcripts and the scratchpad were all still there. The resume plan is the approved plan's first section.
+- **WP3's review** found it matched `wine-unix.md` sections 8 and 10, `runtime.md` ("Benchmarks") and `tests/sevenzip/README.md`. The L2 programs print only from main, and each of their waits blocks.
+- **WP3 merged** as `23b8688`. The coordinator's fixes are `e26abb1`:
+  - WP2's catalog part (7zz.exe and coremark.exe in `PROGRAMS`, and their fetch in `prepare.sh`), which WP3's CoreMark test needs;
+  - `wine-unix.lock` = `wine-unix-d9fa567`, since the PR branch's `native/wine` is still `d9fa567`'s;
+  - the census covers `l2_threads` and `l2_suspend`;
+  - a `--cwd` that doesn't exist fails loudly again, as in M3 (WP3 had made `wine-process.mjs` create it);
+  - an indentation nit in `coremark.mjs`.
+- **Passing at `e26abb1`:**
+  - `tests/wine/prepare.sh --fetch` (1 min 16 s);
+  - `test:wine` 49 of 49: basic.exe boots in 91 ms, and CoreMark with 200 iterations in 241 ms (5 AOT links, 11 run-time translations);
+  - `test:node` 268 of 268;
+  - `test:browser:wine` 1 of 1;
+  - the census with `--check`: 798 of 798 in-scope forms have L1 fixtures, the two new programs included.
+- **A build gotcha:** WP3's `target/` was moved into the main tree to save a rebuild. `env!("CARGO_MANIFEST_DIR")` then still named the removed worktree, because cargo doesn't rebuild after a move, so the census couldn't find `crates/testkit/fixtures/l1`. `cargo clean -p testkit -p x64wasm -p x64wasm-cli -p pe-rebase` (and `--release -p testkit`) fixed it. Only testkit's fixture lookup and those crates' tests use the macro, so the prepared Wine inputs weren't affected.
+- **WP1 and WP2** were resumed by message from their WIP commits. Each merged the PR branch head into its worktree for WP3's work.
+- **WP1 and WP2 merged** as `0e28fbe` and `bfea4ee`, both right the first time. The coordinator's doc commit `55dacfb` words two of WP2's loud stops as the code prints them: a `wow` unix-library request, and a session view asked for before the server set the session up. The contract changes, each committed before its code:
+  - WP1's `939b58a`: a thread's `unix_tid` is its green thread's id, and a thread's end is the server's hang-up (`inproc_thread_hangup`, in 0201's `ptrace.c` hunk);
+  - WP1's `3e6d436` (`abi.md`): JS sets the overflow check's own limits (`__set_stack_limits`) for each thread it starts or resumes, and for the scheduler's stack;
+  - WP2's `2909eb6`: win32u's widl-generated headers come from `wine.lock`'s native tree, so `build.sh` needs `prepare.sh`'s first step;
+  - WP2's `94e165d`: the session cap holds about 12 first blocks of 1,327,104 bytes, not 256.
+- **Passing at `bfea4ee`:**
+  - `tests/wine/prepare.sh --all`, with the build's four gates: 19 collisions renamed, 87 imports, and table 1's 1,540 entries split into 1,062 stubs and 478 wrapped;
+  - `test:wine` 60 of 60: the `thread` and `session` checks, the new `syscall` checks, and `l2_threads` in `programs.test.mjs`;
+  - `test:node` 268 of 268 (in the main tree);
+  - `test:browser:wine` 1 of 1;
+  - 7zz.exe with no arguments: exit 0 with its help text (2,930 bytes) and no `tempwind:` line; boot 623 ms, 18 AOT links, no image fallbacks, 3 run-time translations.
+- **Sizes at `bfea4ee`:** `wine-unix.wasm` is 2,448,146 bytes (807,679 gzipped); before win32u it was 997,015 (361,977).
+- **CI at `b2a3333`:** `ci.yml` (dispatched) is green, its Windows job included: `l2_threads` and `l2_suspend` match on real Windows. `wine-unix.yml` built, tested and published `wine-unix-b2a3333`; its matrix job is red until WP5, as planned.
+- **WP4** was briefed from `bfea4ee`; its brief resets its worktree to the PR branch first.
+
+### Resumed again (2026-11-25, 18:35 UTC)
+The owner resumed M4 after the second pause (`continue`), and WP4 was resumed by message from its WIP `f94387f`.
+- **WP4's review** found it matched `wine-unix.md` sections 7, 9, 10, 11 and 13, `abi.md` v5 and its contract commit `83f3b5a`, so no doc commit was needed. Its two design points are in that commit:
+  - `config.h` renames Wine's `pthread_sigmask` to `tw_pthread_sigmask`, the per-green-thread mask. libc's own stays in the link because Emscripten's `raise` takes `__sig_is_blocked` from the same file.
+  - `sigprocmask` stays libc's: the in-process server's own mask.
+
+  It also ports `get_wow_context` (`sx.c` L1105-1109), which `wait_suspend` reaches.
+- **WP4 merged** as `1b5049d`, right the first time.
+- **Passing at `1b5049d`:**
+  - `tests/wine/prepare.sh --all`: the four gates are clean, and the incremental build takes 25 s;
+  - `test:wine` 62 of 62, with six `signal` checks: `suspend_other`, `self_suspend`, `context_other` (the general registers, XMM, MXCSR and EFLAGS round-trip), `mask_blocks_sigusr1`, `suspended_start` and `apc_in_alertable_wait`;
+  - `l2_suspend.exe` matches native: boot 377 ms, 5 AOT links, 6 run-time translations;
+  - `test:node` 268 of 268 (in the main tree);
+  - `test:browser:wine` 1 of 1.
+- **Size at `1b5049d`:** `wine-unix.wasm` is 2,450,455 bytes (808,528 gzipped).
+- **The lock bump** (`303f03b`): `wine-unix.lock` = `wine-unix-1b5049d`, which `wine-unix.yml` published from WP4's merge. In the main tree `prepare.sh --fetch` exits 0 and `test:wine` passes 62 of 62.
+  - A fetch right after the release appeared failed with a 404: the publish job was still uploading the release's files. The release appears before all its files are there; the retry passed.
+- **WP5** was briefed from `303f03b`, on track `m4-wp5-wip`. The brief is its row in the table, plus:
+  - the first check: user32's thread detach on 7zz.exe's second thread;
+  - the starting point: the `sevenzip-matrix` job of the run for `1b5049d`;
+  - native ratios through the `wine.lock` tree's `bin/wine`, since this container has no system `wine64`;
+  - the sysparams boot cost to measure (section 13).
+- **WP5's one fix** (`f13ea6f`): `tests/sevenzip/matrix.mjs` passes `--env WINEDEBUG=-all` to `run-wine.mjs`.
+  - **The failing check:** CI's `sevenzip-matrix` job at `1b5049d` (job 139432399640). There, 134 of 138 steps differed only by Wine's `fixme:` lines on stderr.
+  - **Why:** our Wine reads only the environment its host is given (section 8), so the matrix's `WINEDEBUG=-all` never reached it.
+  - **The doc commit** `8a9c75e` (the coordinator's) words the translated command as the code runs it, in `tests/sevenzip/README.md` and `commands.md`.
+  - Nothing else needed fixing: the translator showed no defects, and `native/wine` is unchanged.
+- **WP5 merged** as `f28b6b0`.
+- **Passing at `f28b6b0`** (the main tree, on `wine-unix-1b5049d`):
+  - the matrix: 138 of 138 identical to `expected/`, at `--jobs 4` in 67 s, with no `tempwind:` line;
+  - `test:node` 268 of 268, `test:wine` 62 of 62 and `test:browser:wine` 1 of 1;
+  - CoreMark validated, at 9,863 iterations/s (one run).
+- **WP5's measurements** (its worktree, same code):
+  - **CoreMark:** 8,945 iterations/s against 29,414 under native Wine 11 (the `wine.lock` tree's `bin/wine`; this container has no system `wine64`). That is a ratio of 0.304. CoreMark timed itself at 11.22 s against 12.95 s of wall clock.
+  - **`7z b`** (`b 2 -mmt1 -md18`): a Tot rating of 1,788 MIPS against 6,085 native, a ratio of 0.294.
+  - **Boot to exit** (`run-wine.mjs --stats`, three runs each): hello.exe 357-447 ms; 7zz.exe with no arguments 685-755 ms; `7z a` with BCJ 1,053-1,205 ms.
+  - **The sysparams boot cost** (section 13): 0.0-0.5 ms of a boot of about 850 ms, from Node's CPU profiler on a throwaway build with `--profiling-funcs`. All of `NtUserInitializeClientPfnArrays` takes 0.2-0.8 ms.
+- **The `GetTickCount` check** (decision 7): no spin. `7z b` made 1,520 `NtQueryPerformanceCounter` and 1,511 `NtQueryInformationProcess` calls, in pairs, so every time read includes a syscall. A loop that only read KUSER's tick count would hang, and every run ended. No ticker is needed.
+- **user32's thread detach** on 7zz.exe's second thread calls the wrapped `NtUserCallNoParam` with `NtUserExitingThread` and `NtUserThreadDetach`. Both return 0, and no stub is reached (`user_main.c` L217-226, `sysparams.c` L7474-7480).
+- **WP6** (builder) was briefed from `b7a750a`, on track `m4-wp6-wip`. The brief is decision 11 and `runtime.md`'s top section. It adds:
+  - a reasoned keep-or-remove for each file decision 11 doesn't name (`trace.mjs`, `wasm-mini.mjs`, `ntdll.test.mjs`, `pe-fixture.mjs`, `v3-mini.mjs`, `conformance-parse.test.mjs`);
+  - the matrix at 138 of 138 after the deletion;
+  - an accounting table of the removed tests in its final commit message.
+- **The owner's decision (2026-11-25): the close starts with a cleanup pass,** after WP6's merge and before `/milestone-close`'s verification, so the verification and both reviews cover it.
+  - **The problem it answers:** the owner asked whether the code is maintainable or AI slop. A measurement found these weak spots:
+    - work-package and milestone names in source comments (14 lines in 5 files), which mean nothing to a later reader;
+    - shared headers (`tempwind_private.h`, `config.h`) that grow as one appended block per work package, a rule that kept parallel agents from colliding, so they read as a log rather than by topic, with an `#include` mid-file;
+    - `signal` checks that read the scheduler's internal state and use fixed sleeps of 50-300 ms;
+    - every review so far by an AI.
+  - **The pass** (main loop):
+    - remove the work-package and milestone names from code comments, keeping the Wine citations and the contract sections;
+    - regroup the shared headers by topic, includes at the top;
+    - where the same thing can be shown from outside, make the tests assert visible behavior and wait for a condition instead of a fixed time;
+    - run `/simplify` over the milestone's code and apply its fixes. The review's stage 2 (`/code-review`) stays on correctness.
+  - **The draft PR asks for a human review** of the thread and signal code: `signal_wasm64.c`, `green.c`, `green_pthread.c`.
+  - **How we'll know it worked:** after the pass, a grep finds no work-package names in source comments, and every suite and the matrix pass as before. The retro decides whether the close keeps the pass, for example as a pre-push check on work-package names in sources.
+- **WP6 merged as `1e155d6`** (builder, 15 min). It deleted the shim, its loader and its run loop: 63 files and 9,584 lines. Its commit `1aad667` accounts for each removed test.
+  - **Counts, before and after, in the main tree:** `test:node` 268 → 86 (the 182 tests of the deleted code), `test:wine` 62, `test:browser` 5, `test:browser:wine` 1, cargo 255 → 256 (the ported test below), and the matrix 138 of 138 (`--jobs 4`, 65.6 s).
+  - **The merge kept the PR branch's status note.** `1aad667` carried an older copy of it, which would have undone `bc17241` and `027527f`.
+  - **The coordinator's review fixes (`b4a012d`):**
+    - `ci.yml`'s two step names that still said they translate;
+    - a dead `TEMPWIND_TRACE` setting in both benchmarks;
+    - `tests/native/prepare.sh`'s `coremark.exe` fetch, which no Node test reads now;
+    - three references to `runtime.md` sections that are gone, and that file's Phase 1 benchmark paragraph, rewritten for Wine;
+    - `rt.test.mjs`'s pointer to the deleted `pe.test.mjs`;
+    - memory-checks' import-shape test, which needed no shim: ported to Rust (`translate.rs`, `optional_imports_follow_the_options`).
+  - **What no test covers now:** a NULL access or a store into code in a Wine process. The translator's checks are tested in Rust (`spike.rs`, `memory_checks_fault`), and every Wine program runs with both checks on, but nothing drives the run loop's loud stop on `EXIT_FAULT` or a store-check hit (`run.c`). M5 raises them as access violations, and its test of that covers this path. Known issues lists it.
+  - **Kept, with the reason:** `wasm-mini.mjs`, `v3-mini.mjs`, `pe-fixture.mjs` and `conformance-parse.test.mjs`, which kept tests import. **Removed:** `trace.mjs` and `ntdll.test.mjs`, which only the deleted code used, and the benchmarks' `images.mjs`, `profile.mjs` and `memchecks.mjs`. `ci.yml`'s shim matrix step is gone: `wine-unix.yml`'s `sevenzip-matrix` job runs the matrix on Wine.
+  - **Left for the cleanup pass:** 37 exports of `abi.mjs` that nothing reads now, and `plan.mjs`'s `checkPlan` and `addressMap` (Phase 1's address map), which only `plan.test.mjs` calls.
+- **The cleanup pass runs as two agents in parallel, split along file boundaries,** in place of the main loop that plan step 5 named. Measured first:
+  - 21 work-package names in 11 files, and 107 milestone names in 41 files of the milestone's code (`native/wine/`, `runtime/src/wine/`, `tests/wine/`). Some are contract-section names, which stay.
+  - `thread.c` has the same pattern as `signal.c`: 14 fixed sleeps and 17 reads of scheduler fields, against 8 and 25. So the checks' half covers both files.
+  - **A builder** takes the labels and the two headers (`m4-cleanup-labels-wip`). **A deep-worker** takes the `thread` and `signal` checks (`m4-cleanup-checks-wip`). Both were briefed from `b4a012d`.
+  - `/simplify` stays in the main loop, after both merge, with the dead code WP6 left.
+
+### Paused again (2026-11-25, 19:55 UTC)
+The owner paused M4 during the cleanup pass. Both cleanup agents had reported; no agent runs, and every track is pushed.
+
+**Committed** (the PR branch, this pause's commit after `04e3126`):
+- **The labels and headers track, merged as `04e3126`** (builder, 8 minutes). Comments in `native/wine/`, `runtime/src/wine/`, `tests/wine/` and `wine-unix.yml` lose their work-package and milestone labels (33 files, `de61b1b`); `tests/wine/m3-imports.mjs` is `harness-imports.mjs`; `tempwind_private.h` and `config.h` are grouped by topic, includes at the top (`bee011f`).
+  - **Checked:** a sorted diff of the two headers' non-comment lines finds every declaration unchanged. The merge's tree is `bee011f`'s, which the builder verified in its worktree: `prepare.sh --all` with gates 1-3 clean, `test:wine` 62 of 62, `test:browser:wine` 1 of 1 and the matrix 138 of 138. Nothing it changed is Rust or reaches `test:node`.
+  - **What the label grep leaves:** contract-section names ("The M4 checks", "Programs (M3)", "Host files (M4)", "The browser host (M3)"), three string literals, patch 0106's pointer to "M3 decision 17", and the first lines of `wine-unix.yml` and `wine.yml` ("Phase 2 M2", "M1"), which the brief left out.
+- **The ledger** has both cleanup agents' runs.
+
+**In progress:**
+- **The coordinator's review fixes for the labels track,** WIP on `m4-coordinator-wip`: one commit on top of this pause's commit. It renames the harness helper's export `m3Imports` to `harnessImports`, and `unix-host.mjs`'s local of that name to `bridgeAndHostImports`. Not run yet. Left:
+  - `tempwind_private.h`: the `green_thread` comment ("the main thread or a spawned one"); `section 9, "Signals"` without the parentheses; `inproc_thread_signal` in place of the stale name `green_signal`;
+  - `green_pthread.c` L359: "waiting for it needs the scheduler" becomes why the branch is unreachable: no green thread suspends while holding a mutex (`green_switch` checks `mutexes_held`). It is no deferral, so section 13 needs no line;
+  - `signal_wasm64.c` L291: drop "today";
+  - reflow the comment lines the label commit made too long: `link.c` L194, `gen-syscalls.mjs` L34, `library.js` L24 and `unix-host.mjs` L75-81;
+  - `wine-unix.yml` L162-165: drop "It is red until 7zz.exe runs on this Wine", since the matrix job passes. Whether `publish` should now wait for it is for the retro.
+- **The checks track has reported** (deep-worker, 10 minutes): `m4-cleanup-checks-wip` at `c6d78e3`, based on `84a317a`, with `67720f0` (thread) and `c6d78e3` (signal); no doc commit and no JS change. Not reviewed or merged. Its report:
+  - **Waits:** `UNTIL(cond)` yields until the condition holds and fails after 10 s, naming it; `wait_for(handle)` waits on an object with the same deadline. Where a thread must be stopped in its suspend wait, the check calls `NtGetContextThread`, which the server answers only once the thread's SIGUSR1 handler has posted its context.
+  - **What the checks assert now:** the suspend count (`ThreadSuspendCount`), whether a handle is signaled, the mask as `pthread_sigmask` reports it, a closed request fd, and flags the threads set. Unblocking SIGUSR1 before the sleep makes `mask_blocks_sigusr1` fail, as it should.
+  - **Sleeps** (`sleep_ms` and `wait_ms`, each helper's definition included): `thread.c` 14 → 4, `signal.c` 8 → 2. Kept as the scenario: the two 60 s main-thread sleeps, the 10 ms timeout that fires while the main thread is parked, and the 100 ms sleep with SIGUSR1 blocked.
+  - **Scheduler reads** (uses of `green_thread_by_id`, `green_parked`, `->sig_pending`, `->sig_blocked` and `->waiter`; the brief's 17 and 25 counted more): `thread.c` 10 → 4, `signal.c` 22 → 0. Kept: `green_parked` in `main_parked`; `green_thread_by_id(1)->sig_pending` in `main_sigquit_pending`, which now also asserts the SIGQUIT was never handled (the main thread's request fd stays open); the `depth` reads.
+  - **Run times:** `signal` 602 → about 144 ms, `thread` 48 → about 37 ms. `test:wine` passed 62 of 62 four times in a row.
+  - **Its open point:** that a sleeping thread is inside its `select` is no longer asserted. It follows from FIFO yields and `NtDelayExecution` yielding once before its `select` (`unix/sync.c` L2452).
+  - It found no scheduler defect.
+
+**How to resume** (a fresh session):
+1. **Read** `docs/plan.md` (M4), this note's M4 section (the work-package table, "Resumed again (2026-11-25, 18:35 UTC)" and this subsection), `ARCHITECTURE.md`, and `wine-unix.md` v3, sections 9, 10 and 13.
+2. **Finish the labels track's review fixes:** `git fetch origin m4-coordinator-wip m4-cleanup-checks-wip`, then on the PR branch `git merge --ff-only origin/m4-coordinator-wip`. Apply what "Left" lists above, build with `tests/wine/prepare.sh --all`, run `npm run test:wine`, and turn the WIP commit into "the labels track's review fixes".
+3. **Review the checks track:** `git diff 84a317a origin/m4-cleanup-checks-wip` against its table row and `wine-unix.md` v3, sections 9 and 10; weigh its open point. Merge with `--no-ff`.
+4. **Verify the head:** `tests/wine/prepare.sh --all` (not `--fetch`: the locked `wine-unix-1b5049d` has the old harnesses), `npm run test:wine` three times, `test:browser:wine`, `test:node`, and the 7-Zip matrix with `compare.mjs` (`commands.md`). Push.
+5. **Then:** `/simplify` over the milestone's code, with WP6's leftovers (the 37 exports of `abi.mjs` nothing reads; `plan.mjs`'s `checkPlan` and `addressMap`); bump `wine-unix.lock` to the release `wine-unix.yml` publishes from the head; then `/milestone-close`. Its draft PR asks for a human review of `signal_wasm64.c`, `green.c` and `green_pthread.c`.
+
+### Resumed (2026-11-26)
+- **The labels track's review fixes are `ca65786`:** the "Left" list above, and the harness helpers' rename. `test:wine` passed 62 of 62 on the fetched build.
+- **The checks track merged as `42101fa`, with one review fix, `59db8a0`.**
+  - **What the review found:** a check's precondition, "the target is blocked in its wait", was no longer asserted. The old checks read `->waiter`, which only `wait_until` sets (`green.c`; a yield sets none). The new ones waited for the thread's flag and reasoned that it then blocks: FIFO yields, and `NtDelayExecution`'s one yield before its `select` (`unix/sync.c` L2452). Had that drifted, six checks would still have passed, with the signal pending before the wait: a weaker scenario that nothing reports.
+  - **The fix:** `in_wait(id)` in each harness, the one scheduler read the precondition needs, since nothing outside shows a thread blocked in a wait. The waits are `UNTIL( a.flag && in_wait( a.green_id ) )`, so the extra yields and their comments are gone.
+  - **Counts at `59db8a0`:**
+    - sleeps (`sleep_ms` and `wait_ms`, each helper's definition included): `thread.c` 14 → 4 and `signal.c` 8 → 2, each kept one the scenario;
+    - scheduler reads: `thread.c` 10 → 6 (`green_parked`, the main thread's pending SIGQUIT and `in_wait`) and `signal.c` 22 → 2 (`in_wait`);
+    - run times: `signal` 602 → about 150 ms, `thread` 48 → about 45 ms.
+- **Verified at `59db8a0` in the main tree:**
+  - `prepare.sh --all`: gates 1-3 logged clean (gate 4 prints only on failure, `build.sh` L112-114), and the catalog's 82 modules;
+  - `test:wine` 62 of 62 three times, `test:browser:wine` 1 of 1, `test:node` 86 of 86;
+  - cargo 256, with fmt and clippy clean;
+  - the matrix 138 of 138 in 85.6 s (`--jobs 4`; 65.6 s at `1e155d6`). The close measures it again.
+- **Branches:** the agents' worktrees are removed. The side branches `m4-coordinator-wip` (`faf7aac`, the pause's WIP, now in `ca65786`; a force-push to refresh it was refused) and `m4-cleanup-review-wip` (`59db8a0`) are superseded, for the close's branch list.
+
+### Paused again (2026-11-26, 18:25 UTC)
+- **The PR branch is at `b5f16fd` plus this note,** verified as "Resumed (2026-11-26)" says.
+- **The `/simplify` pass is on the side branch `m4-simplify-wip`, at `1de5479`.** It is not on the PR branch yet, because the pause stopped its verification.
+- **What the pass did.** Four read-only reviews (reuse, simplification, efficiency, altitude) went over the 59 files that `c9a3b35..b5f16fd` adds or changes, leaving out the fixtures, the docs, the Wine patches and the two recorded L2 programs. The five ledger lines of 2026-11-26 give each review's applied and skipped findings, with the reasons. The commit messages give what changed. The side branch, on base `b5f16fd`:
+  - **`7a6900c`:** removes Phase 1's address map and plan check from `plan.mjs`, and 55 `abi.mjs` exports, with the 20 tests of that code. `test:node` went from 86 to 66 tests, all passing.
+  - **`b734af3`:** the harnesses' shared setup: `native/wine/tests/server.h`, and `startHarness` and `runChecks` in `tests/wine/harness-imports.mjs`. A builder wrote it as `13c9e6d` on the contract commit `3af42b9`, and verified it on its branch: `prepare.sh --all`, `test:wine` 62 three times, `test:browser:wine` 1.
+  - **`3bdee53`:** the other fixes.
+  - **`1de5479` (WIP):**
+    - `wine-unix.yml`'s path triggers now name `scripts/apt-install.sh`, which `3bdee53`'s matrix job runs. `workflow-paths.test.mjs` failed without that line, and passes on its own with it.
+    - the ledger's five runs;
+    - `wine-unix.md` section 13's line on debug registers.
+- **The verification of `3bdee53`, stopped by the pause:**
+  - `prepare.sh --all` passed: gates clean, the catalog's 82 modules, the boot set's 160 files.
+  - `test:wine` passed 62 of 62 three times, and `test:browser:wine` 1 of 1.
+  - `test:node` failed on `workflow-paths`, which `1de5479` fixes.
+  - Cargo and the matrix did not run.
+- **Nothing is running.** Every agent of the pass has finished, and the builder's worktree is removed.
+- **To resume.** A fresh session works from this note; the coordinator's plan file is not in the repository.
+  1. **Turn the WIP into a commit, and verify it:**
+     - `git fetch origin m4-simplify-wip && git checkout -b simplify-resume origin/m4-simplify-wip`;
+     - `git commit --amend` with a "Phase 2 M4: …" message;
+     - `tests/wine/prepare.sh --all`;
+     - `npm run test:wine` three times (62 each), `npm run test:browser:wine` (1) and `npm run test:node` (66);
+     - `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` (256);
+     - `node tests/sevenzip/matrix.mjs --mode translated --out target/sz-out --jobs 4 --quiet`, then `node tests/sevenzip/compare.mjs target/sz-out tests/sevenzip/expected` (138 of 138; it took 85.6 s at `59db8a0`).
+  2. **Merge it into the PR branch** with `git merge --no-ff simplify-resume`. Then add a "The simplify pass" section to this note: applied, skipped with the reasons, and the CI numbers for the retro.
+     - The matrix job downloads and unpacks all of `target/wine`, about 0.5 GB compressed. Run-wine reads the boot set (about 62 MB), the catalog and the prefix.
+     - Each bench job runs its own `prepare.sh --fetch`, 1.5 to 3 minutes.
+
+     Update this row and the next-step line, then push.
+  3. **Bump the lock.** The push makes `wine-unix.yml` publish `wine-unix-<sha7>` of the head. Check that run once, set `tests/targets/wine-unix.lock` to the release, run `tests/wine/prepare.sh --fetch` and `npm run test:wine`, and push.
+  4. **`/milestone-close`.**
+     - The draft PR, "[Phase 2] Console programs on Wine", asks for a human review of `signal_wasm64.c`, `green.c` and `green_pthread.c`.
+     - The retro asks whether to keep the cleanup pass and whether `publish` should wait for the matrix job, and weighs the CI numbers above.
+     - Side branches for the close's list: `m4-coordinator-wip`, `m4-cleanup-review-wip`, `m4-cleanup-labels-wip`, `m4-cleanup-checks-wip`, `m4-simplify-harness-wip` and `m4-simplify-wip`.
+
+### Resumed (2026-11-27)
+- **The WIP became `1850e90`,** "the simplify pass's follow-ups", on a branch from `m4-simplify-wip`. The pass merged as `e282218`. `m4-simplify-wip` still holds the WIP, `1de5479`; pushing it again would have been a force-push.
+- **Verified at `1850e90` in the main tree:**
+  - `prepare.sh --all`: gates 1-3 logged clean (gate 3: 19 collisions, all renamed), the catalog's 82 modules and the boot set's 160 files;
+  - `test:wine` 62 of 62 three times, `test:browser:wine` 1 of 1, `test:node` 66 of 66;
+  - cargo 256, with fmt and clippy clean;
+  - the matrix 138 of 138 in 86.0 s (`--jobs 4`; 85.6 s at `59db8a0`).
+- **What the pass applied:**
+  - **`7a6900c`, Phase 1's dead code:**
+    - `plan.mjs`'s `addressMap`, `checkPlan` and `executableSection` are removed. They were Phase 1's loader checks, and only their tests called them.
+    - So are 55 exports of `abi.mjs` that no file reads and that neither `abi.rs` nor `abi.h` has.
+    - The 20 tests of that code went with it, so `test:node` went from 86 to 66 tests. The `checkPlan` table's three rows that `parsePlan` rejects stay, as `parsePlan`'s tests. One new test states the TLS directory parse those rows went through.
+  - **`b734af3`, the harnesses' shared setup,** a builder's `13c9e6d` on the contract commit `3af42b9` (16 files, +322 −544):
+    - **C:** `native/wine/tests/server.h` holds what the harnesses copied: the server start, the state-block macros, the waits, the yield-until loop, `in_wait`, `spawn`, `new_event` and `thread_fail`.
+    - **JS:** `startHarness` and `runChecks` in `tests/wine/harness-imports.mjs` hold the Node hosts' setup and the "checks pass" assertions.
+    - **Two behavior notes:** `signal.c`'s six `joined` sites now return `joined`'s own detail. `wait.c` sets the configuration directory before the server starts, as a process does.
+  - **`3bdee53`, the other fixes:**
+    - `SIG_BIT` is defined once, in `tempwind_private.h`, and `unix-host.mjs` has one `useStack`.
+    - The process's closures no longer capture `opts`, so they don't keep the host files' and the program's bytes beside their MEMFS copies.
+    - `web-files.mjs`'s unused `extra.files` is gone, and so is `run-wine.mjs`'s alias.
+    - `programs.test.mjs` runs the programs and CoreMark through one `runOnWine`.
+    - In `bench.yml`, both jobs' ratio check is `tests/bench/compare-ratio.mjs`, and each job runs apt-get once. The matrix job installs zstd only when it is missing.
+    - A loud stop's text lost its milestone label.
+  - **`1850e90`:**
+    - `wine-unix.yml`'s triggers name `scripts/apt-install.sh`, which the matrix job now runs; `workflow-paths.test.mjs` requires it.
+    - `wine-unix.md` section 13 lists the loud stop for `NtSetContextThread` with nonzero debug registers.
+    - The ledger's five lines.
+- **Skipped, each with its reason:**
+  - **The two process-exit paths and the parked main thread's loop.** Both are in the contract: `abi.md` v5, "Process exit", and `wine-unix.md` section 9's deadlock line.
+  - **`tw_thread_start_hook`,** a test seam in `signal_start_thread`. A weak `tw_run_loop` would remove the branch but move its work into two harnesses. Worth it if a third harness needs the hook.
+  - **`collect` listing its own root,** which would let `writeBackHostDir` drop its `rootMtime`. It would change `collect`'s contract, and the matrix's mtimes depend on it.
+  - **Replacing `requestFlags` with a literal.** `requestFlags` is used, and its test checks each option's bit.
+  - **`signal.c`'s copy of `apc_stack_layout`.** It is the harness's own statement of Wine's layout, independent of the code it checks.
+  - **Small ones:**
+    - `tw_depth_set` twice in `tw_thread_main`: `setjmp` must be the switch's control expression.
+    - `tests/native/build.sh`'s program list: its other copies, in `prepare.sh` and `ci.yml`, would stay.
+    - `parent()` in `host-files.mjs`, and a formatted `tw_unsupported`.
+    - The sigmask loops: no measured cost.
+    - Host-file copies and lstats: the tree is 9 files.
+    - `build.sh`'s three `emnm` containers: about 2 s.
+    - `prepare.sh`'s fetch of the two targets: a guard would keep a stale file after a `targets.lock` bump.
+    - The benches' `--exe` defaults.
+- **For the close's retro, measured on the PR's CI runs before deciding:**
+  - The matrix job downloads and unpacks all of `target/wine`: about 1.9 GB raw, about 0.5 GB compressed. Run-wine reads the boot set (about 62 MB), the catalog and the prefix.
+  - Both bench jobs run their own `prepare.sh --fetch`, 1.5 to 3 minutes each.
+- **The lock bump:** `wine-unix.lock` = `wine-unix-2aee661`. `wine-unix.yml` run 41 published it from `2aee661`, green with its matrix job, in 5 min 22 s. In the main tree, `prepare.sh --fetch` passed: without `--all`, its catalog covers the test programs' 61 modules. `test:wine` passed 62 of 62 on it.
+
 ## What works
 
 | Item | Evidence |
@@ -834,6 +1291,10 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
 | **Syscalls, unix calls and contexts** (M3 WP1, `signal_wasm64.c`, `wine-unix.md` section 11):<br>• typed wrappers generated from `ntsyscalls.h` and `winternl.h`, with a fourth build gate on their arities<br>• Wine's frame record and return rules, `NtContinue`, the current thread's Get/Set context with x87 and XMM<br>• ntdll's unix calls, `+syscall` tracing<br>• process exit back to `boot` with the full status; Wine's error ends still reject it | The `syscall` harness: 9 checks in one instance and 4 alone (`syscall.test.mjs`), among them `abort_thread_exits` and `terminate_reaches_exit_hook`. `build.sh`'s four gates. |
 | **The run loop and translated code** (M3 WP2, WP3, WP5; `abi.md` v5):<br>• `tw_run` through the bridge; `depth` in the green save set<br>• code the AOT pass missed is translated at run time over the executable pages around rip; loud stops name the exit, the address and the page's state<br>• the store check covers every page of a `rep` range; the Linker removes keys with tombstones and invalidates whole modules | `crates/x64wasm/tests/bridge.rs` and `store_check.rs` (a three-page `rep` test that failed on the old lowering); `tests/wine/linker.test.mjs` (invalidate, rehash); `host.test.mjs` (catalog hit and fallback, `tw_translate`, `tw_invalidate`). |
 | **Packaging** (M3 WP4, `wine-build.md` "Packaging"):<br>• the closure's 59 DLLs rebased to unique bases below 0x1_7000_0000 (`native/wine/rebase`, LGPL)<br>• the AOT catalog of the closure (77 modules) and the boot-set manifest, lazy nodes loaded on first use<br>• the install copies as 78 symlinks | `pe-rebase` unit tests and `--verify` in `prepare.sh`; CI's catalog gate translates the whole closure and compiles every module in V8; `catalog-prefix.test.mjs`. |
+| **Green threads and signals** (M4 WP1, WP4; `green.c`, `green_pthread.c`, `signal_wasm64.c`; `wine-unix.md` sections 7, 9 and 11; `abi.md` v5, "Green threads"):<br>• `pthread_create`, start, exit and join as cooperative green threads, each on its own stack, deterministic and FIFO<br>• process exit from any thread; a main thread that exits first parks<br>• signals delivered at the wait: SIGQUIT ends its thread (`abort_thread(0)`), and SIGUSR1 gives suspension, another thread's context and the system-APC kick<br>• user APCs through `KiUserApcDispatcher` | the `thread` and `signal` harnesses (`test:wine`); `l2_threads` and `l2_suspend` match native Wine 11 here and Windows in `ci.yml` |
+| **win32u's Unix side** (M4 WP2; `wine-unix.md` sections 2, 6 and 11):<br>• built into the same module, with no FreeType, fontconfig, Vulkan or EGL; the link gates cover it<br>• its unix calls through a static table (patch 0107), and syscall table 1: 478 typed wrappers and 1,062 loud stubs<br>• the session's shared memory as one reservation that the server and win32u share (patches 0203 and 0401) | the `syscall` and `session` checks; user32, gdi32 and win32u load in 7zz.exe's processes (the matrix) |
+| **Console programs on Wine** (M4 WP3, WP5; `tests/sevenzip/README.md`, `runtime.md`, "Benchmarks"):<br>• the 7-Zip matrix in translated mode, on our Wine<br>• CoreMark validates, and `7z b` completes<br>• host files: `createWineProcess`'s `files` and `collect`, and `run-wine.mjs --dir`<br>• both benchmarks record `"host": "wine"` lines | the matrix: 138 of 138 identical to `tests/sevenzip/expected` (`wine-unix.yml`'s `sevenzip-matrix` job); `programs.test.mjs` with basic.exe, `l2_threads`, `l2_suspend` and CoreMark; `bench.yml` |
+| **No shim** (M4 WP6, decision 11): Phase 1's Win32 shim, loader and run loop are deleted (`runtime/src/win32/`, `process.mjs`, `run-pe.mjs` and their tests), and every program runs on Wine | every suite and CI job passes without them; `test:node` has 66 tests |
 
 ## Measurements
 
@@ -894,12 +1355,21 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
 - **The catalog** (`wine-4c6ec0d`): 77 modules, 165.1 MiB of wasm. The rebased DLLs pack downward from 0x1_7000_0000.
 - **`wine-unix.wasm`** (M3's close): 997,015 bytes (361,977 gzipped), 13 patches, 86 imports. `build.sh` takes about 17 s with a warm cache.
 - **CI's `wine-unix` job:** 1.5-4 minutes per run, with one exception: at `c67bc06` its prepare step took 46.6 minutes and then passed (below).
+- **M4 at its close** (`4b64fe1`, this container, Node 24.22; logs in the session's scratchpad):
+  - **Boot to exit in Node** (`test:wine`'s diagnostics, one process each): hello 619 ms (the run's first), l2_int 273, l2_crt 283, l2_float 341, l2_threads 215, l2_suspend 405, basic.exe 117, and CoreMark with 200 iterations 291. Each links 5 AOT modules (basic.exe 4), with no image fallbacks and 2 to 17 run-time translations.
+  - **hello.exe in a Chromium Worker:** 719 ms boot to exit.
+  - **The matrix:** 138 steps at `--jobs 4` in 83.6 to 86.0 s (65.6 s at `1e155d6`, 85.6 s at `59db8a0`).
+  - **CoreMark** (medians of 3, each run validated; native is the `wine.lock` tree's `bin/wine`): 6,902 iterations/s against 22,402, a ratio of 0.308. WP5 measured 0.304.
+  - **`7z b 2 -mmt1 -md18`:** a Tot rating of 1,164 MIPS against 4,421 native, a ratio of 0.263. WP5 measured 1,788 against 6,085, 0.294. Native ran 27 % slower than at WP5 and translated 35 % slower; two more translated runs gave 1,231 and, with `WINEDEBUG=-all`, 1,256. `bench.yml` on the PR compares the ratio with its history.
+  - **`wine-unix.wasm`:** 2,450,455 bytes (808,520 gzipped), with 16 patches and 87 imports. M3's was 997,015 bytes (361,977). M4 added win32u's Unix side, the green threads and the signals.
+  - **The catalog** (`--all`): 82 modules, 198.1 MiB of wasm (M3: 77 modules, 165.1 MiB).
+  - **CI:** `wine-unix.yml` takes 5 to 9 minutes with its matrix job (runs 37 to 41).
 
 ## Known issues and risks
 - **The Unix-side port is the bulk:** about 100k lines in M2-M3, and 106k more with win32u in M4. The hard parts are the machine layer, the virtual backend and the server transport (Phase 0's risks 2, 4 and 6 in `native/README.md`).
 - **Wine's DLLs overlapped at one default base** (resolved in M3, decision 1): the closure's DLLs are rebased to unique bases at packaging, so every image loads at its catalog base (`wine-build.md`, "Packaging").
 - **Session disk:** the Wine source (hundreds of MB) plus build outputs go under `target/`.
-- **Boot cost per program run:** the matrix runs 138 processes, and a boot to exit takes 370-430 ms in Node (M3, "Measurements"). M4 measures the matrix on Wine.
+- **Boot cost per program run:** the matrix runs 138 processes. On Wine they take 84 to 86 s at `--jobs 4`, and a boot to exit takes 215 to 405 ms in Node ("Measurements", M4 at its close).
 - **Out of reach until Phase 4:** test units that need child processes, explorer or services. They are tracked, not fixed.
 - **Found by the spike, for M2** (`abi.md`, "Wine boundary"):
   - Emscripten's `sbrk` grows the memory too (`emscripten_resize_heap`), which conflicts with "one owner of `memory.grow`";
@@ -912,14 +1382,21 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
   - M5's runner can tell them apart, from Wine's own crash output, if a case appears.
 - **M2's items for M3** were all decided in M3 (decisions 11-15 and 19): the `MEM_TOP_DOWN` ceiling (patch 0104), write-copy unchanged (it matches Wine 11), `STATUS_IMAGE_NOT_AT_BASE` moot after the rebase, the host's `chdir`, `WINEDEBUG` through `opts.env`, lazy boot-set nodes from the manifest, the wineboot skip's version constants kept, and the `PROCESSOR_*`, `XState` and `ActiveProcessorCount` checks (WP1).
 - **M2's, for M4:**
-  - the server's `process_sigkill` would `kill()` the process itself;
-  - every SIGQUIT exits with code 0, the console's CTRL_BREAK included;
+  - the server's `process_sigkill` would `kill()` the process itself (M4: unreachable; WP1's `exit_with_two_alive` check ends the process with two threads alive and no loud stop);
+  - every SIGQUIT exits with code 0, the console's CTRL_BREAK included (fixed in M4 by WP1: SIGQUIT ends only its thread, with `abort_thread(0)`);
   - `get_image_map_address` is called inside the virtual mutex, harmless while server calls never suspend.
 - **M3's, for M4:**
   - no `\KnownDlls`: the wineboot skip creates none, so a KnownDll in a program's own directory would win over system32's (`wine-unix.md`, section 8);
-  - no test checks `depth` across a switch between threads; M4's two-thread test is meant to;
+  - no test checks `depth` across a switch between threads (done in M4: WP1's `switch_two_threads`);
   - the loud stops that M4 and M5 remove: APCs, the six syscall stubs, a raw `syscall`, `EXIT_FAULT`, and translated stores to code (Phase 4);
   - WP1's three open questions (under "Resumed (2026-11-20)") never came up: no divergence pointed at them.
+- **M4's, for M5 and later:**
+  - `sleep_ns` (`green.c`) returns EINTR, with no time left, when a wait timed out and a signal handler then ran before the thread resumed; Linux returns 0 there. No Wine caller acts on it: `unix/file.c` L4543, `unix/server.c` L1428 and `server/request.c` L753 ignore `usleep`'s result, and `NtDelayExecution` reads the clock again after an EINTR (`unix/sync.c` L2463). A fix comes with a harness check that orders the timeout before the signal (the close's code review);
+  - a SIGQUIT sent to a thread before its `init_thread` returns 0, as natively, but the thread's later start would stop loudly in the in-process server instead of meeting EPIPE. It takes a `TerminateThread` right after `CreateThread`, before the new thread first runs (WP1's open point; WP4 fixes it only if a check reaches it);
+  - `KeUserModeCallback` stops loudly from `signal_wasm64.c`, beside `NtCallbackReturn` (deferred, decision 12);
+  - `7z b` prints a CPU usage of 0 %, where native prints 99 %. Wine's `ProcessTimes` reads `times()` (`unix/process.c` L1241-1249), and Emscripten's `times()` returns zeros. The tracked rating (the Tot line's last column) doesn't use it. Fixing it needs a decision on where CPU time comes from, for example the green scheduler's time on the CPU per thread; it isn't in M4's done-when;
+  - no test drives a NULL access or a store into code in a Wine process: the run loop's loud stop on `EXIT_FAULT` and on a store-check hit (`run.c`) is untested since Phase 1's `memory-checks.test.mjs` went with the shim. The translator's side is tested in Rust (`spike.rs`, `memory_checks_fault`). M5 raises both as access violations and tests that;
+  - no check reaches SIGUSR1 on a unix call's frame. `usr1_handler` clears the frame's incomplete mark and sets EFLAGS to 0x200, as Wine does (`sx.c` L2640-2645, `wine-unix.md` section 9), but no check suspends a thread inside a unix call.
 - **M3's, for M5** (the code review; each is harmless while every fault stops loudly):
   - the rep-range store check walks every page from the range's low end to its high end with no bound, so a garbage RCX loops for a long time, or reads past the page-state table, before the store faults (`emit.rs`, `page_range_check`). Bound it at the table's end with a translator test;
   - `run-wine.mjs` reports Wine's own `exit()`/`_exit()` (an `ExitStatus` rejection, `abort_thread`'s ends included) as a stop with exit code 1, not with that status;
@@ -944,26 +1421,26 @@ The owner resumed M3 after the rate limit's reset at 19:50 UTC. The container wa
   - Firefox is untested (Phase 3);
   - calls and floating point are slow.
 
-## Next step: M4, "Console programs on Wine", in a new session
+## Next step: M5, "Exceptions and conformance tracked", in a new session
 
-**M3 is done: hello.exe and the three L2 programs match native on Wine in Node, and hello.exe in a Chromium Worker.** Its draft PR, "[Phase 2] Boot: hello.exe on Wine", waits for the owner's merge. M4 starts from `main` after it.
+**M4 is done: the 7-Zip matrix gives 138 of 138 on Wine, CoreMark validates, both benchmarks are tracked on Wine, win32u loads, guest threads are green threads, and the shim is deleted.** Its draft PR, "[Phase 2] Console programs on Wine", waits for the owner's review and merge. It asks for a human review of `signal_wasm64.c`, `green.c` and `green_pthread.c`. M5 starts from `main` after it.
 
-**Start:** read `docs/plan.md` ("Phase 2 milestones", M4), this note's M3 section ("Decisions taken when planning M3", "Decided while writing the contracts", "The close"), "Known issues and risks" ("M3's, for M4"), `ARCHITECTURE.md`, `docs/design/wine-unix.md` v2 (sections 7, 9, 11 and 13) and `abi.md` v5 ("Green threads", "Syscalls and unix calls"). Then do the research pass into `docs/dev/research.md`, with the source reading given to Explore agents as in M3.
+**Start:** read `docs/plan.md` ("Phase 2 milestones", M5), this note's M4 section ("Decisions taken when planning M4", "Decided while writing the contracts", "The close"), and "Known issues and risks" ("M4's, for M5 and later" and "M3's, for M5"). Then read `ARCHITECTURE.md`, `docs/design/wine-unix.md` v3 (sections 11, 12 and 13) and `abi.md` v5 ("Syscalls and unix calls", "Later"). Do the research pass into `docs/dev/research.md`, with the source reading given to Explore agents as in M3 and M4.
 
-**M4's scope.** plan.md's done-when: green threads; win32u loads; CoreMark validates and the 7-Zip matrix gives 138 of 138 on Wine; both benchmarks are tracked on Wine; the JS shim (`runtime/src/win32/`) is deleted. `wine-unix.md` section 13 lists the Unix side's part:
-- threads: the rest of the green pthread layer (`pthread_create` stops loudly today), thread exit, APCs (`call_user_apc_dispatcher`), `KeUserModeCallback`, and another thread's context;
-- win32u and its syscall table (table 1, `KeAddSystemServiceTable`);
-- `\KnownDlls`, services and the session shared memory;
-- 7zz's closure: 20 modules, 15 of them at the shared default base before the rebase, so the catalog and the boot set grow;
-- the benchmarks (`docs/dev/commands.md`) on Wine instead of the shim.
+**M5's scope.** plan.md's done-when:
+- a basic raise path through Wine's own dispatcher;
+- `l2_seh.exe` matches native;
+- both test exes run in CI, with rates tracked against the baselines (`wine-build.md`, "Conformance baselines").
 
-**Contracts it amends:** `wine-unix.md` sections 7, 9 and 13, `abi.md` v5 ("Green threads"), `runtime.md` (the shim's deletion, the CLI), `wine-build.md` ("Packaging", for 7zz and CoreMark). Commit them before agents start; briefs come from M4's work-package table, written at planning as in M3: each names its files, its contract sections, its tests and a WIP track, and asks the agent to check its worktree base first.
+`wine-unix.md` section 13 gives the Unix side's part: `EXIT_FAULT` raises, and the stubs of both syscall tables raise as Wine's do. Its test of a fault also covers the run loop's fault path, which nothing tests today. `\KnownDlls` and `KeUserModeCallback` come to M5 only if conformance needs them (decision 12).
 
-**M3's leftovers:** "M3's, for M4" and "M3's, for M5" under "Known issues and risks"; among them a test of `depth` across a switch between threads, and the loud stops M4 removes.
+**Contracts it amends:** at least `wine-unix.md` sections 11-13 and `abi.md` v5 ("Later"). Commit them before agents start. Briefs come from M5's work-package table, written at planning as in M4: each names its files, its contract sections, its tests and a WIP track, and asks the agent to check its worktree base first.
+
+**M4's leftovers:** "M4's, for M5 and later" and "M3's, for M5" under "Known issues and risks".
 
 **Inputs** (a fresh container):
 - `scripts/apt-install.sh zstd gcc-mingw-w64-x86-64` and `tools/start-dockerd.sh`;
-- `tests/wine/prepare.sh --all` for `target/wine` (the Unix side, the rebase, the catalog, the wasm32 run-time translator and floating-point helper), with `tests/targets/wine.lock` (`wine-4c6ec0d`);
+- `tests/wine/prepare.sh --fetch --all` for `target/wine`, from the `wine-unix.lock` release (`wine-unix-2aee661`) and `wine.lock` (`wine-4c6ec0d`); without `--fetch` it builds the Unix side locally. It also fetches `7zz.exe` and `coremark.exe` into `target/wine`;
 - for `test:node`: `cargo run -q -p testkit --release -- spike --out target/spike`, `tests/pe/build.sh` and `tests/pe/prepare.sh`, `tests/native/build.sh` and `tests/native/prepare.sh`;
 - `native/spike/boundary/build.sh` for `test:browser`;
-- `scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets` (and `coremark.exe`) for the matrix and the benchmarks.
+- `scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets` (and `coremark.exe`) for the matrix and the census. The benchmarks' native side needs `wine64`, or `--wine target/wine/native/opt/wine-11.0/bin/wine`.

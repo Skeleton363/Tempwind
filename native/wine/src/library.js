@@ -21,9 +21,10 @@ addToLibrary({
     updateMemoryViews();
     Module['onMemoryGrown']?.();
   },
-  // M3's imports (abi.md v5, "The bridge" and "Host entries of the Unix
-  // side"). The JS host replaces all of them; the bridge's four with the
-  // bridge's raw exports, so those calls are wasm to wasm.
+  // The bridge's and the JS host's imports (abi.md v5, "The bridge" and
+  // "Host entries of the Unix side"). The JS host replaces all of them; the
+  // bridge's four with the bridge's raw exports, so those calls are wasm to
+  // wasm.
   // (state i64) -> i32: the bridge's `run`.
   tw_run__sig: 'ij',
   tw_run: (state) => { throw new Error('tw_run: the JS host replaces this import'); },
@@ -46,4 +47,10 @@ addToLibrary({
   // (base i64, size i64) -> (): remove the translations overlapping the range.
   tw_invalidate__sig: 'vjj',
   tw_invalidate: (base, size) => { throw new Error('tw_invalidate: the JS host replaces this import'); },
+  // The green-thread import (abi.md v5, "Green threads"; wine-unix.md v3, section 9).
+  // (thread i32, top i64, bottom i64) -> (): C made a green thread whose
+  // shadow stack is [bottom, top); JS starts it with tw_thread_main(thread)
+  // after the current call into the module returns, in order with the wakes.
+  green_spawn__sig: 'vijj',
+  green_spawn: (thread, top, bottom) => { Module['onGreenSpawn'](thread, top, bottom); },
 });

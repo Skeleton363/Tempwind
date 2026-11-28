@@ -146,6 +146,50 @@ fn module_shape_follows_the_abi() {
     }
 }
 
+/// The optional imports follow the options (`abi.md`, "Counter block" and
+/// "Page-state table"): `env.page_flags` only with the store check and
+/// `env.counters` only with the counters. The NULL check imports nothing.
+#[test]
+fn optional_imports_follow_the_options() {
+    // mov [rip + 0], eax (a store into the code); ret
+    let code = hex("890500000000 c3");
+    let optional = |opts: Options| -> Vec<String> {
+        let t = translate(&code, 0x1_4000_1000, &opts);
+        validate(&t.wasm);
+        let mut names = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&t.wasm) {
+            if let Payload::ImportSection(section) = payload.unwrap() {
+                for import in section.into_imports() {
+                    let name = import.unwrap().name;
+                    if [abi::COUNTERS_NAME, abi::PAGE_FLAGS_NAME].contains(&name) {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+        }
+        names
+    };
+    let none: [&str; 0] = [];
+    assert_eq!(optional(Options::default()), none);
+    let null = Options {
+        null_check: true,
+        ..Options::default()
+    };
+    assert_eq!(optional(null), none);
+    let store = Options {
+        store_check: true,
+        ..Options::default()
+    };
+    assert_eq!(optional(store), [abi::PAGE_FLAGS_NAME]);
+    let all = Options {
+        counters: true,
+        null_check: true,
+        store_check: true,
+        ..Options::default()
+    };
+    assert_eq!(optional(all), [abi::COUNTERS_NAME, abi::PAGE_FLAGS_NAME]);
+}
+
 #[test]
 fn discovers_blocks_and_return_sites() {
     let base = 0x1000;

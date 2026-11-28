@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createUnixHost } from '../../runtime/src/wine/unix-host.mjs';
-import { m3Imports } from './m3-imports.mjs';
+import { harnessImports } from './harness-imports.mjs';
 
 const root = new URL('../../', import.meta.url);
 const dir = process.env.TW_WINE_UNIX_DIR
@@ -32,17 +32,17 @@ async function start(opts = {}) {
   const out = { stdout: '', stderr: '', grown: 0 };
   const dec = () => { const d = new TextDecoder(); return (b) => d.decode(b, { stream: true }); };
   const o = dec(), e = dec();
-  const m3 = m3Imports();
+  const harness = harnessImports();
   const host = await createUnixHost({
     ...(await load()),
     stdout: (b) => { out.stdout += o(b); },
     stderr: (b) => { out.stderr += e(b); },
     onMemoryGrown: () => { out.grown++; },
-    imports: m3.imports,
+    imports: harness.imports,
     ...opts,
   });
-  m3.attach(host);
-  return { host, out, m3 };
+  harness.attach(host);
+  return { host, out, harness };
 }
 
 // In the harness's order (it runs them in one instance).
@@ -52,7 +52,7 @@ const CHECKS = ['init_first_teb', 'kuser_committed', 'reserve_commit_free', 'fix
   'exec_range'];
 
 test('virtual: the harness checks pass', async () => {
-  const { host, out, m3 } = await start();
+  const { host, out, harness } = await start();
   const ret = await host.call('tw_test_main');
   const lines = out.stdout.trim().split('\n');
   assert.deepEqual(lines.filter((l) => l.startsWith('not ok')), [], out.stdout + out.stderr);
@@ -71,7 +71,7 @@ test('virtual: the harness checks pass', async () => {
     return { base: BigInt(base), size: BigInt(size), marked: true };
   });
   assert.equal(expected.length, 2, out.stdout);
-  assert.deepEqual(m3.invalidated, expected);
+  assert.deepEqual(harness.invalidated, expected);
 });
 
 test('virtual: init alone leaves the memory at 4 GiB', async () => {

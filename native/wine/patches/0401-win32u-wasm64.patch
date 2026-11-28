@@ -1,0 +1,95 @@
+win32u: the Unix side in the wasm64 module (docs/design/wine-unix.md,
+sections 2, 3 and 7).
+
+- syscall.c, stub_syscall (L39-61): the exception address is the guest
+  CONTEXT's Rip, so its __x86_64__ branch gets || defined(__wasm64__)
+  (section 3). Tempwind's table-1 stub wrappers stop loudly before it is
+  reached (section 11), so this only keeps the code describing the guest.
+- syscall.c: tw_win32u_unix_call_count, the entry count of
+  __wine_unix_call_funcs (L108-111), as patch 0301 gives ntdll's
+  tw_unix_call_count. The unix-call dispatcher checks a code against it
+  through tw_unixlib_count (native/wine/src/unixlibs.c; section 11).
+- winstation.c, map_shared_session_block (L106-144): block->data is
+  tw_session_view(off, &size) (patch 0203) instead of a read-only view of
+  \KernelObjects\__wine_session. off is Wine's offset rounded down to the
+  allocation granularity (L114), and the size runs to the reservation's
+  end, as Wine's view of size 0 runs to the section's end (L129-130), so
+  find_shared_session_block's strict < (L157) keeps finding later objects
+  in the same block. Its only caller is find_shared_session_block (L165),
+  under session_lock, whose callers are find_shared_session_object (L182),
+  for each shared object win32u reads, and shared_session_init (L197),
+  which init_user calls (class.c L253), run once from
+  NtUserInitializeClientPfnArrays (L263-279), user32's attach. On both paths the block is found or made as Wine's would be; a
+  view before the server set the session up, or past the cap, stops
+  loudly in tw_session_view.
+
+The other __x86_64__ branches of win32u's Unix files describe the host
+CPU (message.c L53, L62 and win32u_private.h L229: memory ordering;
+dibdrv/primitives.c L249, L261: inline assembly) and keep their generic
+paths.
+
+Line numbers are wine-11.0's dlls/win32u/.
+
+--- a/dlls/win32u/syscall.c
++++ b/dlls/win32u/syscall.c
+@@ -50,7 +50,7 @@
+     NtGetContextThread( GetCurrentThread(), &context );
+ #ifdef __i386__
+     rec.ExceptionAddress = (void *)context.Eip;
+-#elif defined __x86_64__
++#elif defined __x86_64__ || defined(__wasm64__)
+     rec.ExceptionAddress = (void *)context.Rip;
+ #elif defined __arm__ || defined __aarch64__
+     rec.ExceptionAddress = (void *)context.Pc;
+@@ -109,3 +109,9 @@
+ {
+     init,
+ };
++
++#ifdef __wasm64__
++/* Tempwind (wine-unix.md, sections 2 and 11): the unix-call dispatcher
++ * checks a code against the table's count (native/wine/src/unixlibs.c). */
++const unsigned int tw_win32u_unix_call_count = ARRAY_SIZE(__wine_unix_call_funcs);
++#endif
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -103,6 +103,31 @@
+     return lock.id;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++#include "tempwind_private.h"
++
++/* Tempwind (wine-unix.md, section 7): the server's session blocks are ranges
++ * of one reservation in the same memory (patch 0203), so the view is the
++ * reservation from the rounded offset to its end, as Wine's view of size 0
++ * runs to the section's end; no section is opened or mapped. */
++static NTSTATUS map_shared_session_block( SIZE_T offset, SIZE_T size, struct session_block **ret )
++{
++    SIZE_T off = offset - (offset % system_info.AllocationGranularity);
++    struct session_block *block;
++    size_t view_size;
++
++    assert( offset + size > offset );
++
++    if (!(block = calloc( 1, sizeof(*block) ))) return STATUS_NO_MEMORY;
++    block->data = tw_session_view( off, &view_size );
++    block->size = view_size;
++    block->offset = off;
++    assert( block->offset + block->size > block->offset );
++    list_add_tail( &session_blocks, &block->entry );
++    *ret = block;
++    return STATUS_SUCCESS;
++}
++#else
+ static NTSTATUS map_shared_session_block( SIZE_T offset, SIZE_T size, struct session_block **ret )
+ {
+     static const WCHAR nameW[] =
+@@ -142,6 +167,7 @@
+     else *ret = block;
+     return status;
+ }
++#endif
+ 
+ static NTSTATUS find_shared_session_block( SIZE_T offset, SIZE_T size, struct session_block **ret )
+ {

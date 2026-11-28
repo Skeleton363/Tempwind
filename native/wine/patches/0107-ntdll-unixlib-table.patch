@@ -1,0 +1,54 @@
+ntdll: unix libraries from Tempwind's static table, in place of dlopen
+(docs/design/wine-unix.md, section 2, "Unix libraries").
+
+Why: win32u's Unix side is linked into the module, and libc's dlopen
+stays unused (its dlerror reaches __get_tp, which stops loudly; stubs.c).
+
+- get_builtin_unix_funcs (L837-863) calls tw_unixlib_funcs(unix_path, wow)
+  (native/wine/src/unixlibs.c) in place of dlopen and dlsym, under the
+  same virtual_mutex, and returns STATUS_SUCCESS with the funcs it gives.
+  A builtin without a unix_path still returns STATUS_DLL_NOT_FOUND, and an
+  unknown module still leaves the list with that status. A wow request or
+  a library not in the table stops loudly there. unix_handle stays NULL, so
+  release_builtin_module (L789-808) has no handle to dlclose.
+- Its only caller is NtQueryVirtualMemory's MemoryWineUnixFuncs and
+  MemoryWineUnixWow64Funcs case (L6113), which a builtin DLL's
+  __wine_init_unix_call reaches (dlls/winecrt0/unix_lib.c L92-96); the
+  handle it stores is the funcs' address, which the unix-call dispatcher
+  checks with tw_unixlib_count (section 11).
+
+Line numbers are wine-11.0's dlls/ntdll/unix/virtual.c.
+
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -875,6 +875,12 @@
+ /***********************************************************************
+  *           get_builtin_unix_funcs
+  */
++#ifdef __wasm64__
++/* Tempwind (wine-unix.md, section 2): the unix libraries are linked into the
++ * module; native/wine/src/unixlibs.c's static table gives their funcs. */
++extern const void *tw_unixlib_funcs( const char *unix_path, int wow );
++#endif
++
+ static NTSTATUS get_builtin_unix_funcs( void *module, BOOL wow, const void **funcs )
+ {
+     const char *ptr_name = wow ? "__wine_unix_call_wow64_funcs" : "__wine_unix_call_funcs";
+@@ -886,6 +892,17 @@
+     LIST_FOR_EACH_ENTRY( builtin, &builtin_modules, struct builtin_module, entry )
+     {
+         if (builtin->module != module) continue;
++#ifdef __wasm64__
++        /* no dlopen or dlsym: unix_handle stays NULL, so release_builtin_module
++         * has nothing to dlclose */
++        (void)ptr_name;
++        if (builtin->unix_path)
++        {
++            *funcs = tw_unixlib_funcs( builtin->unix_path, wow );
++            status = STATUS_SUCCESS;
++        }
++        break;
++#endif
+         if (builtin->unix_path && !builtin->unix_handle)
+         {
+             builtin->unix_handle = dlopen( builtin->unix_path, RTLD_NOW );

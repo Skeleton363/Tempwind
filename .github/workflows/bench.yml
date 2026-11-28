@@ -1,8 +1,9 @@
 name: bench
 
-# CoreMark, translated in Node and natively under wine64 on the same runner (docs/design/runtime.md,
-# "Benchmarks (M4)"). On main the result line is appended to coremark.jsonl on the orphan branch
-# bench-data; on pull requests a ratio more than 10 % below the last recorded one is a warning
+# CoreMark, translated on our Wine in Node (run-wine.mjs; the JSON line says "host": "wine") and natively under
+# wine64 on the same runner (docs/design/runtime.md, "Benchmarks"). The inputs are the published
+# wine.lock and wine-unix.lock releases, prepared by tests/wine/prepare.sh --fetch. On main the result line is appended to coremark.jsonl on the orphan branch
+# bench-data; on pull requests a ratio more than 10 % below the last recorded one of the same host (Phase 1's lines have no host) is a warning
 # annotation, never a failure. coremark.exe also runs natively on windows-2025, for the record.
 # The same for `7zz b 2 -mmt1 -md18` (tests/bench/sevenzip.mjs, recorded in sevenzip.jsonl).
 
@@ -34,8 +35,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install wine64
-        run: scripts/apt-install.sh wine64
+      - name: Install wine64, zstd and MinGW (the last two for tests/wine/prepare.sh)
+        run: scripts/apt-install.sh wine64 zstd gcc-mingw-w64-x86-64
 
       - uses: actions/setup-node@v7
         with:
@@ -47,10 +48,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" coremark.exe target/targets
 
-      - name: Build the run-time translator and the floating-point helpers
-        run: |
-          cargo build -q -p x64wasm-rt --release --target wasm32-unknown-unknown
-          cargo build -q -p x64wasm-fp --release --target wasm32-unknown-unknown
+      # Fetches the wine.lock and wine-unix.lock releases into target/wine and target/wine-unix, builds
+      # the catalog (7zz.exe and coremark.exe included) and the run-time translator and floating-point helpers.
+      - name: Prepare target/wine (wine.lock and wine-unix.lock releases)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tests/wine/prepare.sh --fetch
 
       - name: CoreMark, translated and under wine64 (medians of 3)
         env:
@@ -73,15 +76,8 @@ jobs:
             echo "No bench-data branch yet; nothing to compare with."
             exit 0
           fi
-          last=$(git show FETCH_HEAD:coremark.jsonl 2>/dev/null | tail -n 1 || true)
-          if [ -z "$last" ]; then echo "coremark.jsonl is empty; nothing to compare with."; exit 0; fi
-          node -e '
-            const last = JSON.parse(process.argv[1]), now = JSON.parse(require("fs").readFileSync("coremark-result.json", "utf8"));
-            if (!last.ratio || !now.ratio) { console.log("a line has no ratio; skipping"); process.exit(0); }
-            const change = now.ratio / last.ratio - 1;
-            console.log(`ratio ${now.ratio} now, ${last.ratio} at ${last.commit} (${(change * 100).toFixed(1)} %)`);
-            if (change < -0.10) console.log(`::warning title=CoreMark ratio::translated/native ratio fell ${(-change * 100).toFixed(1)} % (${last.ratio} at ${last.commit} -> ${now.ratio})`);
-          ' "$last"
+          git show FETCH_HEAD:coremark.jsonl > coremark-history.jsonl 2>/dev/null || true
+          node tests/bench/compare-ratio.mjs coremark-result.json coremark-history.jsonl 'CoreMark'
 
       - uses: actions/upload-artifact@v7
         with:
@@ -100,8 +96,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install wine64
-        run: scripts/apt-install.sh wine64
+      - name: Install wine64, zstd and MinGW (the last two for tests/wine/prepare.sh)
+        run: scripts/apt-install.sh wine64 zstd gcc-mingw-w64-x86-64
 
       - uses: actions/setup-node@v7
         with:
@@ -113,10 +109,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/fetch-artifact.sh "$(cat tests/targets/targets.lock)" 7zz.exe target/targets
 
-      - name: Build the run-time translator and the floating-point helpers
-        run: |
-          cargo build -q -p x64wasm-rt --release --target wasm32-unknown-unknown
-          cargo build -q -p x64wasm-fp --release --target wasm32-unknown-unknown
+      # Fetches the wine.lock and wine-unix.lock releases into target/wine and target/wine-unix, builds
+      # the catalog (7zz.exe and coremark.exe included) and the run-time translator and floating-point helpers.
+      - name: Prepare target/wine (wine.lock and wine-unix.lock releases)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tests/wine/prepare.sh --fetch
 
       - name: 7z b, translated and under wine64 (`b 2 -mmt1 -md18`, medians of 3)
         env:
@@ -139,15 +137,8 @@ jobs:
             echo "No bench-data branch yet; nothing to compare with."
             exit 0
           fi
-          last=$(git show FETCH_HEAD:sevenzip.jsonl 2>/dev/null | tail -n 1 || true)
-          if [ -z "$last" ]; then echo "sevenzip.jsonl is empty; nothing to compare with."; exit 0; fi
-          node -e '
-            const last = JSON.parse(process.argv[1]), now = JSON.parse(require("fs").readFileSync("sevenzip-result.json", "utf8"));
-            if (!last.ratio || !now.ratio) { console.log("a line has no ratio; skipping"); process.exit(0); }
-            const change = now.ratio / last.ratio - 1;
-            console.log(`ratio ${now.ratio} now, ${last.ratio} at ${last.commit} (${(change * 100).toFixed(1)} %)`);
-            if (change < -0.10) console.log(`::warning title=7z b ratio::translated/native ratio fell ${(-change * 100).toFixed(1)} % (${last.ratio} at ${last.commit} -> ${now.ratio})`);
-          ' "$last"
+          git show FETCH_HEAD:sevenzip.jsonl > sevenzip-history.jsonl 2>/dev/null || true
+          node tests/bench/compare-ratio.mjs sevenzip-result.json sevenzip-history.jsonl '7z b'
 
       - uses: actions/upload-artifact@v7
         with:

@@ -1,6 +1,6 @@
 # Architecture
 
-Tempwind runs unmodified 64-bit Windows programs in the browser. The long-term stack is x86-64 to WebAssembly translation, Wine 11 underneath, Direct3D to WebGPU, all on the user's device from static hosting (`docs/plan.md`). Phase 1 is the translator plus a JS Win32 shim that runs 7-Zip and CoreMark in Node without Wine. This file is the map for someone new to the repo. Details live in `docs/design/`; status in `docs/status/`.
+Tempwind runs unmodified 64-bit Windows programs in the browser. The long-term stack is x86-64 to WebAssembly translation, Wine 11 underneath, Direct3D to WebGPU, all on the user's device from static hosting (`docs/plan.md`). Phase 1 ran 7-Zip and CoreMark on a JS Win32 shim; Phase 2 M4 deleted the shim, and Wine runs every program. This file is the map for someone new to the repo. Details live in `docs/design/`; status in `docs/status/`.
 
 ## Bird's eye view
 
@@ -9,10 +9,8 @@ FILE.exe
   -> x64wasm-cli translate-pe
        -> FILE.wasm        translated module (ABI v3/v4)
        -> FILE.plan.json   load plan (sections, imports, entries)
-  -> runtime: Linker + Process
-       -> guest memory, PEB/TEB, import thunks, run loop
-       -> translated code calls the host with a host call
-            -> Shim (runtime/src/win32/*) implements the API
+  -> runtime (runtime/src/wine/): Wine's PE side and Unix side, with the Linker
+       -> translated code calls the Unix side through the boundary (abi.md v5)
   code no module has translated
        -> x64wasm_rt.wasm translates it at run time, Linker links it
   floating point
@@ -32,17 +30,14 @@ Translation is function-level: the translator discovers functions from the entry
 
 ### runtime/src/
 - `link.mjs` (`Linker`): table, `lookup`, `depth` globals, block tables; links the AOT module, run-time translations and the host-call module.
-- `process.mjs` (`Process`): guest memory, address map, image mapping, PEB/TEB/stack/TLS, import thunks, run loop, exit status.
-- `hostcall.mjs` (`HostContext`, `HostStop`): the guest-to-host call path.
-- `threads.mjs`: cooperative guest threads (scheduler, waits, locks, deadlock detection).
-- `win32/`: the shim, one module per DLL (`kernel32*.mjs`, `msvcrt.mjs`, `advapi32.mjs`, `user32.mjs`, `oleaut32.mjs`), with the in-memory file system `vfs.mjs` and handle table `handles.mjs`.
-- `rt.mjs`, `fp.mjs`: wrappers for the run-time translator and the soft float module.
-- `plan.mjs`, `abi.mjs`: the load plan and ABI constants on the JS side.
-- `node-host.mjs`, `browser-host.mjs`, `worker.mjs`, `vfs-host.mjs`: hosts. `run-pe.mjs` is the command-line runner. `trace.mjs` implements `TEMPWIND_TRACE`.
+- `rt.mjs` (with `requestFlags`), `fp.mjs`: wrappers for the run-time translator and the soft float module.
+- `plan.mjs`, `abi.mjs`: the load plan and ABI constants on the JS side. `memory.mjs`, `guest-memory.mjs`: the memory and the guest address map.
+- `node-host.mjs`, `browser-host.mjs`, `worker.mjs`, `run.mjs`: the hosts of the spike and selftest programs.
+- `wine/`: the Wine host (`wine-process.mjs`, `run-wine.mjs`, the boot set, the AOT catalog, host files, `web-files.mjs` for the browser).
 
 ### Elsewhere
-- `tests/`: `pe` and `native` (programs and expected output), `node` (shim and runtime tests), `browser` (Playwright), `sevenzip` (138-step command matrix), `bench`, `targets` (7-Zip and CoreMark pins).
-- `native/`: Wine's Unix side with Emscripten (Phase 2+). `native/wine/` (LGPL): `build.sh`, the patch series against the wine-11.0 tarball, our new files in `src/` (the memory backend, the in-process server transport, green threads, boot, the syscall and unix-call dispatchers, the run loop), `gen-syscalls.mjs` (the typed syscall wrappers, generated from Wine's headers at build time), the generated `include/tempwind/abi.h`, the C harnesses in `tests/`, and `rebase/`, the tool that gives the closure's DLLs unique bases at packaging (its own LGPL crate). `native/spike/boundary/` is M1's boundary spike. `runtime/src/wine/` is the JS host for the Unix side: the process, the links of the bridge, the AOT catalog's modules and run-time translations, the lazy boot set, and the Node and browser inputs. `tests/wine/` holds its Node tests, `prepare.sh` and `catalog.mjs`, which builds the AOT catalog of the closure (`wine-build.md`, "Packaging"). `web/`: desktop shell (Phase 3+).
+- `tests/`: `pe` and `native` (programs and expected output), `node` (runtime tests), `wine` (Wine host tests), `browser` (Playwright), `sevenzip` (138-step command matrix), `bench`, `targets` (7-Zip and CoreMark pins).
+- `native/`: Wine's Unix side with Emscripten (Phase 2+). `native/wine/` (LGPL): `build.sh`, which builds ntdll's and win32u's Unix sides and the server into one module, the patch series against the wine-11.0 tarball, our new files in `src/` (the memory backend, the in-process server transport, green threads and their signals, boot, the syscall and unix-call dispatchers, the static table of unix libraries, the run loop), `gen-syscalls.mjs` (the typed syscall wrappers, generated from Wine's headers at build time), the generated `include/tempwind/abi.h`, the C harnesses in `tests/`, and `rebase/`, the tool that gives the closure's DLLs unique bases at packaging (its own LGPL crate). `native/spike/boundary/` is M1's boundary spike. `runtime/src/wine/` is the JS host for the Unix side: the process, the links of the bridge, the AOT catalog's modules and run-time translations, the lazy boot set, and the Node and browser inputs. `tests/wine/` holds its Node tests, `prepare.sh` and `catalog.mjs`, which builds the AOT catalog of the closure (`wine-build.md`, "Packaging"). `web/`: desktop shell (Phase 3+).
 - `tools/`, `scripts/`, `.github/workflows/`: environment setup, artifact fetching, CI.
 
 ## Contracts
@@ -53,7 +48,7 @@ Translation is function-level: the translator discovers functions from the entry
 | Translator pipeline, terminators, functions and chunks, lowering | `docs/design/translator.md` |
 | Fixture format | `docs/design/fixtures.md` |
 | Instruction scope and the "all fixtures pass" rule | `docs/design/instruction-scope.md` |
-| Process, load plan, host calls, shim | `docs/design/runtime.md` |
+| Load plan, Linker and run-time translator hosts, the spike hosts | `docs/design/runtime.md` |
 | Guest address map | `docs/design/guest-memory.md` |
 | Wine build, release layout, DLL closure, prefix, conformance baselines (Phase 2) | `docs/design/wine-build.md` |
 | Wine's Unix side with Emscripten: build, patches, memory backend, in-process server, startup, green threads (Phase 2) | `docs/design/wine-unix.md` |
@@ -79,8 +74,7 @@ Contracts are committed before the code that uses them. The ABI is versioned; bo
 - Every decoder uses `x64wasm::DECODER_OPTIONS`, so the census, the oracle and the translator agree on what an encoding means.
 - Fixtures come only from the recorder, never by hand. `record --check` reproduces on any CPU vendor; implementation-dependent results are `undefined`.
 - Floating-point results are bit-exact with the CPU. `x64wasm-fp` uses no host floating point.
-- The shim never fakes success. Unimplemented imports, `GetProcAddress` misses, exceptions, and blocking inside a host-to-guest call (`callNested`) stop loudly.
-- Guest threads are cooperative: they take turns on one JS thread and switch only at blocking host calls, which suspend through JSPI (`threads.mjs`). The schedule is deterministic.
+- Guest threads are cooperative: they take turns on one JS thread and switch only at blocking calls, which suspend through JSPI (green threads in `native/wine/`). The schedule is deterministic.
 - A new thread's state block carries real FP defaults (MXCSR), not zeros.
 - JS never parses PE files; `translate-pe` writes the plan.
 - Clean room: never read or copy WebWindows, BottleShip, DirectWebGPU/Theseus or Boxedwine. Work from specs, Wine's source and the programs' own source. Wine's source is read, not copied. Our code is all rights reserved (`LICENSE`); our Wine patches stay LGPL.

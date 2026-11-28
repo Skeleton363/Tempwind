@@ -206,7 +206,7 @@ Besides 7-Zip's 27 functions and MinGW's `cpuid` probes (above), the Wine module
 ### Translation
 Every closure module with code (82) translates with `translate-pe` and validates. The only unsupported sites are excluded or out-of-profile instructions: `syscall` (1,798), `int3` (12: ntdll 8, kernelbase 4 after non-returning calls; the census table counts 9, since it decodes `.pdata` functions and gaps without padding, while discovery follows control flow, including the fall-through of calls that never return), `cli`/`sti`/`in` in RTTI data (msvcp90 2, msvcr90 2), `rdtsc`/`rdtscp` (wineboot 8, `ntdll_test.exe` 4), `int 29h` and one AVX `vmovups` (`ntdll_test.exe`). The 7 Phase 1 roots translate as before (Phase 1 measurements).
 
-In V8 (Node 24.22, V8 13.6, this session's 4-CPU VM, median of 3; `node tests/bench/translator/images.mjs --out target/wine/aot <modules>`), the 75 Wine modules with code (73 DLLs, drivers and programs, and the two test exes):
+In V8 (Node 24.22, V8 13.6, this session's 4-CPU VM, median of 3; measured with `tests/bench/translator/images.mjs`, which M4 deleted with the shim), the 75 Wine modules with code (73 DLLs, drivers and programs, and the two test exes):
 
 | | total | kernel32_test.exe | ntdll_test.exe | windowscodecs.dll | ucrtbase.dll | user32.dll |
 |---|---:|---:|---:|---:|---:|---:|

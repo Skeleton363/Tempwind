@@ -1,17 +1,18 @@
 #!/usr/bin/env node
-// CoreMark benchmark (docs/design/runtime.md, "Benchmarks (M4)"): coremark.exe translated and run in
-// Node, and natively under wine64, both with `0x0 0x0 0x66 0` (iterations 0: CoreMark calibrates itself
+// CoreMark benchmark (docs/design/runtime.md, "Benchmarks"): coremark.exe translated and run on our
+// Wine in Node, and natively under wine64, both with `0x0 0x0 0x66 0` (iterations 0: CoreMark calibrates itself
 // to a run of at least 10 s, so a valid run prints "Correct operation validated"). Prints one JSON line:
 // commit, date, Node version, CPU model, iterations per second translated and native (medians of
 // --runs runs, default 3) and their ratio. A run that isn't validated fails the script.
 //
 //   node tests/bench/coremark.mjs [--exe target/targets/coremark.exe] [--runs 3] [--wine CMD] [--skip-native]
 //
-// Needs x64wasm_fp.wasm (tests/native/prepare.sh) and, unless --aot-dir exists, the translator CLI.
+// The translated side runs on our Wine (runtime/src/wine/run-wine.mjs), so the JSON line carries "host": "wine".
+// Needs target/wine and target/wine-unix (tests/wine/prepare.sh, TW_WINE_DIR and TW_WINE_UNIX_DIR) with
+// coremark.exe in the catalog.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { cpus, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { cpus } from 'node:os';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -21,7 +22,6 @@ const { values } = parseArgs({
     exe: { type: 'string', default: `${root}target/targets/coremark.exe` },
     runs: { type: 'string', default: '3' },
     wine: { type: 'string' },
-    'aot-dir': { type: 'string' },
     'skip-native': { type: 'boolean', default: false },
   },
 });
@@ -43,27 +43,15 @@ function parse(out, what) {
   return Number(m[1]);
 }
 
-// --- translated
-let aotDir = values['aot-dir'];
-let tmp = null;
-if (!aotDir) {
-  tmp = mkdtempSync(join(tmpdir(), 'coremark-'));
-  aotDir = tmp;
-  const r = sh('cargo', ['run', '-q', '-p', 'x64wasm-cli', '--release', '--', 'translate-pe', exe, '--out-dir', aotDir, '--entries', 'all'], { cwd: root });
-  if (r.status !== 0) throw new Error(`translate-pe failed:\n${r.stderr}`);
-}
-const stem = exe.replace(/^.*\//, '').replace(/\.exe$/, '');
-const fp = `${root}target/wasm32-unknown-unknown/release/x64wasm_fp.wasm`;
-const rt = `${root}target/wasm32-unknown-unknown/release/x64wasm_rt.wasm`;
+// --- translated: on our Wine, through the Wine host (run-wine.mjs). The program is the catalog's coremark.exe
+// (target/wine, tests/wine/prepare.sh): the catalog matches an image by its sha256, so --exe must be those bytes.
 const translated = [];
 for (let i = 0; i < runs; i++) {
-  const a = ['--exe', exe, '--aot', `${aotDir}/${stem}.wasm`, '--plan', `${aotDir}/${stem}.plan.json`, '--fp', fp];
-  if (existsSync(rt)) a.push('--rt', rt);
-  const r = sh(process.execPath, [`${root}runtime/src/run-pe.mjs`, ...a, '--', ...ARGS], { env: { ...process.env, TEMPWIND_TRACE: '' } });
+  // Our Wine reads only the environment its host is given (wine-unix.md section 8): WINEDEBUG=-all, as for native.
+  const r = sh(process.execPath, [`${root}runtime/src/wine/run-wine.mjs`, '--env', 'WINEDEBUG=-all', exe, ...ARGS]);
   translated.push(parse(r.stdout, `translated run ${i + 1}`));
   process.stderr.write(`translated ${i + 1}/${runs}: ${translated[i]} iterations/s\n`);
 }
-if (tmp) rmSync(tmp, { recursive: true, force: true });
 
 // --- native under wine64
 let native = [];
@@ -83,6 +71,7 @@ console.log(JSON.stringify({
   date: new Date().toISOString(),
   node: process.version,
   cpu: cpus()[0]?.model ?? null,
+  host: 'wine',
   runs,
   translated_ips: t,
   native_ips: n,

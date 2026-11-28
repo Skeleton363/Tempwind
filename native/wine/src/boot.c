@@ -6,7 +6,7 @@
  * state, BOOT_STOP_AT_ENTRY comes back here, and run mode (flags 0) enters
  * tw_run_loop (run.c). In run mode the process's exit comes back here too:
  * exit_process, and NtTerminateProcess before its abort_process call, call
- * tw_process_exit (patch 0302).
+ * tw_process_exit (patch 0302), when it ends on the main thread.
  *
  * Copyright 2026 the Tempwind authors
  *
@@ -92,9 +92,14 @@ _Noreturn void tw_boot_stopped( void )
  * get_unix_exit_code cuts it. Back to boot, which returns the status; the
  * longjmp unwinds the translated frames on the wasm stack as a wasm
  * exception. The instance is finished after it. abort_thread's error ends
- * keep abort_process's _exit, which rejects boot's promise. */
+ * keep abort_process's _exit, which rejects boot's promise.
+ * On a thread other than the main one it records the status and
+ * longjmps to that thread's tw_thread_main, which returns
+ * TW_THREAD_PROCESS_EXIT (green_pthread.c; section 8, "Process exit from
+ * another thread"); boot's promise then never settles. */
 _Noreturn void tw_process_exit( int status )
 {
+    if (!green_is_main()) green_thread_process_exit( status );
     if (!booting) tw_unsupported( "tw_process_exit outside boot" );
     exit_status = status;
     longjmp( boot_stop, BOOT_EXITED );

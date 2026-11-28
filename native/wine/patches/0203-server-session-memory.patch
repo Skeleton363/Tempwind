@@ -1,0 +1,120 @@
+server: the session's shared memory as ranges of one host-heap reservation
+(docs/design/wine-unix.md, section 7, "Session shared memory").
+
+Why: Wine mmaps the session section's file MAP_SHARED in the server and
+maps the section again in win32u, so both see the same pages. Emscripten's
+mmap of a file copies it into the heap, so the two would read and write
+different copies. In one module the server and win32u can share the bytes
+directly, as with KUSER.
+
+- set_session_mapping (L1351-1373) takes the first block as offset 0 of one
+  reservation of TW_SESSION_CAP (16 MiB) bytes in the host heap, in place
+  of its mmap. Its only caller is init_directories (server/directory.c
+  L501-502), at the in-process server's start.
+- grow_session_mapping (L1375-1406) still grows the section's file (L1387),
+  so the mapping's size stays Wine's (growth rule L1382), and takes the
+  grown block as the range right after the previous one, zeroed, in place
+  of its mmap. Its only caller is find_free_session_block (L1408-1416),
+  whose only caller is alloc_shared_object (L1431, the call at L1442),
+  when no free object fits. Growth past the cap stops loudly with
+  "tempwind: unsupported: session memory past 16 MiB" rather than moving
+  memory win32u already points into.
+- tw_session_view(offset, &size), new, is win32u's view (patch 0401): the
+  address of offset in the reservation and the bytes from there to its
+  end. Before the reservation exists, or at or past the cap, it stops
+  loudly.
+- The server's own pointers (shared_session, each block's data) are into
+  the reservation, which is never freed: the session lives as long as the
+  process.
+
+Line numbers are wine-11.0's server/mapping.c.
+
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -1356,6 +1356,52 @@
+     return create_mapping( root, name, attr, size, SEC_COMMIT, 0, access, sd );
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/* Tempwind (wine-unix.md, section 7): the session's shared memory is one
++ * reservation of TW_SESSION_CAP bytes in the host heap, which the server
++ * writes and win32u reads in the same memory, as with KUSER. The session
++ * blocks are ranges of it: the first at offset 0, each grown block right
++ * after the previous one. The section's file still grows, so the mapping's
++ * size stays Wine's; nothing reads the file. */
++#include "tempwind_private.h"
++
++static char *tw_session_base;
++
++/* The block [offset, offset + size) of the reservation, zeroed as a fresh
++ * mmap of the grown file would be. */
++static void *tw_session_take( size_t offset, size_t size )
++{
++    char what[64];
++
++    if (offset > TW_SESSION_CAP || size > TW_SESSION_CAP - offset)
++    {
++        snprintf( what, sizeof(what), "session memory past %zu MiB", TW_SESSION_CAP >> 20 );
++        tw_unsupported( what );
++    }
++    if (!tw_session_base && !(tw_session_base = aligned_alloc( 0x10000, TW_SESSION_CAP )))
++        tw_unsupported( "session memory: no host memory for its reservation" );
++    memset( tw_session_base + offset, 0, size );
++    return tw_session_base + offset;
++}
++
++/* win32u's view of the session memory (its map_shared_session_block, patch
++ * 0401): offset in the reservation, and in *size the bytes from there to its
++ * end, as Wine's view of size 0 runs to the section's end. */
++void *tw_session_view( size_t offset, size_t *size )
++{
++    char what[64];
++
++    if (!tw_session_base) tw_unsupported( "session memory: a view before the server set the session up" );
++    if (offset >= TW_SESSION_CAP)
++    {
++        snprintf( what, sizeof(what), "session memory past %zu MiB", TW_SESSION_CAP >> 20 );
++        tw_unsupported( what );
++    }
++    *size = TW_SESSION_CAP - offset;
++    return tw_session_base + offset;
++}
++#endif
++
+ void set_session_mapping( struct mapping *mapping )
+ {
+     int unix_fd = get_unix_fd( mapping->fd );
+@@ -1364,11 +1410,16 @@
+     void *tmp;
+ 
+     if (!(block = mem_alloc( sizeof(*block) ))) return;
++#ifdef __EMSCRIPTEN__
++    (void)unix_fd;
++    tmp = tw_session_take( 0, size );
++#else
+     if ((tmp = mmap( NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, unix_fd, 0 )) == MAP_FAILED)
+     {
+         free( block );
+         return;
+     }
++#endif
+ 
+     block->data = tmp;
+     block->offset = 0;
+@@ -1395,12 +1446,16 @@
+     if (!grow_file( unix_fd, new_size )) return NULL;
+ 
+     if (!(block = mem_alloc( sizeof(*block) ))) return NULL;
++#ifdef __EMSCRIPTEN__
++    tmp = tw_session_take( old_size, new_size - old_size );
++#else
+     if ((tmp = mmap( NULL, new_size - old_size, PROT_READ | PROT_WRITE, MAP_SHARED, unix_fd, old_size )) == MAP_FAILED)
+     {
+         file_set_error();
+         free( block );
+         return NULL;
+     }
++#endif
+ 
+     block->data = tmp;
+     block->offset = old_size;

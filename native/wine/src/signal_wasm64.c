@@ -5,16 +5,23 @@
  *
  * - The process and thread setup of section 8, and the start state of the
  *   main thread: BOOT_STOP_AT_ENTRY returns to boot, run mode enters the run
- *   loop (run.c).
+ *   loop (run.c). Every thread's: its frame record
+ *   (signal_alloc_thread), its state block and run loop
+ *   (signal_start_thread), both freed by signal_free_thread (section 9).
+ * - Signal handlers (section 9): SIGQUIT's, as quit_handler's in-syscall
+ *   path, and SIGUSR1's, usr1_handler's (suspension, another thread's
+ *   context); pending signals are delivered before a dispatcher returns to
+ *   guest code (delivery point 3).
  * - The syscall and unix-call dispatchers (section 11; abi.md v5, "Syscalls
  *   and unix calls"): host functions, raw exports of the guest-function type
  *   (state i64, entry i32, ret i64) -> i32. The frame record is the state
  *   block; the thread data keeps the rest of Wine's struct syscall_frame.
- * - The context functions for the current thread, with the FP conversion
- *   that agrees with the translator's fxsave (translator.md, "fxsave m512").
+ * - The context functions, with the FP conversion that agrees with the
+ *   translator's fxsave (translator.md, "fxsave m512"); another
+ *   thread's through the server, and the user APC's dispatch.
  *
- * The rest stops loudly until M4-M5 own it (other threads, APCs, exceptions,
- * user callbacks). NtCurrentTeb() needs no entry here: thread.c's reads
+ * The rest stops loudly (wine-unix.md section 13: exceptions, user
+ * callbacks). NtCurrentTeb() needs no entry here: thread.c's reads
  * teb_key on every machine. Line numbers are wine-11.0's
  * dlls/ntdll/unix/signal_x86_64.c unless another file is named.
  *
@@ -28,7 +35,9 @@
 #include "config.h"
 
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,8 +50,12 @@
 #include "wine/unixlib.h"
 #include "unix_private.h"
 
+#include "wine/debug.h"
+
 #include "tempwind/abi.h"
 #include "tempwind_private.h"
+
+WINE_DEFAULT_DEBUG_CHANNEL(seh);
 
 /* The x86-64 user selectors (section 3). The thread's FS selector is 0: no
  * WoW64. */
@@ -65,6 +78,10 @@ typedef ULONG_PTR (*tw_syscall_fn)( const ULONG_PTR *args );
 extern const tw_syscall_fn tw_syscall_table[];
 extern const BYTE tw_syscall_args[];
 extern const unsigned int tw_syscall_count;
+/* Table 1, win32u's (section 11), in the same file. */
+extern const tw_syscall_fn tw_win32_syscall_table[];
+extern const BYTE tw_win32_syscall_args[];
+extern const unsigned int tw_win32_syscall_count;
 
 /* loader.c's unix_call_funcs, the table __wine_unixlib_handle points to
  * (patch 0301). */
@@ -77,6 +94,7 @@ extern const unsigned int tw_unix_call_count;
 struct syscall_frame
 {
     BYTE   *state;          /* the thread's state block, set at each entry */
+    BYTE   *own_state;      /* the one signal_start_thread allocated, freed with the frame */
     UINT64  ret_addr;       /* the return address the dispatcher popped */
     DWORD   syscall_id;     /* L3060 */
     DWORD   restore_flags;  /* L3036, L3359 */
@@ -115,16 +133,91 @@ void signal_init_process( void )
     *(UINT64 *)ptr = TW_SYSCALL_DISPATCHER;
 }
 
-/* No LDT entry to allocate: no WoW64 (section 3). */
+/* A new thread's frame record (section 9), from virtual_alloc_teb
+ * (unix/virtual.c L4107), in the TEB's thread data; the main thread's TEB
+ * comes from virtual_alloc_first_teb, which doesn't call this, so
+ * signal_init_process allocates its frame record. No LDT entry to allocate:
+ * no WoW64 (section 3). */
 NTSTATUS signal_alloc_thread( TEB *teb )
 {
+    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+
     if (teb->WowTebOffset) tw_unsupported( "signal_alloc_thread: a WoW64 thread" );
+    if (!(thread_data->syscall_frame = calloc( 1, sizeof(struct syscall_frame) ))) return STATUS_NO_MEMORY;
     return STATUS_SUCCESS;
 }
 
+/* From virtual_free_teb (unix/virtual.c L4152): the frame record and the
+ * state block. Wine frees a thread's TEB only after it has ended: the next
+ * exiting thread joins it first (unix/thread.c L1503-1510). */
 void signal_free_thread( TEB *teb )
 {
+    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+    struct syscall_frame *frame = thread_data->syscall_frame;
+
+    if (!frame) return;
+    free( frame->own_state );
+    free( frame );
+    thread_data->syscall_frame = NULL;
 }
+
+/* SIGUSR1's handler, usr1_handler's branch inside a syscall (L2626-2669),
+ * against the frame record: the thread's context from its state block,
+ * wait_suspend, then the context back. No xstate (the profile has no AVX)
+ * and no WoW64. */
+static void usr1_handler( void )
+{
+    struct syscall_frame *frame = get_syscall_frame();
+    CONTEXT context;
+
+    if (!frame || !frame->state) tw_unsupported( "SIGUSR1 outside a syscall (no state block in the frame record)" );
+    memset( &context, 0, sizeof(context) );
+    context.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_EXCEPTION_REQUEST;
+    if (frame->restore_flags & RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT)
+    {
+        /* a unix call's frame (L2640-2645): its flags were never saved; the
+         * state block holds the FP state, so there is nothing to fix up */
+        frame->restore_flags &= ~RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
+        S64( frame->state, TW_STATE_RFLAGS ) = 0x200;
+    }
+    NtGetContextThread( GetCurrentThread(), &context );
+    wait_suspend( &context );
+    if (context.ContextFlags & 0x40)
+    {
+        /* xstate is updated directly in frame's xstate */
+        context.ContextFlags &= ~0x40;
+        frame->restore_flags |= 0x40;
+    }
+    NtSetContextThread( GetCurrentThread(), &context );
+}
+
+/* The handler of a delivered signal (section 9). Our threads are always
+ * inside a syscall then, so each runs its handler's in-syscall path. As
+ * Wine installs them (L2862-2863: sa_mask = server_block_set, no
+ * SA_NODEFER), a handler runs with server_block_set and its own signal
+ * blocked, and the mask is restored when it returns, as sigreturn does. */
+void tw_handle_signal( int sig )
+{
+    sigset_t block = server_block_set, old;
+
+    sigaddset( &block, sig );
+    pthread_sigmask( SIG_BLOCK, &block, &old );
+    switch (sig)
+    {
+    case SIGQUIT:  /* quit_handler (L2608-2614) */
+        abort_thread( 0 );
+    case SIGUSR1:
+        usr1_handler();
+        break;
+    default:
+        tw_unsupported( "a pending signal with no handler (SIGQUIT and SIGUSR1 only)" );
+    }
+    pthread_sigmask( SIG_SETMASK, &old, NULL );
+}
+
+/* The harness's routine in place of a thread's guest entry; NULL in the
+ * real module (tempwind_private.h). */
+void (*tw_thread_start_hook)( void *entry, void *arg, void *state );
 
 /* The main thread's state block, once boot has stopped at the entry. */
 void *tw_main_state( void )
@@ -136,16 +229,19 @@ void *tw_main_state( void )
 /* The thread's start as signal_x86_64.c's init_syscall_frame builds it
  * (section 8): the CONTEXT that LdrInitializeThunk gets, below the stack's
  * top, and the state block that enters LdrInitializeThunk with RCX = that
- * CONTEXT. Then BOOT_STOP_AT_ENTRY returns to boot, and run mode runs it. */
+ * CONTEXT. Then BOOT_STOP_AT_ENTRY returns to boot, and run mode runs it.
+ * The same for every thread, from start_thread (unix/thread.c
+ * L1119-1132) on its own green thread; RDX is then the thread's argument. */
 void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
 {
     struct syscall_frame *frame = get_syscall_frame();
     CONTEXT *ctx, context = { 0 };
     BYTE *state;
+    int is_main = green_is_main();
 
-    if (suspend) tw_unsupported( "signal_start_thread: a suspended start (M4)" );
-    if (teb != NtCurrentTeb()) tw_unsupported( "signal_start_thread: a thread other than the running one (M4)" );
-    if (!frame) tw_unsupported( "signal_start_thread: no frame record (signal_init_process)" );
+    if (teb != NtCurrentTeb()) tw_unsupported( "signal_start_thread: a TEB other than the running thread's" );
+    if (!frame) tw_unsupported( "signal_start_thread: no frame record (signal_init_process, signal_alloc_thread)" );
+    if (frame->own_state) tw_unsupported( "signal_start_thread: a thread started twice" );
 
     context.ContextFlags = CONTEXT_ALL | CONTEXT_EXCEPTION_REPORTING | CONTEXT_EXCEPTION_ACTIVE;
     context.Rcx    = (ULONG_PTR)entry;
@@ -162,6 +258,10 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     context.FltSave.ControlWord = 0x27f;
     context.FltSave.MxCsr = context.MxCsr = 0x1f80;
 
+    /* A thread created suspended waits until it is resumed (L2957),
+     * with SIGUSR1 still blocked; another thread may change its context */
+    if (suspend) wait_suspend( &context );
+
     ctx = (CONTEXT *)((ULONG_PTR)context.Rsp & ~15) - 1;
     *ctx = context;
     ctx->ContextFlags = CONTEXT_FULL;
@@ -169,25 +269,29 @@ void signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspe
     if (!(state = aligned_alloc( 64, TW_STATE_SIZE )))
         tw_unsupported( "signal_start_thread: no host memory for the state block" );
     memset( state, 0, TW_STATE_SIZE );
+    if (is_main) main_state = state;
+    frame->own_state = state;
+    frame->state = state;
+    /* the frame from the full context (L2966), then the entry: RCX = the
+     * CONTEXT, RDX = the PEB or a new thread's argument (the context's) */
+    signal_set_full_context( ctx );
     GPR( state, RCX ) = (ULONG_PTR)ctx;
-    GPR( state, RDX ) = (ULONG_PTR)arg;      /* the PEB */
     GPR( state, RSP ) = (ULONG_PTR)ctx - 8;
     S64( state, TW_STATE_RIP ) = (ULONG_PTR)pLdrInitializeThunk;
-    S64( state, TW_STATE_RFLAGS ) = 0x200;
     S64( state, TW_STATE_GS_BASE ) = (ULONG_PTR)teb;
-    S32( state, TW_STATE_MXCSR ) = TW_INIT_MXCSR;
-    S16( state, TW_STATE_FCW ) = TW_INIT_FCW;
-    S16( state, TW_STATE_FTW ) = TW_INIT_FTW;  /* all x87 registers empty */
-    main_state = state;
-    frame->state = state;
+
+    /* as init_syscall_frame ends (L2978): a signal sent before the start is
+     * handled here (delivery point 2), against this state block */
+    pthread_sigmask( SIG_UNBLOCK, &server_block_set, NULL );
 
     /* BOOT_STOP_AT_ENTRY; boot rejects every other nonzero value */
-    if (tw_boot_flags) tw_boot_stopped();
-    tw_run_loop( (uint64_t)(ULONG_PTR)state );
-    /* EXIT_HOST: nothing ends the main thread that way in M3 (section 12);
-     * process exit longjmps to boot instead */
-    fprintf( stderr, "tempwind: unsupported: signal_start_thread: the main thread's run loop returned: %s\n",
-             tw_host_stop_reason );
+    if (is_main && tw_boot_flags) tw_boot_stopped();
+    if (tw_thread_start_hook) tw_thread_start_hook( (void *)entry, arg, state );
+    else tw_run_loop( (uint64_t)(ULONG_PTR)state );
+    /* EXIT_HOST: nothing ends a thread that way (section 12): a thread
+     * ends in pthread_exit, and process exit longjmps out */
+    fprintf( stderr, "tempwind: unsupported: signal_start_thread: thread %d's run loop returned: %s\n",
+             green_current->id, tw_thread_start_hook ? "the harness's routine returned" : tw_host_stop_reason );
     abort();
 }
 
@@ -207,6 +311,9 @@ static struct syscall_frame *entry_frame( BYTE *state, const char *who )
  * MXCSR and XMM6-15, or the full FP state with restore flag 0x48. */
 static int32_t dispatcher_return( BYTE *state, struct syscall_frame *frame, ULONG_PTR status, UINT64 ret )
 {
+    /* Delivery point 3 (section 9): a signal the thread sent itself, or
+     * one that arrived while it ran, before it returns to guest code */
+    green_deliver_signals();
     if (frame->restore_flags & 0x3)  /* CONTEXT_CONTROL | CONTEXT_INTEGER: iretq to the context */
     {
         /* the new-context return (abi.md v5, "Host functions"): with INTEGER
@@ -233,7 +340,9 @@ int32_t tw_syscall_dispatcher( uint64_t state_addr, int32_t entry, uint64_t ret 
     struct syscall_frame *frame = entry_frame( state, "tw_syscall_dispatcher: a thread with no frame record" );
     ULONG_PTR args[32], status;
     UINT64 rsp;
-    UINT id, table, num, i, nargs;
+    UINT id, table, num, i, nargs, limit;
+    const tw_syscall_fn *fns = tw_syscall_table;
+    const BYTE *argbytes = tw_syscall_args;
     BOOL trace;
 
     set_current_time();  /* KUSER's clock, as the server's tick would have kept it */
@@ -251,18 +360,27 @@ int32_t tw_syscall_dispatcher( uint64_t state_addr, int32_t entry, uint64_t ret 
     id = frame->syscall_id = (UINT)GPR( state, RAX );
     table = (id >> 12) & 3;
     num = id & 0xfff;
+    /* the table's limit (L3145-3146): table 0's is the generated table's
+     * size; table 1's is 0 until win32u's init registers it with
+     * KeAddSystemServiceTable (win32u/syscall.c L92-106; unix/loader.c
+     * L625-634); tables 2 and 3 stay empty */
+    limit = tw_syscall_count;
     if (table)
     {
-        if (KeServiceDescriptorTable[table].ServiceLimit)
-            tw_unsupported( "tw_syscall_dispatcher: syscall table 1-3 (win32u, M4)" );
-        return dispatcher_return( state, frame, (ULONG)STATUS_INVALID_SYSTEM_SERVICE, ret );
+        limit = KeServiceDescriptorTable[table].ServiceLimit;
+        if (limit && table != 1)
+            tw_unsupported( "tw_syscall_dispatcher: a registered syscall table 2 or 3" );
+        if (limit && limit != tw_win32_syscall_count)
+            tw_unsupported( "tw_syscall_dispatcher: win32u's registered table 1 differs from the generated one" );
+        fns = tw_win32_syscall_table;
+        argbytes = tw_win32_syscall_args;
     }
-    if (num >= tw_syscall_count)
+    if (num >= limit)
         return dispatcher_return( state, frame, (ULONG)STATUS_INVALID_SYSTEM_SERVICE, ret );  /* L3324-3327 */
 
     /* the arguments: R10, RDX, R8, R9, then argument i >= 4 at
      * [RSP + 0x28 + 8 * (i - 4)] after the pop (L3099, L3157, L3166-3167) */
-    nargs = tw_syscall_args[num] / sizeof(ULONG_PTR);
+    nargs = argbytes[num] / sizeof(ULONG_PTR);
     if (nargs > ARRAY_SIZE(args)) tw_unsupported( "tw_syscall_dispatcher: too many arguments" );
     args[0] = GPR( state, R10 );
     args[1] = GPR( state, RDX );
@@ -271,8 +389,8 @@ int32_t tw_syscall_dispatcher( uint64_t state_addr, int32_t entry, uint64_t ret 
     for (i = 4; i < nargs; i++) args[i] = *(const UINT64 *)(ULONG_PTR)(rsp + 0x28 + 8 * (i - 4));
 
     trace = ntdll_get_thread_data()->syscall_trace & 1;  /* L3160-3161 */
-    if (trace) trace_syscall( id, args, tw_syscall_args[num] );
-    status = tw_syscall_table[num]( args );
+    if (trace) trace_syscall( id, args, argbytes[num] );
+    status = fns[num]( args );
     if (trace) trace_sysret( id, status );  /* L3293-3322 */
     return dispatcher_return( state, frame, status, ret );
 }
@@ -285,6 +403,8 @@ int32_t tw_unix_call_dispatcher( uint64_t state_addr, int32_t entry, uint64_t re
     struct syscall_frame *frame = entry_frame( state, "tw_unix_call_dispatcher: a thread with no frame record" );
     UINT64 rsp = GPR( state, RSP );
     UINT code = (UINT)GPR( state, RDX );
+    const unixlib_entry_t *funcs = (const unixlib_entry_t *)(ULONG_PTR)GPR( state, RCX );
+    unsigned int count;
     NTSTATUS status;
 
     /* the frame record: the return address unadjusted (L3356), and the frame
@@ -294,16 +414,23 @@ int32_t tw_unix_call_dispatcher( uint64_t state_addr, int32_t entry, uint64_t re
     S64( state, TW_STATE_RIP ) = frame->ret_addr;
     frame->restore_flags = RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
 
-    /* only ntdll's own unix calls; Wine checks neither */
-    if (GPR( state, RCX ) != (ULONG_PTR)tw_unix_call_funcs)
-        tw_unsupported( "tw_unix_call_dispatcher: a unix library other than ntdll's" );
-    if (code >= tw_unix_call_count)
-        tw_unsupported( "tw_unix_call_dispatcher: a code past ntdll's unix calls" );
-    status = tw_unix_call_funcs[code]( (void *)(ULONG_PTR)GPR( state, R8 ) );
+    /* the handle: ntdll's unix_call_funcs, or a table tw_unixlib_funcs
+     * returned (win32u's), each with its count; Wine checks neither */
+    if (funcs == tw_unix_call_funcs)
+    {
+        if (code >= tw_unix_call_count)
+            tw_unsupported( "tw_unix_call_dispatcher: a code past ntdll's unix calls" );
+    }
+    else if (!(count = tw_unixlib_count( funcs )))
+        tw_unsupported( "tw_unix_call_dispatcher: a handle that is no unix library's table" );
+    else if (code >= count)
+        tw_unsupported( "tw_unix_call_dispatcher: a code past the unix library's calls" );
+    status = funcs[code]( (void *)(ULONG_PTR)GPR( state, R8 ) );
     return dispatcher_return( state, frame, (ULONG)status, ret );
 }
 
-/* ---- contexts on the current thread (section 11) ---- */
+/* ---- contexts (section 11): the current thread's in its frame record,
+ * another thread's through the server ---- */
 
 static BYTE *context_state( const char *who )
 {
@@ -383,21 +510,31 @@ NTSTATUS signal_set_full_context( CONTEXT *context )
 }
 
 /***********************************************************************
- *           NtSetContextThread  (L1116-1208), for the current thread
+ *           NtSetContextThread  (L1116-1208)
  */
 NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 {
     DWORD flags = context->ContextFlags & ~CONTEXT_AMD64;
+    BOOL self = (handle == GetCurrentThread());
     BYTE *state;
 
-    if (handle != GetCurrentThread()) tw_unsupported( "NtSetContextThread: another thread's context (M4)" );
+    flags &= ~CONTEXT_XSTATE;  /* no extended features: the profile has no AVX */
+
+    /* Another thread's goes to the server, which keeps it for the
+     * thread's usr1_handler (L1145-1153); the server answers self for a
+     * real handle to this thread */
+    if (!self)
+    {
+        NTSTATUS ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+
+        if (ret || !self) return ret;
+    }
     state = context_state( "NtSetContextThread: outside a syscall" );
 
-    flags &= ~CONTEXT_XSTATE;  /* no extended features: the profile has no AVX */
     /* debug registers other than the cached ones, all 0, need the server */
     if ((flags & CONTEXT_DEBUG_REGISTERS) &&
         (context->Dr0 || context->Dr1 || context->Dr2 || context->Dr3 || context->Dr6 || context->Dr7))
-        tw_unsupported( "NtSetContextThread: debug registers (the server's set_thread_context, M4)" );
+        tw_unsupported( "NtSetContextThread: nonzero debug registers (the server's set_thread_context)" );
 
     if (flags & CONTEXT_INTEGER)
     {
@@ -430,14 +567,24 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 }
 
 /***********************************************************************
- *           NtGetContextThread  (L1215-1346), for the current thread
+ *           NtGetContextThread  (L1215-1346)
  */
 NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
 {
     DWORD needed_flags = context->ContextFlags & ~CONTEXT_AMD64;
+    BOOL self = (handle == GetCurrentThread());
     const BYTE *state;
 
-    if (handle != GetCurrentThread()) tw_unsupported( "NtGetContextThread: another thread's context (M4)" );
+    /* Another thread's comes from the server: the context the thread
+     * posted from usr1_handler's wait_suspend, after a wait for it when the
+     * thread hasn't stopped yet (get_thread_context, unix/thread.c); the
+     * server answers self for a real handle to this thread (L1224-1229) */
+    if (!self)
+    {
+        NTSTATUS ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+
+        if (ret || !self) return ret;
+    }
     state = context_state( "NtGetContextThread: outside a syscall" );
 
     if (needed_flags & CONTEXT_INTEGER)
@@ -497,9 +644,13 @@ void *get_native_context( CONTEXT *context )
     return context;
 }
 
+/* L1105-1109. contexts_to_server and contexts_from_server
+ * (unix/thread.c L1062-1063, L1087-1088) call it from wait_suspend and the
+ * context requests; with no WoW64 get_cpu_area returns NULL. */
 void *get_wow_context( CONTEXT *context )
 {
-    tw_unsupported( "get_wow_context" );
+    if (context->SegCs != cs64_sel) return NULL;
+    return get_cpu_area( IMAGE_FILE_MACHINE_I386 );
 }
 
 NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
@@ -522,12 +673,86 @@ void set_process_instrumentation_callback( void *callback )
     tw_unsupported( "set_process_instrumentation_callback" );
 }
 
-/* ---- calls into the guest's dispatchers (M4-M5) ---- */
+/* ---- calls into the guest's dispatchers ---- */
 
-NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
+/* The machine frame and the stack KiUserApcDispatcher gets (L408-444). */
+struct machine_frame
+{
+    ULONG64 rip;
+    ULONG64 cs;
+    ULONG64 eflags;
+    ULONG64 rsp;
+    ULONG64 ss;
+};
+
+struct apc_stack_layout
+{
+    CONTEXT              context;        /* 000 */
+    CONTEXT_EX           context_ex;     /* 4d0 */
+    KCONTINUE_ARGUMENT   continue_arg;   /* 4f0 */
+    ULONG64              align1;         /* 508 */
+    APC_CALLBACK_DATA    callback_data;  /* 510 */
+    struct machine_frame machine_frame;  /* 530 */
+    ULONG64              align2;         /* 558 */
+};
+C_ASSERT( offsetof(struct apc_stack_layout, continue_arg) == 0x4f0 );
+C_ASSERT( offsetof(struct apc_stack_layout, machine_frame) == 0x530 );
+C_ASSERT( sizeof(struct apc_stack_layout) == 0x560 );
+
+/***********************************************************************
+ *           call_user_apc_dispatcher  (L1661-1705)
+ *
+ * Section 11, "User APCs": against the state block. The layout goes
+ * below the context's RSP (or the frame's), and the state block enters PE
+ * KiUserApcDispatcher with RSP = the layout and RBP = the context's;
+ * CONTEXT_CONTROL in restore_flags makes the dispatcher take its
+ * new-context return, with RAX = the status.
+ */
+NTSTATUS call_user_apc_dispatcher( CONTEXT *context, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
                                    ULONG_PTR arg3, PNTAPCFUNC func, NTSTATUS status )
 {
-    tw_unsupported( "call_user_apc_dispatcher" );
+    struct syscall_frame *frame = get_syscall_frame();
+    BYTE *state = context_state( "call_user_apc_dispatcher: outside a syscall" );
+    ULONG64 rsp = context ? context->Rsp : GPR( state, RSP );
+    struct apc_stack_layout *stack;
+
+    if (flags & ~SERVER_USER_APC_CALLBACK_DATA_CONTEXT) FIXME( "flags %#x are not supported.\n", flags );
+
+    rsp &= ~15;
+    stack = (struct apc_stack_layout *)rsp - 1;
+    if (context)
+    {
+        memmove( &stack->context, context, sizeof(stack->context) );
+        NtSetContextThread( GetCurrentThread(), &stack->context );
+    }
+    else
+    {
+        stack->context.ContextFlags = CONTEXT_FULL;
+        NtGetContextThread( GetCurrentThread(), &stack->context );
+        stack->context.Rax = status;
+    }
+    memset( &stack->continue_arg, 0, sizeof(stack->continue_arg) );
+    stack->continue_arg.ContinueType = KCONTINUE_RESUME;
+    stack->continue_arg.ContinueFlags = KCONTINUE_FLAG_TEST_ALERT | KCONTINUE_FLAG_DELIVER_APC;
+    stack->context.P1Home    = arg1;
+    if (flags & SERVER_USER_APC_CALLBACK_DATA_CONTEXT)
+    {
+        stack->callback_data.ContextRecord = &stack->context;
+        stack->callback_data.Parameter = arg2;
+        stack->callback_data.Reserved0 = 0;
+        stack->callback_data.Reserved1 = 0;
+        stack->context.P2Home = (ULONG_PTR)&stack->callback_data;
+    }
+    else stack->context.P2Home = arg2;
+    stack->context.P3Home    = arg3;
+    stack->context.P4Home    = (ULONG64)func;
+    stack->machine_frame.rip = stack->context.Rip;
+    stack->machine_frame.rsp = stack->context.Rsp;
+    GPR( state, RBP ) = stack->context.Rbp;
+    GPR( state, RSP ) = (ULONG64)stack;
+    S64( state, TW_STATE_RIP ) = (ULONG64)pKiUserApcDispatcher;
+    frame->restore_flags |= CONTEXT_CONTROL;
+    return status;
 }
 
 NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context )
@@ -543,4 +768,15 @@ void call_raise_user_exception_dispatcher( void )
 NTSTATUS WINAPI NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status )
 {
     tw_unsupported( "NtCallbackReturn" );
+}
+
+/* win32u's calls into user32 (signal_x86_64.c L1903-1931),
+ * deferred to Phase 3's desktop (section 13). A console program's user32
+ * attach doesn't reach one (section 11); one that does stops here. */
+NTSTATUS KeUserModeCallback( ULONG id, const void *args, ULONG len, void **ret_ptr, ULONG *ret_len )
+{
+    char what[64];
+
+    snprintf( what, sizeof(what), "KeUserModeCallback %u", (unsigned int)id );
+    tw_unsupported( what );
 }

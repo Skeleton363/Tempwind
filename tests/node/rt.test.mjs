@@ -1,6 +1,6 @@
 // The request/result layout of runtime/src/rt.mjs, against stand-in exports
 // over a real WebAssembly.Memory (the real x64wasm_rt.wasm is exercised by
-// tests/node/pe.test.mjs).
+// the Wine host's tests: tests/wine/programs.test.mjs and test:browser:wine).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RuntimeTranslator } from '../../runtime/src/rt.mjs';
